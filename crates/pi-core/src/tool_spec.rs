@@ -66,12 +66,3 @@ impl ToolSpec {
         }
     }
 }
-
-pub fn all_tool_specs() -> Vec<ToolSpec> {
-    vec![
-        ToolSpec::read(),
-        ToolSpec::write(),
-        ToolSpec::edit(),
-        ToolSpec::bash(),
-    ]
-}

@@ -21,7 +21,7 @@ impl OpenRouterProvider {
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .expect("failed to create HTTP client"),
-            tools: crate::tool_spec::all_tool_specs(),
+            tools: crate::tools::default_tools().specs(),
         }
     }
 
@@ -70,25 +70,7 @@ impl Provider for OpenRouterProvider {
 
 impl OpenRouterProvider {
     pub(crate) fn build_request(&self, messages: &[Message]) -> ChatRequest {
-        let messages: Vec<ChatMessage> = messages
-            .iter()
-            .map(|m| ChatMessage {
-                role: match m.role {
-                    Role::User => "user".to_string(),
-                    Role::Assistant => "assistant".to_string(),
-                    Role::System => "system".to_string(),
-                    Role::Tool => "tool".to_string(),
-                },
-                content: match &m.content {
-                    Content::Text { text } => text.clone(),
-                    Content::ToolRequest { name, args, .. } => {
-                        serde_json::json!({"type": "tool_call", "name": name, "args": args})
-                            .to_string()
-                    }
-                    Content::ToolResult { result, .. } => result.clone(),
-                },
-            })
-            .collect();
+        let wire_messages: Vec<WireMessage> = messages.iter().map(message_to_wire).collect();
 
         let tools: Vec<ToolDefinition> = self
             .tools
@@ -105,7 +87,7 @@ impl OpenRouterProvider {
 
         ChatRequest {
             model: self.model.clone(),
-            messages,
+            messages: wire_messages,
             tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice: Some(serde_json::json!({"type": "auto"})),
         }
@@ -121,6 +103,13 @@ impl OpenRouterProvider {
         let message = choice.message;
 
         if let Some(tool_calls) = message.tool_calls {
+            let count = tool_calls.len();
+            if count > 1 {
+                return Err(Error::Provider(format!(
+                    "provider returned {} tool calls, but only one per turn is supported",
+                    count
+                )));
+            }
             if let Some(tool_call) = tool_calls.into_iter().next() {
                 let id = tool_call.id;
                 let function = tool_call.function;
@@ -139,18 +128,88 @@ impl OpenRouterProvider {
     }
 }
 
+fn message_to_wire(msg: &Message) -> WireMessage {
+    match (&msg.role, &msg.content) {
+        (Role::User, Content::Text { text }) => WireMessage {
+            role: "user".to_string(),
+            content: Some(WireContent::Text(text.clone())),
+            tool_calls: None,
+            tool_call_id: None,
+        },
+        (Role::System, Content::Text { text }) => WireMessage {
+            role: "system".to_string(),
+            content: Some(WireContent::Text(text.clone())),
+            tool_calls: None,
+            tool_call_id: None,
+        },
+        (Role::Assistant, Content::Text { text }) => WireMessage {
+            role: "assistant".to_string(),
+            content: Some(WireContent::Text(text.clone())),
+            tool_calls: None,
+            tool_call_id: None,
+        },
+        (Role::Assistant, Content::ToolRequest { id, name, args }) => WireMessage {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls: Some(vec![WireToolCall {
+                id: id.clone(),
+                function: WireFunctionCall {
+                    name: name.clone(),
+                    arguments: args.to_string(),
+                },
+            }]),
+            tool_call_id: None,
+        },
+        (Role::Tool, Content::ToolResult { id, result }) => WireMessage {
+            role: "tool".to_string(),
+            content: Some(WireContent::Text(result.clone())),
+            tool_calls: None,
+            tool_call_id: Some(id.clone()),
+        },
+        _ => WireMessage {
+            role: "user".to_string(),
+            content: Some(WireContent::Text(String::new())),
+            tool_calls: None,
+            tool_call_id: None,
+        },
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct ChatRequest {
     model: String,
-    messages: Vec<ChatMessage>,
+    messages: Vec<WireMessage>,
     tools: Option<Vec<ToolDefinition>>,
     tool_choice: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Serialize)]
-struct ChatMessage {
+struct WireMessage {
     role: String,
-    content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<WireContent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<Vec<WireToolCall>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(untagged)]
+enum WireContent {
+    Text(String),
+}
+
+#[derive(Debug, Serialize)]
+struct WireToolCall {
+    id: String,
+    function: WireFunctionCall,
+}
+
+#[derive(Debug, Serialize)]
+struct WireFunctionCall {
+    name: String,
+    arguments: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -199,38 +258,18 @@ struct FunctionCall {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool_spec::ToolSpec;
+    use crate::tools::default_tools;
 
     #[test]
-    fn test_build_request_uses_shared_tool_specs() {
-        let specs = vec![
-            ToolSpec {
-                name: "read",
-                description: "read file",
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"]
-                }),
-            },
-            ToolSpec {
-                name: "bash",
-                description: "run command",
-                input_schema: serde_json::json!({
-                    "type": "object",
-                    "properties": {"command": {"type": "string"}},
-                    "required": ["command"]
-                }),
-            },
-        ];
-        let provider = OpenRouterProvider::with_tools("test-key", "test-model", specs);
+    fn test_build_request_uses_default_tools() {
+        let provider = OpenRouterProvider::new("test-key", "test-model");
         let messages = vec![Message::user("test")];
         let request = provider.build_request(&messages);
 
         let tools = request.tools.unwrap();
-        assert_eq!(tools.len(), 2);
-        assert_eq!(tools[0].function.name, "read");
-        assert_eq!(tools[1].function.name, "bash");
+        assert_eq!(tools.len(), 4);
+        let names: Vec<_> = tools.iter().map(|t| t.function.name.as_str()).collect();
+        assert_eq!(names, vec!["read", "write", "edit", "bash"]);
     }
 
     #[test]
@@ -303,8 +342,44 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_multiple_tool_calls_returns_error() {
+        let provider = OpenRouterProvider::new("key", "model");
+        let response = OpenAIResponse {
+            choices: vec![Choice {
+                message: ResponseMessage {
+                    content: None,
+                    tool_calls: Some(vec![
+                        ToolCall {
+                            id: "call_1".to_string(),
+                            function: FunctionCall {
+                                name: "read".to_string(),
+                                arguments: r#"{"path": "a.txt"}"#.to_string(),
+                            },
+                        },
+                        ToolCall {
+                            id: "call_2".to_string(),
+                            function: FunctionCall {
+                                name: "read".to_string(),
+                                arguments: r#"{"path": "b.txt"}"#.to_string(),
+                            },
+                        },
+                    ]),
+                },
+            }],
+        };
+        let result = provider.parse_response(response);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("only one per turn"),
+            "expected single tool call error: {}",
+            err
+        );
+    }
+
+    #[test]
     fn test_tool_order_deterministic() {
-        let specs = crate::tool_spec::all_tool_specs();
+        let specs = default_tools().specs();
         let provider = OpenRouterProvider::with_tools("key", "model", specs);
         let messages = vec![Message::user("test")];
         let request1 = provider.build_request(&messages);
@@ -316,5 +391,35 @@ mod tests {
         for (t1, t2) in tools1.iter().zip(tools2.iter()) {
             assert_eq!(t1.function.name, t2.function.name);
         }
+    }
+
+    #[test]
+    fn test_wire_message_user_text() {
+        let msg = Message::user("hello");
+        let wire = message_to_wire(&msg);
+        assert_eq!(wire.role, "user");
+        assert!(wire.content.is_some());
+        assert!(wire.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_wire_message_assistant_tool_request() {
+        let msg = Message::tool_request("call_1", "read", serde_json::json!({"path": "foo.txt"}));
+        let wire = message_to_wire(&msg);
+        assert_eq!(wire.role, "assistant");
+        assert!(wire.content.is_none());
+        assert!(wire.tool_calls.is_some());
+        let tc = &wire.tool_calls.as_ref().unwrap()[0];
+        assert_eq!(tc.id, "call_1");
+        assert_eq!(tc.function.name, "read");
+    }
+
+    #[test]
+    fn test_wire_message_tool_result() {
+        let msg = Message::tool_result("call_1", "file contents here");
+        let wire = message_to_wire(&msg);
+        assert_eq!(wire.role, "tool");
+        assert!(wire.tool_call_id.as_ref().unwrap() == "call_1");
+        assert!(wire.content.is_some());
     }
 }
