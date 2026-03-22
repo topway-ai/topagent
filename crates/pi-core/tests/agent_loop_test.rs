@@ -1,7 +1,7 @@
 use pi_core::{
     context::ExecutionContext,
     tools::{BashTool, EditTool, ReadTool, Tool, WriteTool},
-    Agent, Content, Error, Message, Provider, ProviderResponse, Role,
+    Agent, Content, Error, Message, Provider, ProviderResponse, Role, RuntimeOptions,
 };
 use std::sync::{Arc, RwLock};
 use tempfile::TempDir;
@@ -299,4 +299,46 @@ fn test_agent_unknown_tool_produces_error_message() {
     let result = agent.run(&ctx, "try unknown tool");
     assert!(result.is_ok()); // should handle gracefully and return error in conversation
     assert!(result.unwrap().contains("unknown tool handled gracefully"));
+}
+
+#[test]
+fn test_agent_with_custom_max_steps() {
+    let (ctx, _temp) = make_test_context();
+    let options = RuntimeOptions::default().with_max_steps(2);
+    let provider = RunawayProvider;
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+
+    let result = agent.run(&ctx, "run forever");
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("max steps"),
+        "expected max steps error: {}",
+        err
+    );
+}
+
+#[test]
+fn test_runtime_options_defaults() {
+    let options = RuntimeOptions::default();
+    assert_eq!(options.max_steps, 50);
+    assert_eq!(options.max_provider_retries, 3);
+    assert_eq!(options.max_read_bytes, 64 * 1024);
+    assert_eq!(options.max_bash_output_bytes, 64 * 1024);
+    assert_eq!(options.provider_timeout_secs, 120);
+}
+
+#[test]
+fn test_runtime_options_builder() {
+    let options = RuntimeOptions::new()
+        .with_max_steps(100)
+        .with_max_provider_retries(5)
+        .with_max_read_bytes(32 * 1024)
+        .with_max_bash_output_bytes(128 * 1024)
+        .with_provider_timeout_secs(60);
+    assert_eq!(options.max_steps, 100);
+    assert_eq!(options.max_provider_retries, 5);
+    assert_eq!(options.max_read_bytes, 32 * 1024);
+    assert_eq!(options.max_bash_output_bytes, 128 * 1024);
+    assert_eq!(options.provider_timeout_secs, 60);
 }

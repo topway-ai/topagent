@@ -1,13 +1,15 @@
 use crate::{Error, Result};
 use std::path::Path;
 
-const MAX_READ_SIZE: usize = 64 * 1024;
-
 pub fn is_likely_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8192).any(|&b| b == 0)
 }
 
 pub fn read_text_file(path: &Path) -> Result<String> {
+    read_text_file_with_limit(path, 64 * 1024)
+}
+
+pub fn read_text_file_with_limit(path: &Path, max_bytes: usize) -> Result<String> {
     let bytes = std::fs::read(path)
         .map_err(|e| Error::ToolFailed(format!("failed to read {}: {}", path.display(), e)))?;
 
@@ -20,8 +22,8 @@ pub fn read_text_file(path: &Path) -> Result<String> {
 
     let original_size = bytes.len();
 
-    if original_size > MAX_READ_SIZE {
-        let truncated = truncate_to_utf8_boundary(&bytes, MAX_READ_SIZE);
+    if original_size > max_bytes {
+        let truncated = truncate_to_utf8_boundary(&bytes, max_bytes);
         return Ok(format!(
             "[ReadTool] File truncated: {} bytes total, showing first {} bytes:\n{}\n\n[ReadTool] File continues... ({} bytes truncated)",
             original_size,

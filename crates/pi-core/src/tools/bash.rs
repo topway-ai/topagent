@@ -4,7 +4,7 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::process::{Command, Output};
 
-const MAX_OUTPUT_SIZE: usize = 64 * 1024;
+const DEFAULT_MAX_OUTPUT_SIZE: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BashArgs {
@@ -32,6 +32,17 @@ impl crate::tools::Tool for BashTool {
     }
 
     fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> Result<String> {
+        self.execute_with_limit(args, ctx, DEFAULT_MAX_OUTPUT_SIZE)
+    }
+}
+
+impl BashTool {
+    pub fn execute_with_limit(
+        &self,
+        args: serde_json::Value,
+        ctx: &ExecutionContext,
+        max_output_bytes: usize,
+    ) -> Result<String> {
         let args: BashArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
         let output = Command::new("sh")
@@ -40,11 +51,11 @@ impl crate::tools::Tool for BashTool {
             .current_dir(&ctx.workspace_root)
             .output()
             .map_err(|e| Error::ToolFailed(format!("failed to execute command: {}", e)))?;
-        format_output(output)
+        format_output_with_limit(output, max_output_bytes)
     }
 }
 
-fn format_output(output: Output) -> Result<String> {
+fn format_output_with_limit(output: Output, max_size: usize) -> Result<String> {
     let stdout_raw = &output.stdout;
     let stderr_raw = &output.stderr;
     let status = output.status;
@@ -55,16 +66,16 @@ fn format_output(output: Output) -> Result<String> {
     let mut stdout_truncated = false;
     let mut stderr_truncated = false;
 
-    let stdout_bytes = if stdout_len > MAX_OUTPUT_SIZE {
+    let stdout_bytes = if stdout_len > max_size {
         stdout_truncated = true;
-        &stdout_raw[..MAX_OUTPUT_SIZE]
+        &stdout_raw[..max_size]
     } else {
         stdout_raw.as_slice()
     };
 
-    let stderr_bytes = if stderr_len > MAX_OUTPUT_SIZE {
+    let stderr_bytes = if stderr_len > max_size {
         stderr_truncated = true;
-        &stderr_raw[..MAX_OUTPUT_SIZE]
+        &stderr_raw[..max_size]
     } else {
         stderr_raw.as_slice()
     };
@@ -79,7 +90,7 @@ fn format_output(output: Output) -> Result<String> {
         if stdout_truncated {
             result.push_str(&format!(
                 "\n[Output truncated: {} bytes total, showing first {}]\n",
-                stdout_len, MAX_OUTPUT_SIZE
+                stdout_len, max_size
             ));
         }
         result.push('\n');
@@ -90,7 +101,7 @@ fn format_output(output: Output) -> Result<String> {
         if stderr_truncated {
             result.push_str(&format!(
                 "\n[Output truncated: {} bytes total, showing first {}]\n",
-                stderr_len, MAX_OUTPUT_SIZE
+                stderr_len, max_size
             ));
         }
         result.push('\n');

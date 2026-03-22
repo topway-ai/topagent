@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::Parser;
 use pi_core::{
     context::ExecutionContext, tools::default_tools, Agent, Message, OpenRouterProvider, Provider,
-    ProviderResponse,
+    ProviderResponse, RuntimeOptions,
 };
 use std::path::PathBuf;
 use tracing::info;
@@ -24,6 +24,12 @@ struct Cli {
     #[arg(long, help = "Working directory for file operations")]
     cwd: Option<PathBuf>,
 
+    #[arg(long, help = "Maximum steps for agent loop")]
+    max_steps: Option<usize>,
+
+    #[arg(long, help = "Maximum provider retries")]
+    max_retries: Option<usize>,
+
     #[arg(help = "Instruction for the agent")]
     instruction: String,
 }
@@ -40,19 +46,33 @@ fn main() -> Result<()> {
     info!("starting agent with instruction: {}", args.instruction);
     info!("workspace root: {:?}", ctx.workspace_root);
 
+    let options = RuntimeOptions::new()
+        .with_max_steps(args.max_steps.unwrap_or(50))
+        .with_max_provider_retries(args.max_retries.unwrap_or(3));
+
     let provider: Box<dyn Provider> = if let Some(api_key) = args.api_key {
-        Box::new(OpenRouterProvider::new(api_key, args.model))
+        Box::new(OpenRouterProvider::with_timeout(
+            api_key,
+            args.model,
+            options.provider_timeout_secs,
+        ))
     } else {
         info!("No API key provided, using echo provider (for testing)");
         Box::new(EchoProvider)
     };
 
-    let mut agent = Agent::new(provider, default_tools().into_inner());
+    let mut agent = Agent::with_options(provider, default_tools().into_inner(), options);
 
-    let result = agent.run(&ctx, &args.instruction)?;
-    println!("{}", result);
-
-    Ok(())
+    match agent.run(&ctx, &args.instruction) {
+        Ok(result) => {
+            println!("{}", result);
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    }
 }
 
 struct EchoProvider;

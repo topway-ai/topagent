@@ -14,11 +14,19 @@ pub struct OpenRouterProvider {
 
 impl OpenRouterProvider {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
+        Self::with_timeout(api_key, model, 120)
+    }
+
+    pub fn with_timeout(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        timeout_secs: u64,
+    ) -> Self {
         Self {
             api_key: api_key.into(),
             model: model.into(),
             client: reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
+                .timeout(std::time::Duration::from_secs(timeout_secs))
                 .build()
                 .expect("failed to create HTTP client"),
             tools: crate::tools::default_tools().specs(),
@@ -30,11 +38,20 @@ impl OpenRouterProvider {
         model: impl Into<String>,
         tools: Vec<ToolSpec>,
     ) -> Self {
+        Self::with_tools_and_timeout(api_key, model, tools, 120)
+    }
+
+    pub fn with_tools_and_timeout(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        tools: Vec<ToolSpec>,
+        timeout_secs: u64,
+    ) -> Self {
         Self {
             api_key: api_key.into(),
             model: model.into(),
             client: reqwest::blocking::Client::builder()
-                .timeout(std::time::Duration::from_secs(120))
+                .timeout(std::time::Duration::from_secs(timeout_secs))
                 .build()
                 .expect("failed to create HTTP client"),
             tools,
@@ -52,17 +69,20 @@ impl Provider for OpenRouterProvider {
             .header("Content-Type", "application/json")
             .json(&request)
             .send()
-            .map_err(|e| Error::Provider(format!("request failed: {}", e)))?;
+            .map_err(|e| Error::ProviderRequestFailed(format!("request failed: {}", e)))?;
 
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().unwrap_or_default();
-            return Err(Error::Provider(format!("API error {}: {}", status, body)));
+            return Err(Error::ProviderRequestFailed(format!(
+                "API error {}: {}",
+                status, body
+            )));
         }
 
         let completion: OpenAIResponse = response
             .json()
-            .map_err(|e| Error::Provider(format!("failed to parse response: {}", e)))?;
+            .map_err(|e| Error::ProviderParseFailed(format!("failed to parse response: {}", e)))?;
 
         self.parse_response(completion)
     }
@@ -98,14 +118,14 @@ impl OpenRouterProvider {
             .choices
             .into_iter()
             .next()
-            .ok_or_else(|| Error::Provider("no choices in response".into()))?;
+            .ok_or_else(|| Error::ProviderParseFailed("no choices in response".into()))?;
 
         let message = choice.message;
 
         if let Some(tool_calls) = message.tool_calls {
             let count = tool_calls.len();
             if count > 1 {
-                return Err(Error::Provider(format!(
+                return Err(Error::ProviderUnsupported(format!(
                     "provider returned {} tool calls, but only one per turn is supported",
                     count
                 )));
@@ -114,8 +134,10 @@ impl OpenRouterProvider {
                 let id = tool_call.id;
                 let function = tool_call.function;
                 let name = function.name;
-                let args: serde_json::Value = serde_json::from_str(&function.arguments)
-                    .map_err(|e| Error::Provider(format!("failed to parse tool args: {}", e)))?;
+                let args: serde_json::Value =
+                    serde_json::from_str(&function.arguments).map_err(|e| {
+                        Error::ProviderParseFailed(format!("failed to parse tool args: {}", e))
+                    })?;
                 return Ok(ProviderResponse::ToolCall { id, name, args });
             }
         }

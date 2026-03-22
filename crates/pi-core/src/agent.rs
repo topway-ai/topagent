@@ -1,20 +1,27 @@
 use crate::context::ExecutionContext;
 use crate::prompt;
+use crate::runtime::RuntimeOptions;
 use crate::session::Session;
 use crate::tools::{Tool, ToolRegistry};
 use crate::{Error, Message, Provider, ProviderResponse, Result};
-
-const MAX_STEPS: usize = 50;
-const MAX_RETRIES: usize = 3;
 
 pub struct Agent {
     session: Session,
     provider: Box<dyn Provider>,
     tools: ToolRegistry,
+    options: RuntimeOptions,
 }
 
 impl Agent {
     pub fn new(provider: Box<dyn Provider>, tools: Vec<Box<dyn Tool>>) -> Self {
+        Self::with_options(provider, tools, RuntimeOptions::default())
+    }
+
+    pub fn with_options(
+        provider: Box<dyn Provider>,
+        tools: Vec<Box<dyn Tool>>,
+        options: RuntimeOptions,
+    ) -> Self {
         let mut registry = ToolRegistry::new();
         for tool in tools {
             registry.add(tool);
@@ -23,6 +30,7 @@ impl Agent {
             session: Session::new(),
             provider,
             tools: registry,
+            options,
         }
     }
 
@@ -35,25 +43,25 @@ impl Agent {
         let mut empty_response_retries = 0;
 
         loop {
-            if steps >= MAX_STEPS {
-                return Err(Error::AgentLoop(format!(
+            if steps >= self.options.max_steps {
+                return Err(Error::MaxStepsReached(format!(
                     "max steps ({}) reached without completing task",
-                    MAX_STEPS
+                    self.options.max_steps
                 )));
             }
 
             let response = match self.provider.complete(&self.session.messages()) {
                 Ok(r) => r,
                 Err(e) => {
-                    if empty_response_retries >= MAX_RETRIES {
-                        return Err(Error::Provider(format!(
+                    if empty_response_retries >= self.options.max_provider_retries {
+                        return Err(Error::ProviderRetryExhausted(format!(
                             "provider failed after {} retries: {}",
-                            MAX_RETRIES, e
+                            self.options.max_provider_retries, e
                         )));
                     }
                     empty_response_retries += 1;
-                    if empty_response_retries >= MAX_RETRIES {
-                        return Err(Error::Provider(format!(
+                    if empty_response_retries >= self.options.max_provider_retries {
+                        return Err(Error::ProviderRetryExhausted(format!(
                             "provider failed repeatedly ({} attempts): {}",
                             empty_response_retries, e
                         )));
@@ -69,8 +77,8 @@ impl Agent {
                     let text = msg.as_text().map(|s| s.to_string());
                     if let Some(text) = text {
                         if text.is_empty() {
-                            if empty_response_retries >= MAX_RETRIES {
-                                return Err(Error::Provider(
+                            if empty_response_retries >= self.options.max_provider_retries {
+                                return Err(Error::ProviderRetryExhausted(
                                     "provider returned empty response after max retries".into(),
                                 ));
                             }
