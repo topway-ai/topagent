@@ -1,14 +1,19 @@
 pub mod agent;
+pub mod context;
 pub mod error;
 pub mod message;
 pub mod openrouter;
+pub mod prompt;
 pub mod provider;
 pub mod session;
+pub mod tool_spec;
 pub mod tools;
 
 pub use agent::Agent;
+pub use context::ExecutionContext;
 pub use error::{Error, Result};
 pub use message::{Content, Message, Role};
 pub use openrouter::OpenRouterProvider;
-pub use provider::{Provider, ProviderResponse};
+pub use provider::{Provider, ProviderResponse, ScriptedProvider};
 pub use session::Session;
+pub use tool_spec::ToolSpec;

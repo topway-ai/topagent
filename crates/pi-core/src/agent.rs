@@ -1,4 +1,8 @@
-use crate::{session::Session, tools::Tool, Error, Message, Provider, ProviderResponse, Result};
+use crate::context::ExecutionContext;
+use crate::prompt;
+use crate::session::Session;
+use crate::tools::Tool;
+use crate::{Error, Message, Provider, ProviderResponse, Result};
 use std::collections::HashMap;
 
 pub struct Agent {
@@ -20,9 +24,10 @@ impl Agent {
         }
     }
 
-    pub fn run(&mut self, instruction: &str) -> Result<String> {
+    pub fn run(&mut self, ctx: &ExecutionContext, instruction: &str) -> Result<String> {
         self.session.add_message(Message::user(instruction));
-        let system_prompt = self.build_system_prompt();
+        let specs: Vec<_> = self.tools.values().map(|t| t.spec()).collect();
+        let system_prompt = prompt::build_system_prompt(&specs);
         self.session.set_system_prompt(&system_prompt);
         loop {
             let response = self.provider.complete(&self.session.messages())?;
@@ -43,7 +48,7 @@ impl Agent {
                         .tools
                         .get(&name)
                         .ok_or_else(|| Error::ToolFailed(format!("unknown tool: {}", name)))?;
-                    let result = tool.execute(args.clone())?;
+                    let result = tool.execute(args.clone(), ctx)?;
                     self.session
                         .add_message(Message::tool_request(id.clone(), name, args));
                     self.session.add_message(Message::tool_result(id, result));
@@ -55,14 +60,5 @@ impl Agent {
                 }
             }
         }
-    }
-
-    fn build_system_prompt(&self) -> String {
-        let mut prompt = String::from("You are a coding assistant. You have access to tools:\n\n");
-        for tool in self.tools.values() {
-            prompt.push_str(&format!("- {}: {}\n", tool.name(), tool.description()));
-        }
-        prompt.push_str("\nUse tools when needed to accomplish tasks.\n");
-        prompt
     }
 }

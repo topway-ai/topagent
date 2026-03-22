@@ -1,59 +1,37 @@
 use pi_core::{
-    tools::{BashTool, EditTool, ReadTool, Tool, WriteTool},
-    Agent, Message, ProviderResponse,
+    context::ExecutionContext,
+    tools::{make_tools, Tool},
+    Agent, Message, ProviderResponse, ScriptedProvider,
 };
-use std::sync::{Arc, RwLock};
+use tempfile::TempDir;
 
-struct TestProvider {
-    responses: Vec<ProviderResponse>,
-    index: Arc<RwLock<usize>>,
+fn make_test_context() -> (ExecutionContext, TempDir) {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().to_path_buf();
+    (ExecutionContext::new(root), temp)
 }
 
-impl TestProvider {
-    fn new(responses: Vec<ProviderResponse>) -> Self {
-        Self {
-            responses,
-            index: Arc::new(RwLock::new(0)),
-        }
-    }
-}
-
-impl pi_core::Provider for TestProvider {
-    fn complete(&self, _messages: &[pi_core::Message]) -> pi_core::Result<ProviderResponse> {
-        let mut idx = self.index.write().unwrap();
-        if let Some(r) = self.responses.get(*idx).cloned() {
-            *idx += 1;
-            Ok(r)
-        } else {
-            Err(pi_core::Error::Provider("no more responses".into()))
-        }
-    }
-}
-
-fn make_tools() -> Vec<Box<dyn Tool>> {
-    vec![
-        Box::new(ReadTool::new()) as Box<dyn Tool>,
-        Box::new(WriteTool::new()) as Box<dyn Tool>,
-        Box::new(EditTool::new()) as Box<dyn Tool>,
-        Box::new(BashTool::new()) as Box<dyn Tool>,
-    ]
+fn make_tools_for_test(ctx: &ExecutionContext) -> Vec<Box<dyn Tool>> {
+    make_tools(ctx).into_values().collect()
 }
 
 #[test]
 fn test_agent_returns_final_response() {
+    let (ctx, _temp) = make_test_context();
     let responses = vec![ProviderResponse::Message(Message::assistant(
         "Hello, how can I help?",
     ))];
-    let provider = Box::new(TestProvider::new(responses));
-    let mut agent = Agent::new(provider, make_tools());
+    let provider = Box::new(ScriptedProvider::new(responses));
+    let mut agent = Agent::new(provider, make_tools_for_test(&ctx));
 
-    let result = agent.run("say hello");
+    let result = agent.run(&ctx, "say hello");
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "Hello, how can I help?");
 }
 
 #[test]
 fn test_agent_executes_tool_and_continues() {
+    let (ctx, _temp) = make_test_context();
     let responses = vec![
         ProviderResponse::ToolCall {
             id: "1".into(),
@@ -62,10 +40,31 @@ fn test_agent_executes_tool_and_continues() {
         },
         ProviderResponse::Message(Message::assistant("Command executed successfully")),
     ];
-    let provider = Box::new(TestProvider::new(responses));
-    let mut agent = Agent::new(provider, make_tools());
+    let provider = Box::new(ScriptedProvider::new(responses));
+    let mut agent = Agent::new(provider, make_tools_for_test(&ctx));
 
-    let result = agent.run("run a command");
+    let result = agent.run(&ctx, "run a command");
     assert!(result.is_ok());
     assert!(result.unwrap().contains("Command executed successfully"));
+}
+
+#[test]
+fn test_agent_reads_file() {
+    let (ctx, _temp) = make_test_context();
+    std::fs::write(ctx.resolve_path("test.txt").unwrap(), "hello world").unwrap();
+
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path": "test.txt"}),
+        },
+        ProviderResponse::Message(Message::assistant("File contains: hello world")),
+    ];
+    let provider = Box::new(ScriptedProvider::new(responses));
+    let mut agent = Agent::new(provider, make_tools_for_test(&ctx));
+
+    let result = agent.run(&ctx, "read the file");
+    assert!(result.is_ok());
+    assert!(result.unwrap().contains("hello world"));
 }

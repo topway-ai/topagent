@@ -1,9 +1,11 @@
 use anyhow::Result;
 use clap::Parser;
 use pi_core::{
-    tools::{BashTool, EditTool, ReadTool, Tool, WriteTool},
+    context::ExecutionContext,
+    tools::{make_tools, Tool},
     Agent, Message, OpenRouterProvider, Provider, ProviderResponse,
 };
+use std::path::PathBuf;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -20,6 +22,9 @@ struct Cli {
     )]
     model: String,
 
+    #[arg(long, help = "Working directory for file operations")]
+    cwd: Option<PathBuf>,
+
     #[arg(help = "Instruction for the agent")]
     instruction: String,
 }
@@ -30,14 +35,13 @@ fn main() -> Result<()> {
         .init();
 
     let args = Cli::parse();
-    info!("starting agent with instruction: {}", args.instruction);
+    let workspace = args.cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
+    let ctx = ExecutionContext::new(workspace);
 
-    let tools = vec![
-        Box::new(ReadTool::new()) as Box<dyn Tool>,
-        Box::new(WriteTool::new()) as Box<dyn Tool>,
-        Box::new(EditTool::new()) as Box<dyn Tool>,
-        Box::new(BashTool::new()) as Box<dyn Tool>,
-    ];
+    info!("starting agent with instruction: {}", args.instruction);
+    info!("workspace root: {:?}", ctx.workspace_root);
+
+    let tools: Vec<Box<dyn Tool>> = make_tools(&ctx).into_values().collect();
 
     let provider: Box<dyn Provider> = if let Some(api_key) = args.api_key {
         Box::new(OpenRouterProvider::new(api_key, args.model))
@@ -48,7 +52,7 @@ fn main() -> Result<()> {
 
     let mut agent = Agent::new(provider, tools);
 
-    let result = agent.run(&args.instruction)?;
+    let result = agent.run(&ctx, &args.instruction)?;
     println!("{}", result);
 
     Ok(())

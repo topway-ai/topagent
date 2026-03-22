@@ -1,3 +1,5 @@
+use crate::context::ExecutionContext;
+use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::process::{Command, Output};
@@ -7,6 +9,7 @@ pub struct BashArgs {
     pub command: String,
 }
 
+#[derive(Clone)]
 pub struct BashTool;
 
 impl BashTool {
@@ -21,16 +24,20 @@ impl Default for BashTool {
     }
 }
 
-impl super::Tool for BashTool {
+impl crate::tools::Tool for BashTool {
     fn name(&self) -> &str {
         "bash"
     }
 
     fn description(&self) -> &str {
-        "execute bash command: args {command: string}"
+        "execute bash command"
     }
 
-    fn execute(&self, args: serde_json::Value) -> Result<String> {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec::bash()
+    }
+
+    fn execute(&self, args: serde_json::Value, _ctx: &ExecutionContext) -> Result<String> {
         let args: BashArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
         let output = Command::new("sh")
@@ -64,12 +71,14 @@ fn format_output(output: Output) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::ExecutionContext;
     use crate::tools::Tool;
 
     #[test]
     fn test_bash_echo() {
         let tool = BashTool::new();
-        let result = tool.execute(serde_json::json!({"command": "echo hello"}));
+        let ctx = ExecutionContext::new(std::path::PathBuf::from("."));
+        let result = tool.execute(serde_json::json!({"command": "echo hello"}), &ctx);
         assert!(result.is_ok());
         assert!(result.unwrap().contains("hello"));
     }
@@ -77,7 +86,8 @@ mod tests {
     #[test]
     fn test_bash_exit_code() {
         let tool = BashTool::new();
-        let result = tool.execute(serde_json::json!({"command": "exit 1"}));
+        let ctx = ExecutionContext::new(std::path::PathBuf::from("."));
+        let result = tool.execute(serde_json::json!({"command": "exit 1"}), &ctx);
         assert!(result.is_ok());
         assert!(result.unwrap().contains("exit status:"));
     }

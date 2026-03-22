@@ -1,4 +1,5 @@
-use crate::{Content, Error, Message, Provider, ProviderResponse, Result, Role};
+use crate::tool_spec::ToolSpec;
+use crate::{tools::all_specs, Content, Error, Message, Provider, ProviderResponse, Result, Role};
 use serde::{Deserialize, Serialize};
 
 const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
@@ -8,6 +9,7 @@ pub struct OpenRouterProvider {
     api_key: String,
     model: String,
     client: reqwest::blocking::Client,
+    tools: Vec<ToolSpec>,
 }
 
 impl OpenRouterProvider {
@@ -19,6 +21,23 @@ impl OpenRouterProvider {
                 .timeout(std::time::Duration::from_secs(120))
                 .build()
                 .expect("failed to create HTTP client"),
+            tools: all_specs(),
+        }
+    }
+
+    pub fn with_tools(
+        api_key: impl Into<String>,
+        model: impl Into<String>,
+        tools: Vec<ToolSpec>,
+    ) -> Self {
+        Self {
+            api_key: api_key.into(),
+            model: model.into(),
+            client: reqwest::blocking::Client::builder()
+                .timeout(std::time::Duration::from_secs(120))
+                .build()
+                .expect("failed to create HTTP client"),
+            tools,
         }
     }
 }
@@ -71,71 +90,23 @@ impl OpenRouterProvider {
             })
             .collect();
 
+        let tools: Vec<ToolDefinition> = self
+            .tools
+            .iter()
+            .map(|spec| ToolDefinition {
+                tool_type: "function".to_string(),
+                function: FunctionDefinition {
+                    name: spec.name.to_string(),
+                    description: spec.description.to_string(),
+                    parameters: spec.input_schema.clone(),
+                },
+            })
+            .collect();
+
         ChatRequest {
             model: self.model.clone(),
             messages,
-            tools: Some(vec![
-                ToolDefinition {
-                    tool_type: "function".to_string(),
-                    function: FunctionDefinition {
-                        name: "read".to_string(),
-                        description: "read file contents".to_string(),
-                        parameters: serde_json::json!({
-                            "type": "object",
-                            "properties": {
-                                "path": {"type": "string"}
-                            },
-                            "required": ["path"]
-                        }),
-                    },
-                },
-                ToolDefinition {
-                    tool_type: "function".to_string(),
-                    function: FunctionDefinition {
-                        name: "write".to_string(),
-                        description: "write file contents".to_string(),
-                        parameters: serde_json::json!({
-                            "type": "object",
-                            "properties": {
-                                "path": {"type": "string"},
-                                "content": {"type": "string"}
-                            },
-                            "required": ["path", "content"]
-                        }),
-                    },
-                },
-                ToolDefinition {
-                    tool_type: "function".to_string(),
-                    function: FunctionDefinition {
-                        name: "edit".to_string(),
-                        description: "replace first occurrence of find string with replace"
-                            .to_string(),
-                        parameters: serde_json::json!({
-                            "type": "object",
-                            "properties": {
-                                "path": {"type": "string"},
-                                "find": {"type": "string"},
-                                "replace": {"type": "string"}
-                            },
-                            "required": ["path", "find", "replace"]
-                        }),
-                    },
-                },
-                ToolDefinition {
-                    tool_type: "function".to_string(),
-                    function: FunctionDefinition {
-                        name: "bash".to_string(),
-                        description: "execute bash command".to_string(),
-                        parameters: serde_json::json!({
-                            "type": "object",
-                            "properties": {
-                                "command": {"type": "string"}
-                            },
-                            "required": ["command"]
-                        }),
-                    },
-                },
-            ]),
+            tools: if tools.is_empty() { None } else { Some(tools) },
             tool_choice: Some(serde_json::json!({"type": "auto"})),
         }
     }
