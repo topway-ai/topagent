@@ -1,4 +1,4 @@
-use crate::context::ExecutionContext;
+use crate::context::{ExecutionContext, ToolContext};
 use crate::prompt;
 use crate::runtime::RuntimeOptions;
 use crate::session::Session;
@@ -39,6 +39,7 @@ impl Agent {
         let system_prompt = prompt::build_system_prompt(&self.tools.specs());
         self.session.set_system_prompt(&system_prompt);
 
+        let tool_ctx = ToolContext::new(ctx, &self.options);
         let mut steps = 0;
         let mut empty_response_retries = 0;
 
@@ -106,7 +107,7 @@ impl Agent {
                             continue;
                         }
                     };
-                    let result = match tool.execute(args.clone(), ctx) {
+                    let result = match tool.execute(args.clone(), &tool_ctx) {
                         Ok(r) => r,
                         Err(e) => {
                             self.session.add_message(Message::tool_request(

@@ -1,4 +1,4 @@
-use crate::context::ExecutionContext;
+use crate::context::ToolContext;
 use crate::file_util::{atomic_write, read_text_file};
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
@@ -33,10 +33,10 @@ impl crate::tools::Tool for EditTool {
         ToolSpec::edit()
     }
 
-    fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> Result<String> {
+    fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
         let args: EditArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
-        let full_path = ctx.resolve_path(&args.path)?;
+        let full_path = ctx.exec.resolve_path(&args.path)?;
         let content = read_text_file(&full_path)?;
 
         let matches: Vec<usize> = content
@@ -81,36 +81,37 @@ impl crate::tools::Tool for EditTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::ExecutionContext;
+    use crate::context::{ExecutionContext, ToolContext};
+    use crate::runtime::RuntimeOptions;
     use crate::tools::Tool;
     use std::fs;
     use tempfile::TempDir;
 
-    fn test_ctx() -> (ExecutionContext, TempDir) {
-        let temp = TempDir::new().unwrap();
-        let root = temp.path().to_path_buf();
-        (ExecutionContext::new(root), temp)
-    }
-
     #[test]
     fn test_edit_unique_match() {
-        let (ctx, _temp) = test_ctx();
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
         let tool = EditTool::new();
-        fs::write(ctx.resolve_path("test.txt").unwrap(), "hello world").unwrap();
+        fs::write(ctx.exec.resolve_path("test.txt").unwrap(), "hello world").unwrap();
         let result = tool.execute(
             serde_json::json!({"path": "test.txt", "old_text": "world", "new_text": "rust"}),
             &ctx,
         );
         assert!(result.is_ok(), "{:?}", result);
-        let content = fs::read_to_string(ctx.resolve_path("test.txt").unwrap()).unwrap();
+        let content = fs::read_to_string(ctx.exec.resolve_path("test.txt").unwrap()).unwrap();
         assert_eq!(content, "hello rust");
     }
 
     #[test]
     fn test_edit_not_found() {
-        let (ctx, _temp) = test_ctx();
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
         let tool = EditTool::new();
-        fs::write(ctx.resolve_path("test.txt").unwrap(), "hello world").unwrap();
+        fs::write(ctx.exec.resolve_path("test.txt").unwrap(), "hello world").unwrap();
         let result = tool.execute(
             serde_json::json!({"path": "test.txt", "old_text": "nonexistent", "new_text": "replacement"}),
             &ctx,
@@ -126,9 +127,12 @@ mod tests {
 
     #[test]
     fn test_edit_ambiguous_without_replace_all() {
-        let (ctx, _temp) = test_ctx();
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
         let tool = EditTool::new();
-        fs::write(ctx.resolve_path("test.txt").unwrap(), "foo bar foo").unwrap();
+        fs::write(ctx.exec.resolve_path("test.txt").unwrap(), "foo bar foo").unwrap();
         let result = tool.execute(
             serde_json::json!({"path": "test.txt", "old_text": "foo", "new_text": "baz"}),
             &ctx,
@@ -144,21 +148,27 @@ mod tests {
 
     #[test]
     fn test_edit_replace_all() {
-        let (ctx, _temp) = test_ctx();
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
         let tool = EditTool::new();
-        fs::write(ctx.resolve_path("test.txt").unwrap(), "foo bar foo").unwrap();
+        fs::write(ctx.exec.resolve_path("test.txt").unwrap(), "foo bar foo").unwrap();
         let result = tool.execute(
             serde_json::json!({"path": "test.txt", "old_text": "foo", "new_text": "baz", "replace_all": true}),
             &ctx,
         );
         assert!(result.is_ok(), "{:?}", result);
-        let content = fs::read_to_string(ctx.resolve_path("test.txt").unwrap()).unwrap();
+        let content = fs::read_to_string(ctx.exec.resolve_path("test.txt").unwrap()).unwrap();
         assert_eq!(content, "baz bar baz");
     }
 
     #[test]
     fn test_edit_path_traversal_rejected() {
-        let (ctx, _temp) = test_ctx();
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
         let tool = EditTool::new();
         let result = tool.execute(
             serde_json::json!({"path": "../test.txt", "old_text": "a", "new_text": "b"}),
@@ -169,10 +179,13 @@ mod tests {
 
     #[test]
     fn test_edit_deterministic_single_replacement() {
-        let (ctx, _temp) = test_ctx();
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
         let tool = EditTool::new();
         fs::write(
-            ctx.resolve_path("test.txt").unwrap(),
+            ctx.exec.resolve_path("test.txt").unwrap(),
             "line1\nfoo\nline3\nfoo\nline5",
         )
         .unwrap();
@@ -191,9 +204,16 @@ mod tests {
 
     #[test]
     fn test_edit_binary_file_rejected() {
-        let (ctx, _temp) = test_ctx();
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
         let tool = EditTool::new();
-        fs::write(ctx.resolve_path("binary.bin").unwrap(), b"\x00\x01binary").unwrap();
+        fs::write(
+            ctx.exec.resolve_path("binary.bin").unwrap(),
+            b"\x00\x01binary",
+        )
+        .unwrap();
         let result = tool.execute(
             serde_json::json!({"path": "binary.bin", "old_text": "a", "new_text": "b"}),
             &ctx,

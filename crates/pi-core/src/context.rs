@@ -1,3 +1,4 @@
+use crate::runtime::RuntimeOptions;
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -51,6 +52,18 @@ impl ExecutionContext {
         }
 
         Ok(target)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ToolContext<'a> {
+    pub exec: &'a ExecutionContext,
+    pub runtime: &'a RuntimeOptions,
+}
+
+impl<'a> ToolContext<'a> {
+    pub fn new(exec: &'a ExecutionContext, runtime: &'a RuntimeOptions) -> Self {
+        Self { exec, runtime }
     }
 }
 

@@ -1,5 +1,5 @@
-use crate::context::ExecutionContext;
-use crate::file_util::read_text_file;
+use crate::context::ToolContext;
+use crate::file_util::read_text_file_with_limit;
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -29,33 +29,31 @@ impl crate::tools::Tool for ReadTool {
         ToolSpec::read()
     }
 
-    fn execute(&self, args: serde_json::Value, ctx: &ExecutionContext) -> Result<String> {
+    fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
         let args: ReadArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
-        let full_path = ctx.resolve_path(&args.path)?;
-        read_text_file(&full_path)
+        let full_path = ctx.exec.resolve_path(&args.path)?;
+        read_text_file_with_limit(&full_path, ctx.runtime.max_read_bytes)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::ExecutionContext;
+    use crate::context::{ExecutionContext, ToolContext};
+    use crate::runtime::RuntimeOptions;
     use crate::tools::Tool;
     use std::fs;
     use tempfile::TempDir;
 
-    fn test_ctx() -> (ExecutionContext, TempDir) {
-        let temp = TempDir::new().unwrap();
-        let root = temp.path().to_path_buf();
-        (ExecutionContext::new(root), temp)
-    }
-
     #[test]
     fn test_read_file_inside_workspace() {
-        let (ctx, _temp) = test_ctx();
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
         let tool = ReadTool::new();
-        fs::write(ctx.resolve_path("test.txt").unwrap(), "hello world").unwrap();
+        fs::write(ctx.exec.resolve_path("test.txt").unwrap(), "hello world").unwrap();
         let result = tool.execute(serde_json::json!({"path": "test.txt"}), &ctx);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "hello world");
@@ -63,7 +61,10 @@ mod tests {
 
     #[test]
     fn test_read_path_traversal_rejected() {
-        let (ctx, _temp) = test_ctx();
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
         let tool = ReadTool::new();
         let result = tool.execute(serde_json::json!({"path": "../etc/passwd"}), &ctx);
         assert!(result.is_err());
@@ -71,7 +72,10 @@ mod tests {
 
     #[test]
     fn test_read_nested_traversal_rejected() {
-        let (ctx, _temp) = test_ctx();
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
         let tool = ReadTool::new();
         let result = tool.execute(serde_json::json!({"path": "a/../../b"}), &ctx);
         assert!(result.is_err());
@@ -79,7 +83,10 @@ mod tests {
 
     #[test]
     fn test_read_absolute_path_rejected() {
-        let (ctx, _temp) = test_ctx();
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
         let tool = ReadTool::new();
         let result = tool.execute(serde_json::json!({"path": "/etc/passwd"}), &ctx);
         assert!(result.is_err());
@@ -87,10 +94,13 @@ mod tests {
 
     #[test]
     fn test_read_binary_file_rejected() {
-        let (ctx, _temp) = test_ctx();
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
         let tool = ReadTool::new();
         fs::write(
-            ctx.resolve_path("binary.bin").unwrap(),
+            ctx.exec.resolve_path("binary.bin").unwrap(),
             b"\x00\x01\x02binary",
         )
         .unwrap();
@@ -102,10 +112,13 @@ mod tests {
 
     #[test]
     fn test_read_truncation() {
-        let (ctx, _temp) = test_ctx();
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
         let tool = ReadTool::new();
         let large_content = "x".repeat(100 * 1024);
-        fs::write(ctx.resolve_path("large.txt").unwrap(), &large_content).unwrap();
+        fs::write(ctx.exec.resolve_path("large.txt").unwrap(), &large_content).unwrap();
         let result = tool.execute(serde_json::json!({"path": "large.txt"}), &ctx);
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -122,12 +135,35 @@ mod tests {
     }
 
     #[test]
+    fn test_read_custom_max_bytes() {
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default().with_max_read_bytes(100);
+        let ctx = ToolContext::new(&exec, &runtime);
+        let tool = ReadTool::new();
+        let content = "x".repeat(200);
+        fs::write(ctx.exec.resolve_path("test.txt").unwrap(), &content).unwrap();
+        let result = tool.execute(serde_json::json!({"path": "test.txt"}), &ctx);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(
+            output.contains("truncated"),
+            "expected truncation: {}",
+            output
+        );
+        assert!(output.contains("200"), "expected original size: {}", output);
+    }
+
+    #[test]
     fn test_read_truncation_preserves_utf8_boundary() {
-        let (ctx, _temp) = test_ctx();
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
         let tool = ReadTool::new();
         let emoji = "\u{1F600}"; // 4-byte UTF-8 character
         let repeated = emoji.repeat(20_000); // creates 80KB of content (4 bytes each)
-        fs::write(ctx.resolve_path("emoji.txt").unwrap(), &repeated).unwrap();
+        fs::write(ctx.exec.resolve_path("emoji.txt").unwrap(), &repeated).unwrap();
         let result = tool.execute(serde_json::json!({"path": "emoji.txt"}), &ctx);
         assert!(result.is_ok(), "{:?}", result);
         let output = result.unwrap();

@@ -8,17 +8,14 @@ pub use edit::EditTool;
 pub use read::ReadTool;
 pub use write::WriteTool;
 
+use crate::context::ToolContext;
 use crate::tool_spec::ToolSpec;
 use crate::Result;
 use std::collections::HashMap;
 
 pub trait Tool: Send + Sync {
     fn spec(&self) -> ToolSpec;
-    fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &crate::context::ExecutionContext,
-    ) -> Result<String>;
+    fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String>;
 }
 
 pub struct ToolRegistry {

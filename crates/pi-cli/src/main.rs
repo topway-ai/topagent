@@ -30,6 +30,9 @@ struct Cli {
     #[arg(long, help = "Maximum provider retries")]
     max_retries: Option<usize>,
 
+    #[arg(long, help = "Provider timeout in seconds")]
+    timeout_secs: Option<u64>,
+
     #[arg(help = "Instruction for the agent")]
     instruction: String,
 }
@@ -48,7 +51,8 @@ fn main() -> Result<()> {
 
     let options = RuntimeOptions::new()
         .with_max_steps(args.max_steps.unwrap_or(50))
-        .with_max_provider_retries(args.max_retries.unwrap_or(3));
+        .with_max_provider_retries(args.max_retries.unwrap_or(3))
+        .with_provider_timeout_secs(args.timeout_secs.unwrap_or(120));
 
     let provider: Box<dyn Provider> = if let Some(api_key) = args.api_key {
         Box::new(OpenRouterProvider::with_timeout(
