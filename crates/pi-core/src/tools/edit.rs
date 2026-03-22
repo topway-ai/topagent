@@ -1,4 +1,5 @@
 use crate::context::ExecutionContext;
+use crate::file_util::{atomic_write, read_text_file};
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -36,9 +37,7 @@ impl crate::tools::Tool for EditTool {
         let args: EditArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
         let full_path = ctx.resolve_path(&args.path)?;
-        let content = std::fs::read_to_string(&full_path).map_err(|e| {
-            Error::ToolFailed(format!("failed to read {}: {}", full_path.display(), e))
-        })?;
+        let content = read_text_file(&full_path)?;
 
         let matches: Vec<usize> = content
             .match_indices(&args.old_text)
@@ -55,9 +54,7 @@ impl crate::tools::Tool for EditTool {
 
         let count = if args.replace_all {
             let new_content = content.replace(&args.old_text, &args.new_text);
-            std::fs::write(&full_path, &new_content).map_err(|e| {
-                Error::ToolFailed(format!("failed to write {}: {}", full_path.display(), e))
-            })?;
+            atomic_write(&full_path, &new_content)?;
             matches.len()
         } else {
             if matches.len() > 1 {
@@ -69,9 +66,7 @@ impl crate::tools::Tool for EditTool {
                 )));
             }
             let new_content = content.replacen(&args.old_text, &args.new_text, 1);
-            std::fs::write(&full_path, &new_content).map_err(|e| {
-                Error::ToolFailed(format!("failed to write {}: {}", full_path.display(), e))
-            })?;
+            atomic_write(&full_path, &new_content)?;
             1
         };
 
@@ -192,5 +187,19 @@ mod tests {
             "expected ambiguous error: {}",
             err
         );
+    }
+
+    #[test]
+    fn test_edit_binary_file_rejected() {
+        let (ctx, _temp) = test_ctx();
+        let tool = EditTool::new();
+        fs::write(ctx.resolve_path("binary.bin").unwrap(), b"\x00\x01binary").unwrap();
+        let result = tool.execute(
+            serde_json::json!({"path": "binary.bin", "old_text": "a", "new_text": "b"}),
+            &ctx,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("binary"), "expected binary rejection: {}", err);
     }
 }

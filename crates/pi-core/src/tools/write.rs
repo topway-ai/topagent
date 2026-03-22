@@ -1,4 +1,5 @@
 use crate::context::ExecutionContext;
+use crate::file_util::atomic_write;
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -33,18 +34,7 @@ impl crate::tools::Tool for WriteTool {
         let args: WriteArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
         let full_path = ctx.resolve_path(&args.path)?;
-        if let Some(parent) = full_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                Error::ToolFailed(format!(
-                    "failed to create parent dir for {}: {}",
-                    full_path.display(),
-                    e
-                ))
-            })?;
-        }
-        std::fs::write(&full_path, &args.content).map_err(|e| {
-            Error::ToolFailed(format!("failed to write {}: {}", full_path.display(), e))
-        })?;
+        atomic_write(&full_path, &args.content)?;
         Ok(format!(
             "wrote {} bytes to {}",
             args.content.len(),

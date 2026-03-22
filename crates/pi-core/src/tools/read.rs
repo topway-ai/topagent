@@ -1,13 +1,8 @@
 use crate::context::ExecutionContext;
+use crate::file_util::read_text_file;
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-
-const MAX_READ_SIZE: usize = 64 * 1024;
-
-fn is_likely_binary(bytes: &[u8]) -> bool {
-    bytes.iter().take(8192).any(|&b| b == 0)
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReadArgs {
@@ -38,49 +33,7 @@ impl crate::tools::Tool for ReadTool {
         let args: ReadArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
         let full_path = ctx.resolve_path(&args.path)?;
-
-        let bytes = std::fs::read(&full_path).map_err(|e| {
-            Error::ToolFailed(format!("failed to read {}: {}", full_path.display(), e))
-        })?;
-
-        if is_likely_binary(&bytes) {
-            return Err(Error::ReadFailed(format!(
-                "binary/non-text file not supported by read tool: {}",
-                full_path.display()
-            )));
-        }
-
-        let original_size = bytes.len();
-
-        if original_size > MAX_READ_SIZE {
-            let truncated = &bytes[..MAX_READ_SIZE];
-            match String::from_utf8(truncated.to_vec()) {
-                Ok(text) => {
-                    return Ok(format!(
-                        "[ReadTool] File truncated: {} bytes total, showing first {} bytes:\n{}\n\n[ReadTool] File continues... ({} bytes truncated)",
-                        original_size,
-                        MAX_READ_SIZE,
-                        text,
-                        original_size - MAX_READ_SIZE
-                    ));
-                }
-                Err(_) => {
-                    return Err(Error::ReadFailed(format!(
-                        "file is {} bytes (exceeds {} byte limit) and cannot be decoded as UTF-8 text: {}",
-                        original_size,
-                        MAX_READ_SIZE,
-                        full_path.display()
-                    )));
-                }
-            }
-        }
-
-        String::from_utf8(bytes).map_err(|_| {
-            Error::ReadFailed(format!(
-                "file is valid UTF-8 text but read failed: {}",
-                full_path.display()
-            ))
-        })
+        read_text_file(&full_path)
     }
 }
 
@@ -165,6 +118,35 @@ mod tests {
             output.contains("102400"),
             "expected original size: {}",
             output
+        );
+    }
+
+    #[test]
+    fn test_read_truncation_preserves_utf8_boundary() {
+        let (ctx, _temp) = test_ctx();
+        let tool = ReadTool::new();
+        let emoji = "\u{1F600}"; // 4-byte UTF-8 character
+        let repeated = emoji.repeat(20_000); // creates 80KB of content (4 bytes each)
+        fs::write(ctx.resolve_path("emoji.txt").unwrap(), &repeated).unwrap();
+        let result = tool.execute(serde_json::json!({"path": "emoji.txt"}), &ctx);
+        assert!(result.is_ok(), "{:?}", result);
+        let output = result.unwrap();
+        assert!(
+            output.contains("truncated"),
+            "expected truncation: {}",
+            output
+        );
+        assert!(
+            String::from_utf8(
+                output
+                    .lines()
+                    .find(|l| l.starts_with("[ReadTool] File truncated"))
+                    .map(|l| l.to_string())
+                    .unwrap_or_default()
+                    .into_bytes()
+            )
+            .is_ok(),
+            "truncation should be on valid UTF-8 boundary"
         );
     }
 }

@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod context;
 pub mod error;
+pub mod file_util;
 pub mod message;
 pub mod openrouter;
 pub mod prompt;
