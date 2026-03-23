@@ -6,9 +6,10 @@ use crate::project::get_project_instructions_or_error;
 use crate::prompt;
 use crate::runtime::RuntimeOptions;
 use crate::session::Session;
-use crate::tools::{Tool, ToolRegistry};
+use crate::tools::{Tool, ToolRegistry, UpdatePlanTool};
 use crate::{Error, Message, Provider, ProviderResponse, Result};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 pub struct Agent {
     session: Session,
@@ -16,7 +17,7 @@ pub struct Agent {
     tools: ToolRegistry,
     external_tools: ExternalToolRegistry,
     options: RuntimeOptions,
-    plan: Plan,
+    plan: Arc<Mutex<Plan>>,
     hooks: HookRegistry,
 }
 
@@ -34,23 +35,24 @@ impl Agent {
         for tool in tools {
             registry.add(tool);
         }
+
+        let plan = Arc::new(Mutex::new(Plan::new()));
+        let planning_tool = UpdatePlanTool::with_plan(plan.clone());
+        registry.add(Box::new(planning_tool));
+
         Self {
             session: Session::new(),
             provider,
             tools: registry,
             external_tools: ExternalToolRegistry::new(),
             options,
-            plan: Plan::new(),
+            plan,
             hooks: HookRegistry::new(),
         }
     }
 
-    pub fn plan(&self) -> &Plan {
-        &self.plan
-    }
-
-    pub fn plan_mut(&mut self) -> &mut Plan {
-        &mut self.plan
+    pub fn plan(&self) -> Arc<Mutex<Plan>> {
+        self.plan.clone()
     }
 
     pub fn hooks(&self) -> &HookRegistry {
@@ -88,9 +90,11 @@ impl Agent {
             system_prompt.push('\n');
         }
 
-        if !self.plan.is_empty() {
-            system_prompt.push_str("\n## Current Plan\n\n");
-            system_prompt.push_str(&self.plan.format_for_display());
+        if let Ok(plan) = self.plan.lock() {
+            if !plan.is_empty() {
+                system_prompt.push_str("\n## Current Plan\n\n");
+                system_prompt.push_str(&plan.format_for_display());
+            }
         }
 
         self.session.set_system_prompt(&system_prompt);

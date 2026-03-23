@@ -73,6 +73,11 @@ impl Plan {
         self.items.is_empty()
     }
 
+    pub fn set_items(&mut self, items: Vec<TodoItem>) {
+        self.items = items;
+        self.next_id = self.items.len();
+    }
+
     pub fn format_for_display(&self) -> String {
         if self.items.is_empty() {
             return String::from("(no plan)");

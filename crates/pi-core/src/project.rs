@@ -31,7 +31,7 @@ pub fn get_project_instructions_or_error(workspace_root: &Path) -> Result<Option
     match load_project_instructions(workspace_root)? {
         ProjectInstructionResult::Missing => Ok(None),
         ProjectInstructionResult::Loaded(content) => Ok(Some(content)),
-        ProjectInstructionResult::ReadError(msg) => Err(Error::InvalidInput(msg)),
+        ProjectInstructionResult::ReadError(msg) => Err(Error::ProjectInstruction(msg)),
     }
 }
 

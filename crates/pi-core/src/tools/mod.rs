@@ -1,12 +1,14 @@
 mod bash;
 mod edit;
 mod git;
+mod planning;
 mod read;
 mod write;
 
 pub use bash::BashTool;
 pub use edit::EditTool;
 pub use git::{GitBranchTool, GitDiffTool, GitStatusTool};
+pub use planning::UpdatePlanTool;
 pub use read::ReadTool;
 pub use write::WriteTool;
 

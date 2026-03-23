@@ -38,6 +38,9 @@ pub enum Error {
     #[error("max steps reached: {0}")]
     MaxStepsReached(String),
 
+    #[error("project instruction error: {0}")]
+    ProjectInstruction(String),
+
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
 }
