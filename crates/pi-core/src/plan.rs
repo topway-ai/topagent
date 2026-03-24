@@ -105,38 +105,97 @@ impl Plan {
     }
 }
 
-pub fn should_use_plan(instruction: &str) -> bool {
-    let lower = instruction.to_lowercase();
-    if lower.contains(" and then ")
+fn has_explicit_sequence(lower: &str) -> bool {
+    lower.contains(" and then ")
         || lower.contains(" then ")
         || lower.contains(" followed by ")
         || lower.contains(" after that")
-    {
-        return true;
+        || lower.contains(" next,")
+        || lower.contains(" first,")
+        || lower.contains(" finally,")
+}
+
+fn has_explicit_plan_request(lower: &str) -> bool {
+    lower.contains("make a plan")
+        || lower.contains("create a plan")
+        || lower.contains("give me steps")
+        || lower.contains("give me a checklist")
+        || lower.contains("break down")
+        || lower.contains("step by step")
+}
+
+fn has_broad_scope(lower: &str) -> bool {
+    lower.contains("repo")
+        || lower.contains("repository")
+        || lower.contains("whole ")
+        || lower.contains("entire ")
+        || lower.contains("across ")
+        || lower.contains("throughout")
+        || lower.contains("all files")
+        || lower.contains("all the")
+        || lower.contains("project-wide")
+}
+
+fn has_multiple_action_categories(lower: &str) -> bool {
+    let refactor_words = ["refactor", "restructure", "reorganize"];
+    let review_words = ["review", "audit", "inspect"];
+    let create_words = ["implement", "add", "create", "build"];
+    let verify_words = ["verify", "test", "check"];
+    let fix_words = ["fix", "bug", "resolve"];
+    let modify_words = ["modify", "update", "change"];
+
+    let mut categories_found = 0;
+    if refactor_words.iter().any(|w| lower.contains(*w)) {
+        categories_found += 1;
     }
-    let action_words = [
-        "refactor",
-        "review",
-        "implement",
-        "create",
-        "build",
-        "set up",
-        "modify",
-        "fix",
-        "remove",
-        "add",
-        "verify",
+    if review_words.iter().any(|w| lower.contains(*w)) {
+        categories_found += 1;
+    }
+    if create_words.iter().any(|w| lower.contains(*w)) {
+        categories_found += 1;
+    }
+    if verify_words.iter().any(|w| lower.contains(*w)) {
+        categories_found += 1;
+    }
+    if fix_words.iter().any(|w| lower.contains(*w)) {
+        categories_found += 1;
+    }
+    if modify_words.iter().any(|w| lower.contains(*w)) {
+        categories_found += 1;
+    }
+
+    categories_found >= 2
+}
+
+fn is_trivial_query(lower: &str) -> bool {
+    let query_starters = [
+        "what is", "where is", "how do", "how does", "show me", "list ", "find ", "search ",
+        "get ", "read ",
     ];
-    let action_count: usize = action_words.iter().filter(|w| lower.contains(*w)).count();
-    if action_count >= 2 {
+    query_starters.iter().any(|q| lower.starts_with(q))
+        && lower.len() < 60
+        && !lower.contains(" and ")
+        && !lower.contains(" then ")
+}
+
+pub fn should_use_plan(instruction: &str) -> bool {
+    let lower = &instruction.to_lowercase();
+    if has_explicit_sequence(lower) {
         return true;
     }
-    let query_starters = ["what is", "where is", "how do", "show me", "list ", "find "];
-    let is_query = query_starters.iter().any(|q| lower.starts_with(q));
-    if is_query && action_count == 0 {
+    if has_explicit_plan_request(lower) {
+        return true;
+    }
+    if has_broad_scope(lower) {
+        return true;
+    }
+    if has_multiple_action_categories(lower) {
+        return true;
+    }
+    if is_trivial_query(lower) {
         return false;
     }
-    action_count > 0 || lower.contains("step")
+    false
 }
 
 #[cfg(test)]
@@ -309,16 +368,30 @@ mod tests {
     fn test_should_use_plan_multistep() {
         assert!(should_use_plan("create a file and then update it"));
         assert!(should_use_plan("first do X, then do Y"));
-        assert!(should_use_plan("implement feature with multiple steps"));
+        assert!(should_use_plan("build and then test the code"));
     }
 
     #[test]
-    fn test_should_use_plan_complex_tasks() {
+    fn test_should_use_plan_explicit_request() {
+        assert!(should_use_plan("make a plan for the refactor"));
+        assert!(should_use_plan("give me steps to implement this"));
+        assert!(should_use_plan("break down this task into steps"));
+    }
+
+    #[test]
+    fn test_should_use_plan_broad_scope() {
+        assert!(should_use_plan("refactor the entire repo"));
+        assert!(should_use_plan("fix bugs across the project"));
+        assert!(should_use_plan("update all files in the project"));
+    }
+
+    #[test]
+    fn test_should_use_plan_multiple_categories() {
         assert!(should_use_plan(
             "refactor the codebase and verify tests pass"
         ));
-        assert!(should_use_plan("review the code and make improvements"));
-        assert!(should_use_plan("build the project, run tests, then deploy"));
+        assert!(should_use_plan("review and modify the code"));
+        assert!(should_use_plan("add tests and verify the build"));
     }
 
     #[test]
@@ -332,5 +405,13 @@ mod tests {
     fn test_should_skip_plan_trivial_tasks() {
         assert!(!should_use_plan("read this file"));
         assert!(!should_use_plan("find the error"));
+        assert!(!should_use_plan("check the status"));
+    }
+
+    #[test]
+    fn test_should_skip_plan_single_action() {
+        assert!(!should_use_plan("fix the bug in main.rs"));
+        assert!(!should_use_plan("add a new function"));
+        assert!(!should_use_plan("modify this file"));
     }
 }
