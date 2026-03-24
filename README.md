@@ -38,16 +38,15 @@ The binary is at `target/release/pi`.
 ## Quick Start
 
 ```bash
-# Set your API key
-export OPENROUTER_API_KEY=your_key_here
+# Build the binary
+cargo build --release
 
-# Run from your project directory
+# Run with OpenRouter (replace YOUR_API_KEY with your actual key)
 cd /path/to/your/project
-../rust-pi/target/release/pi "summarize this project"
-
-# Or specify workspace explicitly
-/../rust-pi/target/release/pi --cwd /path/to/project --api-key $OPENROUTER_API_KEY "what is this project?"
+/path/to/rust-pi/target/release/pi --api-key YOUR_API_KEY "summarize this project"
 ```
+
+First run may take a moment. The agent will use the default MiniMax M2.7 model via OpenRouter.
 
 ## Example Commands
 
