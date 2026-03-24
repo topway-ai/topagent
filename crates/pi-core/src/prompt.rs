@@ -4,6 +4,9 @@ pub const PROJECT_INSTRUCTIONS_SECTION: &str = "## Project Instructions\n\
 \
 Project-specific guidance may exist in PI.md in the workspace root. If present, it has already been\nloaded above and should be followed.\n";
 
+pub const NO_PI_MD_NOTE: &str =
+    "\n[Note: No PI.md file is present in the workspace root. Do not try to read it.]\n";
+
 pub const PLANNING_SECTION: &str = "## Planning\n\
 \nFor non-trivial multi-step tasks, follow Research → Plan → Build:\n\
 1. Research: inspect relevant files, git context, project instructions first\n\

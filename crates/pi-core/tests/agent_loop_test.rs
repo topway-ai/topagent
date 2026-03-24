@@ -448,38 +448,39 @@ fn test_agent_multiple_tool_calls_execute_sequentially() {
 }
 
 #[test]
-fn test_agent_second_tool_failure_stops_batch() {
+fn test_agent_second_tool_failure_continues_batch() {
     let (ctx, _temp) = make_test_context();
     std::fs::write(ctx.resolve_path("a.txt").unwrap(), "content A").unwrap();
+    std::fs::write(ctx.resolve_path("b.txt").unwrap(), "content B").unwrap();
 
-    struct SecondFailureProvider;
-    impl Provider for SecondFailureProvider {
-        fn complete(&self, _messages: &[Message]) -> pi_core::Result<ProviderResponse> {
-            Ok(ProviderResponse::ToolCalls(vec![
-                ToolCallEntry {
-                    id: "call_1".into(),
-                    name: "read".into(),
-                    args: serde_json::json!({"path": "a.txt"}),
-                },
-                ToolCallEntry {
-                    id: "call_2".into(),
-                    name: "nonexistent_tool".into(),
-                    args: serde_json::json!({"foo": "bar"}),
-                },
-            ]))
-        }
-    }
-
-    let provider = SecondFailureProvider;
+    let responses = vec![
+        ProviderResponse::ToolCalls(vec![
+            ToolCallEntry {
+                id: "call_1".into(),
+                name: "read".into(),
+                args: serde_json::json!({"path": "a.txt"}),
+            },
+            ToolCallEntry {
+                id: "call_2".into(),
+                name: "nonexistent_tool".into(),
+                args: serde_json::json!({"foo": "bar"}),
+            },
+            ToolCallEntry {
+                id: "call_3".into(),
+                name: "read".into(),
+                args: serde_json::json!({"path": "b.txt"}),
+            },
+        ]),
+        ProviderResponse::Message(Message::assistant("done")),
+    ];
+    let provider = pi_core::ScriptedProvider::new(responses);
     let mut agent = Agent::new(Box::new(provider), make_tools());
 
-    let result = agent.run(&ctx, "call two tools");
-    assert!(result.is_err());
-    let err = result.unwrap_err().to_string();
+    let result = agent.run(&ctx, "call three tools");
     assert!(
-        err.contains("unknown tool") || err.contains("not found"),
-        "expected tool not found error: {}",
-        err
+        result.is_ok(),
+        "expected run to succeed despite tool failure: {:?}",
+        result
     );
 }
 
@@ -516,5 +517,83 @@ fn test_agent_multi_tool_batch_counts_steps() {
         err.contains("max steps"),
         "expected max steps error: {}",
         err
+    );
+}
+
+#[test]
+fn test_no_pi_md_includes_absence_note() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root);
+
+    struct CheckPromptProvider {
+        pub captured_messages: Arc<RwLock<Vec<Message>>>,
+    }
+    impl CheckPromptProvider {
+        fn new() -> Self {
+            Self {
+                captured_messages: Arc::new(RwLock::new(Vec::new())),
+            }
+        }
+    }
+    impl Provider for CheckPromptProvider {
+        fn complete(&self, messages: &[Message]) -> pi_core::Result<ProviderResponse> {
+            let mut captured = self.captured_messages.write().unwrap();
+            captured.extend(messages.to_vec());
+            Ok(ProviderResponse::Message(Message::assistant("done")))
+        }
+    }
+    let provider = CheckPromptProvider::new();
+    let provider_ref = Arc::clone(&provider.captured_messages);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+    let _ = agent.run(&ctx, "test");
+    let captured = provider_ref.read().unwrap();
+    let system_prompt = captured.first().and_then(|m| m.as_text()).unwrap_or("");
+    assert!(
+        system_prompt.contains("No PI.md file is present"),
+        "expected PI.md absence note in system prompt: {}",
+        system_prompt
+    );
+}
+
+#[test]
+fn test_pi_md_loaded_when_present() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().to_path_buf();
+    std::fs::write(root.join("PI.md"), "# Custom Instructions\nUse Rust.\n").unwrap();
+    let ctx = ExecutionContext::new(root);
+
+    struct CheckPromptProvider {
+        pub captured_messages: Arc<RwLock<Vec<Message>>>,
+    }
+    impl CheckPromptProvider {
+        fn new() -> Self {
+            Self {
+                captured_messages: Arc::new(RwLock::new(Vec::new())),
+            }
+        }
+    }
+    impl Provider for CheckPromptProvider {
+        fn complete(&self, messages: &[Message]) -> pi_core::Result<ProviderResponse> {
+            let mut captured = self.captured_messages.write().unwrap();
+            captured.extend(messages.to_vec());
+            Ok(ProviderResponse::Message(Message::assistant("done")))
+        }
+    }
+    let provider = CheckPromptProvider::new();
+    let provider_ref = Arc::clone(&provider.captured_messages);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+    let _ = agent.run(&ctx, "test");
+    let captured = provider_ref.read().unwrap();
+    let system_prompt = captured.first().and_then(|m| m.as_text()).unwrap_or("");
+    assert!(
+        system_prompt.contains("Custom Instructions"),
+        "expected PI.md content in system prompt: {}",
+        system_prompt
+    );
+    assert!(
+        !system_prompt.contains("No PI.md file is present"),
+        "should not have absence note when PI.md exists: {}",
+        system_prompt
     );
 }

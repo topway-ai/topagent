@@ -100,12 +100,15 @@ impl Agent {
         let mut system_prompt =
             prompt::build_system_prompt(&self.tools.specs(), &self.external_tools.specs());
 
-        if let Ok(Some(project_instructions)) =
-            get_project_instructions_or_error(&ctx.workspace_root)
-        {
-            system_prompt.push_str("\n## Project Instructions (from PI.md)\n\n");
-            system_prompt.push_str(&project_instructions);
-            system_prompt.push('\n');
+        match get_project_instructions_or_error(&ctx.workspace_root)? {
+            Some(project_instructions) => {
+                system_prompt.push_str("\n## Project Instructions (from PI.md)\n\n");
+                system_prompt.push_str(&project_instructions);
+                system_prompt.push('\n');
+            }
+            None => {
+                system_prompt.push_str(prompt::NO_PI_MD_NOTE);
+            }
         }
 
         if let Ok(plan) = self.plan.lock() {
@@ -310,10 +313,7 @@ impl Agent {
                                                 name
                                             ),
                                         ));
-                                        return Err(Error::ToolFailed(format!(
-                                            "external tool '{}' blocked by pre-hook",
-                                            name
-                                        )));
+                                        continue;
                                     }
                                 }
                                 let result = external_tool.execute(&args, &tool_ctx);
@@ -329,10 +329,7 @@ impl Agent {
                                             id,
                                             format!("error: external tool execution failed: {}", e),
                                         ));
-                                        return Err(Error::ToolFailed(format!(
-                                            "external tool '{}' execution failed: {}",
-                                            name, e
-                                        )));
+                                        continue;
                                     }
                                 };
                                 self.session
@@ -349,10 +346,7 @@ impl Agent {
                                     id,
                                     format!("error: unknown tool '{}'", name),
                                 ));
-                                return Err(Error::ToolNotFound(format!(
-                                    "unknown tool '{}'",
-                                    name
-                                )));
+                                continue;
                             }
                         };
 
@@ -367,10 +361,7 @@ impl Agent {
                                     id,
                                     format!("error: tool '{}' blocked by pre-hook", name),
                                 ));
-                                return Err(Error::ToolFailed(format!(
-                                    "tool '{}' blocked by pre-hook",
-                                    name
-                                )));
+                                continue;
                             }
                         }
 
@@ -386,10 +377,7 @@ impl Agent {
                                     id,
                                     format!("error: tool execution failed: {}", e),
                                 ));
-                                return Err(Error::ToolFailed(format!(
-                                    "tool execution failed: {}",
-                                    e
-                                )));
+                                continue;
                             }
                         };
 
