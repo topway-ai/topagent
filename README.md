@@ -1,17 +1,10 @@
 # rust-pi
 
-A minimal coding agent that runs locally in your workspace. It uses an LLM via OpenRouter to understand your instructions and executes file operations, shell commands, and git actions within your project.
+A minimal coding agent that runs locally in your workspace. It uses an LLM via OpenRouter to execute file operations, shell commands, and git actions within your project.
 
 ## Current Status
 
-Early-phase project. Works for basic file operations, shell commands, git workflows, and multi-step task planning. Not production-tested. Use with caution.
-
-## Capabilities
-
-- **File operations**: read, write, edit files
-- **Shell execution**: run bash commands in workspace
-- **Git workflow**: status, diff, branch, add, commit
-- **Planning**: track multi-step tasks with update_plan tool
+Early-phase project. Works for basic file operations, shell commands, git workflows, and task planning. Not production-tested. Use with caution.
 
 ## Prerequisites
 
@@ -37,36 +30,30 @@ The binary is at `target/release/pi`.
 
 ## Quick Start
 
-```bash
-# Build the binary
-cargo build --release
+Run one command to test OpenRouter. Replace YOUR_API_KEY with your actual OpenRouter key:
 
-# Run with OpenRouter (replace YOUR_API_KEY with your actual key)
-cd /path/to/your/project
-/path/to/rust-pi/target/release/pi --api-key YOUR_API_KEY "summarize this project"
+```bash
+./target/release/pi --api-key YOUR_API_KEY --cwd /path/to/your/project "summarize this project"
 ```
 
-First run may take a moment. The agent will use the default MiniMax M2.7 model via OpenRouter.
+The agent uses MiniMax M2.7 by default.
 
 ## Example Commands
 
 ```bash
 # Inspect a project
-pi "give me a summary of this codebase"
+./target/release/pi --api-key YOUR_API_KEY --cwd /path/to/project "give me a summary"
 
 # Check git status
-pi "show me the current git status and any uncommitted changes"
+./target/release/pi --api-key YOUR_API_KEY --cwd /path/to/project "show git status"
 
 # Make a small edit
-pi "add a TODO comment to the main function in src/main.rs"
-
-# Multi-step task with planning
-pi "create a new file called FEATURES.md listing the main capabilities"
+./target/release/pi --api-key YOUR_API_KEY --cwd /path/to/project "add a TODO comment to src/main.rs"
 ```
 
-## Workspace Files
+## Optional: Workspace Files
 
-**PI.md** - Optional project instructions file. Place in workspace root:
+**PI.md** - Project instructions (optional, place in workspace root):
 
 ```markdown
 # Project Instructions
@@ -75,41 +62,28 @@ pi "create a new file called FEATURES.md listing the main capabilities"
 - Run tests before committing
 ```
 
-**commands.json** - Optional custom commands. Place in workspace root:
+**commands.json** - Custom commands (optional):
 
 ```json
 [
-  {"name": "test", "description": "Run tests", "command": "cargo", "args_template": "test --all"},
-  {"name": "lint", "description": "Run linter", "command": "cargo", "args_template": "clippy --fix"}
+  {"name": "test", "description": "Run tests", "command": "cargo", "args_template": "test --all"}
 ]
 ```
 
 ## CLI Options
 
 ```bash
-pi --help
+./target/release/pi --help
 
 Options:
-  --api-key KEY       OpenRouter API key
-  --model MODEL       Model to use (default: minimax/minimax-m2.7)
-  --cwd DIR           Working directory
-  --max-steps N       Max agent steps (default: 50)
-  --max-retries N     Provider retries (default: 3)
-  --timeout-secs N    Provider timeout (default: 120)
+  --api-key KEY      OpenRouter API key
+  --model MODEL      Model to use (default: minimax/minimax-m2.7)
+  --cwd DIR          Working directory
+  --max-steps N      Max steps (default: 50)
+  --max-retries N    Retries (default: 3)
+  --timeout-secs N   Timeout (default: 120)
 ```
 
-## Safety Note
+## Safety
 
-This is a trusted local agent. It can:
-- Read/write/edit files in your workspace
-- Execute shell commands
-- Run git add/commit
-
-Only run in directories you trust. Review instructions before execution.
-
-## Limitations
-
-- No file change confirmation before execution
-- No built-in undo/revert
-- Limited error recovery for complex operations
-- No remote code execution protection beyond workspace bounds
+This agent can read/write/edit files, run shell commands, and execute git operations. Only run in directories you trust.

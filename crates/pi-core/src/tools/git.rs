@@ -5,16 +5,10 @@ use serde::{Deserialize, Serialize};
 use std::process::Command;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitStatusArgs;
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitDiffArgs {
     #[serde(default)]
     pub path: Option<String>,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GitBranchArgs;
 
 #[derive(Clone)]
 pub struct GitStatusTool;
