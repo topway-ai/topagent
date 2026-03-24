@@ -342,3 +342,78 @@ fn test_runtime_options_builder() {
     assert_eq!(options.max_bash_output_bytes, 128 * 1024);
     assert_eq!(options.provider_timeout_secs, 60);
 }
+
+#[test]
+fn test_agent_loads_commands_from_workspace() {
+    let temp = TempDir::new().unwrap();
+    let commands_json = temp.path().join("commands.json");
+    std::fs::write(
+        &commands_json,
+        r#"[
+            {"name": "greet", "description": "Say hello", "command": "echo", "args_template": "hello {name}"},
+            {"name": "version", "description": "Get version", "command": "echo", "args_template": "v1.0.0"}
+        ]"#,
+    )
+    .unwrap();
+
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root);
+
+    struct TestProvider;
+    impl Provider for TestProvider {
+        fn complete(&self, _messages: &[Message]) -> pi_core::Result<ProviderResponse> {
+            Ok(ProviderResponse::Message(Message::assistant("done")))
+        }
+    }
+
+    let mut agent = Agent::new(Box::new(TestProvider), make_tools());
+    let result = agent.run(&ctx, "test");
+
+    assert!(result.is_ok());
+    let external = agent.external_tools();
+    assert!(external.get("greet").is_some());
+    assert!(external.get("version").is_some());
+}
+
+#[test]
+fn test_agent_commands_json_missing_is_ok() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root);
+
+    struct TestProvider;
+    impl Provider for TestProvider {
+        fn complete(&self, _messages: &[Message]) -> pi_core::Result<ProviderResponse> {
+            Ok(ProviderResponse::Message(Message::assistant("done")))
+        }
+    }
+
+    let mut agent = Agent::new(Box::new(TestProvider), make_tools());
+    let result = agent.run(&ctx, "test");
+
+    assert!(result.is_ok());
+    let external = agent.external_tools();
+    assert!(external.is_empty());
+}
+
+#[test]
+fn test_agent_commands_json_invalid_fails() {
+    let temp = TempDir::new().unwrap();
+    let commands_json = temp.path().join("commands.json");
+    std::fs::write(&commands_json, "invalid json {").unwrap();
+
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root);
+
+    struct TestProvider;
+    impl Provider for TestProvider {
+        fn complete(&self, _messages: &[Message]) -> pi_core::Result<ProviderResponse> {
+            Ok(ProviderResponse::Message(Message::assistant("done")))
+        }
+    }
+
+    let mut agent = Agent::new(Box::new(TestProvider), make_tools());
+    let result = agent.run(&ctx, "test");
+
+    assert!(result.is_err());
+}

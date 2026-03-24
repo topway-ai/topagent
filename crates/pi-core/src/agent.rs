@@ -76,7 +76,20 @@ impl Agent {
         self.external_tools.load_from_str(&content)
     }
 
+    pub fn load_commands_from_workspace(&mut self, workspace_root: &Path) -> Result<()> {
+        let commands_path = workspace_root.join("commands.json");
+        if !commands_path.exists() {
+            return Ok(());
+        }
+        let content = std::fs::read_to_string(&commands_path).map_err(Error::Io)?;
+        self.external_tools.load_from_str(&content)?;
+        Ok(())
+    }
+
     pub fn run(&mut self, ctx: &ExecutionContext, instruction: &str) -> Result<String> {
+        self.external_tools = ExternalToolRegistry::new();
+        self.load_commands_from_workspace(&ctx.workspace_root)?;
+
         self.session.add_message(Message::user(instruction));
 
         let mut system_prompt =
