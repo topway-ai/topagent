@@ -11,6 +11,18 @@ const TOOLS_DIR: &str = ".rust-pi/tools";
 const GENESIS_DIR: &str = ".rust-pi/tool-genesis";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolInput {
+    pub name: String,
+    pub description: String,
+    #[serde(default = "default_true")]
+    pub required: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolManifest {
     pub name: String,
     pub description: String,
@@ -20,11 +32,17 @@ pub struct ToolManifest {
     pub verification: Option<VerificationSpec>,
     #[serde(default)]
     pub verified: bool,
+    #[serde(default)]
+    pub inputs: Vec<ToolInput>,
+    #[serde(default)]
+    pub argv_template: Vec<String>,
+    #[serde(default)]
+    pub manifest_version: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationSpec {
-    pub invocation_args: String,
+    pub verification_args: Vec<String>,
     #[serde(default)]
     pub expected_exit: i32,
     #[serde(default)]
@@ -65,6 +83,8 @@ impl ToolGenesis {
         description: &str,
         command: &str,
         args_template: Option<&str>,
+        inputs: Vec<ToolInput>,
+        argv_template: Vec<String>,
         verification: Option<VerificationSpec>,
     ) -> Result<GenesisResult> {
         let tool_dir = self.tools_dir().join(name);
@@ -82,6 +102,12 @@ impl ToolGenesis {
                 verification_passed: false,
                 repair_attempts: 0,
             });
+        }
+
+        if !inputs.is_empty() && argv_template.is_empty() {
+            return Err(Error::InvalidInput(
+                "if inputs are defined, argv_template must also be defined".to_string(),
+            ));
         }
 
         std::fs::create_dir_all(&tool_dir)
@@ -103,6 +129,9 @@ impl ToolGenesis {
             args_template: args_template.map(String::from),
             verification: verification.clone(),
             verified: false,
+            inputs,
+            argv_template,
+            manifest_version: Some(1),
         };
 
         let manifest_json = serde_json::to_string_pretty(&manifest)
@@ -161,6 +190,8 @@ impl ToolGenesis {
         name: &str,
         new_command: &str,
         new_args_template: Option<&str>,
+        new_inputs: Option<Vec<ToolInput>>,
+        new_argv_template: Option<Vec<String>>,
         new_verification: Option<&VerificationSpec>,
     ) -> Result<GenesisResult> {
         let tool_dir = self.tools_dir().join(name);
@@ -179,10 +210,17 @@ impl ToolGenesis {
 
         manifest.command = new_command.to_string();
         manifest.args_template = new_args_template.map(String::from);
+        if let Some(inputs) = new_inputs {
+            manifest.inputs = inputs;
+        }
+        if let Some(argv) = new_argv_template {
+            manifest.argv_template = argv;
+        }
         if let Some(v) = new_verification {
             manifest.verification = Some(v.clone());
         }
         manifest.verified = false;
+        manifest.manifest_version = Some(1);
 
         let script_path = tool_dir.join("script.sh");
         std::fs::write(&script_path, new_command).map_err(Error::Io)?;
@@ -236,11 +274,9 @@ impl ToolGenesis {
 
         let mut cmd = Command::new("sh");
         cmd.current_dir(&self.workspace_root);
-        cmd.arg(script_path);
-        if !spec.invocation_args.is_empty() {
-            for arg in spec.invocation_args.split_whitespace() {
-                cmd.arg(arg);
-            }
+        cmd.arg(&script_path);
+        for arg in &spec.verification_args {
+            cmd.arg(arg);
         }
 
         let output = cmd.output().map_err(|e| {
@@ -297,14 +333,27 @@ impl ToolGenesis {
                 continue;
             }
 
-            let args_template = if let Some(ref tmpl) = manifest.args_template {
+            let args_template = if !manifest.argv_template.is_empty() {
+                build_args_template_from_argv(&script_path, &manifest.argv_template)
+            } else if let Some(ref tmpl) = manifest.args_template {
                 format!("{} {}", script_path.display(), tmpl)
             } else {
                 format!("{} $@", script_path.display())
             };
 
+            let input_schema = if !manifest.inputs.is_empty() {
+                build_input_schema(&manifest.inputs)
+            } else {
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                })
+            };
+
             let tool = ExternalTool::new(&manifest.name, &manifest.description, "sh")
-                .with_args_template(&args_template);
+                .with_args_template(&args_template)
+                .with_input_schema(input_schema);
             tools.push(tool);
         }
         Ok(tools)
@@ -401,6 +450,45 @@ fn sanitize_filename(name: &str) -> String {
     name.replace("/", "_").replace(" ", "_")
 }
 
+fn build_args_template_from_argv(
+    script_path: &std::path::Path,
+    argv_template: &[String],
+) -> String {
+    let mut parts = Vec::new();
+    parts.push(script_path.display().to_string());
+    for arg in argv_template {
+        if arg.starts_with('{') && arg.ends_with('}') {
+            let var_name = &arg[1..arg.len() - 1];
+            parts.push(format!("{{{}}}", var_name));
+        } else {
+            parts.push(arg.clone());
+        }
+    }
+    parts.join(" ")
+}
+
+fn build_input_schema(inputs: &[ToolInput]) -> serde_json::Value {
+    let mut properties = serde_json::Map::new();
+    let mut required = Vec::new();
+    for input in inputs {
+        properties.insert(
+            input.name.clone(),
+            serde_json::json!({
+                "type": "string",
+                "description": input.description
+            }),
+        );
+        if input.required {
+            required.push(input.name.clone());
+        }
+    }
+    serde_json::json!({
+        "type": "object",
+        "properties": properties,
+        "required": required
+    })
+}
+
 pub struct ListGeneratedToolsTool;
 
 impl Default for ListGeneratedToolsTool {
@@ -487,11 +575,29 @@ impl Tool for CreateToolTool {
                     },
                     "args_template": {
                         "type": "string",
-                        "description": "optional shell argument template using {arg_name} placeholders, e.g. '{input} --flag'",
+                        "description": "optional legacy shell argument template using {arg_name} placeholders, e.g. '{input} --flag'",
                     },
-                    "verification_invocation_args": {
-                        "type": "string",
-                        "description": "arguments to pass to the generated script during verification (e.g. '--test' runs 'sh script.sh --test')"
+                    "inputs": {
+                        "type": "array",
+                        "description": "named string inputs for the tool",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string" },
+                                "description": { "type": "string" },
+                                "required": { "type": "boolean" }
+                            },
+                            "required": ["name", "description"]
+                        }
+                    },
+                    "argv_template": {
+                        "type": "array",
+                        "description": "command argv template with {var_name} placeholders, e.g. ['./script.sh', '{path}', '--flag', '{pattern}']"
+                    },
+                    "verification_args": {
+                        "type": "array",
+                        "description": "arguments to pass to the generated script during verification, e.g. ['--test']",
+                        "items": { "type": "string" }
                     },
                     "expected_exit": {
                         "type": "integer",
@@ -502,7 +608,7 @@ impl Tool for CreateToolTool {
                         "description": "optional string that must appear in verification output"
                     }
                 },
-                "required": ["requirement", "name", "description", "script", "verification_invocation_args"]
+                "required": ["requirement", "name", "description", "script", "verification_args"]
             }),
         }
     }
@@ -516,11 +622,50 @@ impl Tool for CreateToolTool {
             .get("args_template")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty());
-        let invocation_args = args
-            .get("verification_invocation_args")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+
+        let inputs: Vec<ToolInput> = args
+            .get("inputs")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let obj = item.as_object()?;
+                        let name = obj.get("name")?.as_str()?.to_string();
+                        let description = obj.get("description")?.as_str()?.to_string();
+                        let required = obj
+                            .get("required")
+                            .and_then(|r| r.as_bool())
+                            .unwrap_or(true);
+                        Some(ToolInput {
+                            name,
+                            description,
+                            required,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let argv_template: Vec<String> = args
+            .get("argv_template")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let verification_args: Vec<String> = args
+            .get("verification_args")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let expected_exit = args
             .get("expected_exit")
             .and_then(|v| v.as_i64())
@@ -540,7 +685,7 @@ impl Tool for CreateToolTool {
         let genesis = ToolGenesis::new(ctx.exec.workspace_root.clone());
 
         let verification = Some(VerificationSpec {
-            invocation_args,
+            verification_args,
             expected_exit,
             expected_output_contains,
         });
@@ -551,6 +696,8 @@ impl Tool for CreateToolTool {
             &description,
             &script,
             args_template,
+            inputs,
+            argv_template,
             verification,
         )?;
 
@@ -607,9 +754,27 @@ impl Tool for RepairToolTool {
                         "type": "string",
                         "description": "optional updated argument template"
                     },
-                    "verification_invocation_args": {
-                        "type": "string",
-                        "description": "arguments to pass to the script during verification"
+                    "inputs": {
+                        "type": "array",
+                        "description": "optional named inputs for the tool",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string" },
+                                "description": { "type": "string" },
+                                "required": { "type": "boolean" }
+                            },
+                            "required": ["name", "description"]
+                        }
+                    },
+                    "argv_template": {
+                        "type": "array",
+                        "description": "optional command argv template with {var_name} placeholders"
+                    },
+                    "verification_args": {
+                        "type": "array",
+                        "description": "arguments to pass to the script during verification",
+                        "items": { "type": "string" }
                     },
                     "expected_exit": {
                         "type": "integer",
@@ -620,7 +785,7 @@ impl Tool for RepairToolTool {
                         "description": "optional string that must appear in output"
                     }
                 },
-                "required": ["name", "script", "verification_invocation_args"]
+                "required": ["name", "script", "verification_args"]
             }),
         }
     }
@@ -632,11 +797,50 @@ impl Tool for RepairToolTool {
             .get("args_template")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty());
-        let invocation_args = args
-            .get("verification_invocation_args")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+
+        let inputs: Option<Vec<ToolInput>> =
+            args.get("inputs").and_then(|v| v.as_array()).map(|arr| {
+                let mut inputs = Vec::new();
+                for item in arr {
+                    if let Some(obj) = item.as_object() {
+                        if let (Some(n), Some(d)) = (
+                            obj.get("name").and_then(|n| n.as_str()),
+                            obj.get("description").and_then(|d| d.as_str()),
+                        ) {
+                            let required = obj
+                                .get("required")
+                                .and_then(|r| r.as_bool())
+                                .unwrap_or(true);
+                            inputs.push(ToolInput {
+                                name: n.to_string(),
+                                description: d.to_string(),
+                                required,
+                            });
+                        }
+                    }
+                }
+                inputs
+            });
+
+        let argv_template: Option<Vec<String>> = args
+            .get("argv_template")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            });
+
+        let verification_args: Vec<String> = args
+            .get("verification_args")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let expected_exit = args
             .get("expected_exit")
             .and_then(|v| v.as_i64())
@@ -650,12 +854,19 @@ impl Tool for RepairToolTool {
         let genesis = ToolGenesis::new(ctx.exec.workspace_root.clone());
 
         let verification = Some(VerificationSpec {
-            invocation_args,
+            verification_args,
             expected_exit,
             expected_output_contains,
         });
 
-        let result = genesis.repair_tool(&name, &script, args_template, verification.as_ref())?;
+        let result = genesis.repair_tool(
+            &name,
+            &script,
+            args_template,
+            inputs,
+            argv_template,
+            verification.as_ref(),
+        )?;
 
         if result.success {
             Ok(format!(
@@ -700,8 +911,10 @@ mod tests {
                 "echo hello",
                 "echo hello",
                 None,
+                vec![],
+                vec![],
                 Some(VerificationSpec {
-                    invocation_args: "hello".to_string(),
+                    verification_args: vec!["hello".to_string()],
                     expected_exit: 0,
                     expected_output_contains: Some("hello".to_string()),
                 }),
@@ -729,8 +942,10 @@ mod tests {
                 "fails",
                 "exit 1",
                 None,
+                vec![],
+                vec![],
                 Some(VerificationSpec {
-                    invocation_args: "".to_string(),
+                    verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: None,
                 }),
@@ -753,8 +968,10 @@ mod tests {
                 "first",
                 "echo one",
                 None,
+                vec![],
+                vec![],
                 Some(VerificationSpec {
-                    invocation_args: "".to_string(),
+                    verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("one".to_string()),
                 }),
@@ -778,8 +995,10 @@ mod tests {
                 "test",
                 "echo ok",
                 None,
+                vec![],
+                vec![],
                 Some(VerificationSpec {
-                    invocation_args: "".to_string(),
+                    verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("ok".to_string()),
                 }),
@@ -805,7 +1024,7 @@ mod tests {
             "name": "bad/name",
             "description": "test",
             "script": "echo hi",
-            "verification_invocation_args": ""
+            "verification_args": <Vec<String>>::new()
         });
 
         let result = tool.execute(bad_args, &ctx);
@@ -824,8 +1043,10 @@ mod tests {
                 "initially broken",
                 "exit 1",
                 None,
+                vec![],
+                vec![],
                 Some(VerificationSpec {
-                    invocation_args: "".to_string(),
+                    verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: None,
                 }),
@@ -839,8 +1060,10 @@ mod tests {
                 "repairable",
                 "echo fixed",
                 None,
+                None,
+                None,
                 Some(&VerificationSpec {
-                    invocation_args: "".to_string(),
+                    verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("fixed".to_string()),
                 }),
@@ -864,8 +1087,10 @@ mod tests {
                 "checks script runs",
                 script,
                 None,
+                vec![],
+                vec![],
                 Some(VerificationSpec {
-                    invocation_args: "".to_string(),
+                    verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("SCRIPT_OUTPUT".to_string()),
                 }),
@@ -891,8 +1116,10 @@ mod tests {
                 "incomplete",
                 "echo test",
                 None,
+                vec![],
+                vec![],
                 Some(VerificationSpec {
-                    invocation_args: "".to_string(),
+                    verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("test".to_string()),
                 }),
@@ -932,8 +1159,10 @@ mod tests {
                 "fails output check",
                 "echo ACTUAL_OUTPUT",
                 None,
+                vec![],
+                vec![],
                 Some(VerificationSpec {
-                    invocation_args: "".to_string(),
+                    verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("WRONG_OUTPUT".to_string()),
                 }),
@@ -959,8 +1188,10 @@ mod tests {
                 "broken",
                 "exit 1",
                 None,
+                vec![],
+                vec![],
                 Some(VerificationSpec {
-                    invocation_args: "".to_string(),
+                    verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: None,
                 }),
@@ -972,8 +1203,10 @@ mod tests {
                 "single_repair",
                 "exit 1",
                 None,
+                None,
+                None,
                 Some(&VerificationSpec {
-                    invocation_args: "".to_string(),
+                    verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: None,
                 }),
