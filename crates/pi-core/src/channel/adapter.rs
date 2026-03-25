@@ -1,8 +1,15 @@
 #[derive(Debug, Clone)]
 pub struct IncomingMessage {
     pub chat_id: i64,
-    pub text: String,
+    pub text: Option<String>,
     pub message_id: i64,
+    pub is_command: bool,
+}
+
+impl IncomingMessage {
+    pub fn text_or_empty(&self) -> String {
+        self.text.clone().unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone)]

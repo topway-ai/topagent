@@ -183,9 +183,6 @@ fn run_telegram_serve(
     let workspace = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
     let ctx = ExecutionContext::new(workspace);
 
-    info!("starting Telegram bot");
-    info!("workspace root: {:?}", ctx.workspace_root);
-
     let options = RuntimeOptions::new()
         .with_max_steps(max_steps.unwrap_or(50))
         .with_max_provider_retries(max_retries.unwrap_or(3))
@@ -206,33 +203,92 @@ fn run_telegram_serve(
         ));
     }
 
-    info!(" Telegram bot is running, waiting for messages...");
+    let bot_info = adapter.get_me().map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to validate bot token (getMe failed): {}. \
+             Make sure TELEGRAM_BOT_TOKEN is correct.",
+            e
+        )
+    })?;
+
+    info!(
+        "bot: @{} (id: {}) | workspace: {:?} | mode: private text chats only",
+        bot_info.username.as_deref().unwrap_or("(no username)"),
+        bot_info.id,
+        ctx.workspace_root
+    );
 
     let mut session_manager = ChatSessionManager::new(route, api_key, options);
     let offset = Arc::new(Mutex::new(0i64));
 
+    info!(" Telegram bot is running, waiting for messages...");
+
     loop {
         let current_offset = { *offset.lock().unwrap() };
-        match adapter.get_updates(Some(current_offset), Some(30)) {
+        match adapter.get_updates(Some(current_offset), Some(30), Some(&["message"])) {
             Ok(updates) => {
                 for update in updates {
                     let Some(msg) = &update.message else { continue };
                     if msg.chat.chat_type != "private" {
                         continue;
                     }
-                    let Some(text) = &msg.text.clone() else {
+
+                    let chat_id = msg.chat.id;
+                    let message_id = msg.message_id;
+                    *offset.lock().unwrap() = update.update_id + 1;
+
+                    let Some(text) = msg.text.clone() else {
+                        let outgoing = OutgoingMessage {
+                            chat_id,
+                            text: "This bot currently supports text messages only.".to_string(),
+                        };
+                        if let Err(e) = adapter.send_message(outgoing) {
+                            error!("failed to send message: {}", e);
+                        }
                         continue;
                     };
+
                     let text = text.trim();
                     if text.is_empty() {
                         continue;
                     }
 
-                    info!("received from chat {}: {}", msg.chat.id, text);
+                    info!("received from chat {}: {}", chat_id, text);
 
-                    let chat_id = msg.chat.id;
-                    let message_id = msg.message_id;
-                    *offset.lock().unwrap() = update.update_id + 1;
+                    if text == "/start" || text == "/help" {
+                        let reply = if text == "/start" {
+                            " Rust PI Coding Agent\n\n\
+                             This bot responds to text messages about your project.\n\n\
+                             Commands:\n\
+                             /help - show this message\n\
+                             /reset - clear conversation history\n\n\
+                             Note: private chats only, text messages only."
+                        } else {
+                            " Rust PI Coding Agent\n\n\
+                             Send any text message about your project.\n\
+                             /reset clears your conversation history."
+                        };
+                        let outgoing = OutgoingMessage {
+                            chat_id,
+                            text: reply.to_string(),
+                        };
+                        if let Err(e) = adapter.send_message(outgoing) {
+                            error!("failed to send message: {}", e);
+                        }
+                        continue;
+                    }
+
+                    if text == "/reset" {
+                        session_manager.reset_chat(chat_id);
+                        let outgoing = OutgoingMessage {
+                            chat_id,
+                            text: "Conversation history cleared.".to_string(),
+                        };
+                        if let Err(e) = adapter.send_message(outgoing) {
+                            error!("failed to send message: {}", e);
+                        }
+                        continue;
+                    }
 
                     let response = session_manager.process_message(&ctx, chat_id, text);
 
@@ -320,6 +376,10 @@ impl ChatSessionManager {
             self.sessions.insert(chat_id, SessionState { agent });
         }
         &mut self.sessions.get_mut(&chat_id).unwrap().agent
+    }
+
+    fn reset_chat(&mut self, chat_id: i64) {
+        self.sessions.remove(&chat_id);
     }
 
     fn process_message(&mut self, ctx: &ExecutionContext, chat_id: i64, text: &str) -> Vec<String> {

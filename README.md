@@ -78,7 +78,33 @@ cd /path/to/your/project
 ]
 ```
 
-## CLI Options
+## Telegram Bot (Optional)
+
+Run the agent as a Telegram bot with long polling.
+
+### Setup
+
+1. Create a bot: open Telegram, search for **BotFather**, send `/newbot`
+2. Copy the bot token (e.g. `123456:ABCdef...`)
+3. Export: `export TELEGRAM_BOT_TOKEN=your_token`
+4. Make sure no webhook is active (BotFather will tell you if one is set)
+5. Run:
+   ```bash
+   pi telegram serve --cwd /path/to/your/project
+   ```
+6. Open Telegram, find your bot, send a private text message
+
+### First-version limitations
+- **private chats only** (groups/supergroups ignored)
+- **text messages only** (photos/docs/other types get a clear reply)
+- **in-memory sessions** (history clears on restart)
+
+### Built-in commands
+- `/start` - show bot info
+- `/help` - show usage
+- `/reset` - clear conversation history for this chat
+
+### CLI Options
 
 ```bash
 pi --help
