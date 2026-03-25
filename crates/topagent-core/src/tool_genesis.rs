@@ -91,13 +91,71 @@ pub struct ToolDesign {
     pub verification: VerificationPlan,
     pub status: ProposalStatus,
     pub created_at: String,
+    #[serde(default)]
+    pub approved_at: Option<String>,
+    #[serde(default)]
+    pub rejected_at: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub revised_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VerificationPlan {
     pub verification_args: Vec<String>,
     pub expected_exit: i32,
     pub expected_output_contains: Option<String>,
+}
+
+impl ToolDesign {
+    pub fn new(
+        requirement: String,
+        name: String,
+        description: String,
+        rationale: String,
+        inputs: Vec<ToolInput>,
+        argv_template: Vec<String>,
+        verification: VerificationPlan,
+        status: ProposalStatus,
+        created_at: String,
+    ) -> Self {
+        Self {
+            requirement,
+            name,
+            description,
+            rationale,
+            inputs,
+            argv_template,
+            verification,
+            status,
+            created_at,
+            approved_at: None,
+            rejected_at: None,
+            reason: None,
+            revised_at: None,
+        }
+    }
+}
+
+impl Default for ToolDesign {
+    fn default() -> Self {
+        Self {
+            requirement: String::new(),
+            name: String::new(),
+            description: String::new(),
+            rationale: String::new(),
+            inputs: Vec::new(),
+            argv_template: Vec::new(),
+            verification: VerificationPlan::default(),
+            status: ProposalStatus::default(),
+            created_at: String::new(),
+            approved_at: None,
+            rejected_at: None,
+            reason: None,
+            revised_at: None,
+        }
+    }
 }
 
 pub struct ToolGenesis {
@@ -163,6 +221,25 @@ impl ToolGenesis {
     pub fn update_proposal_status(&self, name: &str, status: ProposalStatus) -> Result<()> {
         let mut proposal = self.load_proposal(name)?;
         proposal.status = status;
+        self.save_proposal(&proposal)?;
+        Ok(())
+    }
+
+    pub fn update_proposal_metadata(
+        &self,
+        name: &str,
+        status: ProposalStatus,
+        approved_at: Option<String>,
+        rejected_at: Option<String>,
+        reason: Option<String>,
+        revised_at: Option<String>,
+    ) -> Result<()> {
+        let mut proposal = self.load_proposal(name)?;
+        proposal.status = status;
+        proposal.approved_at = approved_at.or(proposal.approved_at);
+        proposal.rejected_at = rejected_at.or(proposal.rejected_at);
+        proposal.reason = reason.or(proposal.reason);
+        proposal.revised_at = revised_at.or(proposal.revised_at);
         self.save_proposal(&proposal)?;
         Ok(())
     }
@@ -792,6 +869,7 @@ impl Tool for DesignToolTool {
             },
             status: ProposalStatus::Proposed,
             created_at: chrono_timestamp(),
+            ..ToolDesign::default()
         };
 
         let genesis = ToolGenesis::new(ctx.exec.workspace_root.clone());
@@ -952,6 +1030,102 @@ impl Tool for ListToolProposalsTool {
     }
 }
 
+pub struct ShowToolProposalTool;
+
+impl Default for ShowToolProposalTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ShowToolProposalTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Tool for ShowToolProposalTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "show_tool_proposal".to_string(),
+            description: "show detailed information about a tool proposal".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "name of the tool proposal to show (without .json extension)"
+                    }
+                },
+                "required": ["name"]
+            }),
+        }
+    }
+
+    fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
+        let name = get_string(&args, "name")?;
+        let genesis = ToolGenesis::new(ctx.exec.workspace_root.clone());
+
+        let proposal = genesis.load_proposal(&name)?;
+        let proposal_path = genesis.proposals_dir().join(format!("{}.json", name));
+
+        let mut lines = Vec::new();
+        lines.push(format!("Name: {}", proposal.name));
+        lines.push(format!("Status: {}", proposal.status));
+        lines.push(format!("Requirement: {}", proposal.requirement));
+        lines.push(format!("Description: {}", proposal.description));
+        lines.push(format!("Rationale: {}", proposal.rationale));
+
+        if !proposal.inputs.is_empty() {
+            lines.push("Inputs:".to_string());
+            for inp in &proposal.inputs {
+                lines.push(format!(
+                    "  - {}: {} ({})",
+                    inp.name,
+                    inp.description,
+                    if inp.required { "required" } else { "optional" }
+                ));
+            }
+        }
+
+        if !proposal.argv_template.is_empty() {
+            lines.push(format!("Argv template: {:?}", proposal.argv_template));
+        }
+
+        lines.push("Verification:".to_string());
+        lines.push(format!(
+            "  Args: {:?}",
+            proposal.verification.verification_args
+        ));
+        lines.push(format!(
+            "  Expected exit: {}",
+            proposal.verification.expected_exit
+        ));
+        if let Some(ref expected) = proposal.verification.expected_output_contains {
+            lines.push(format!("  Expected output contains: {}", expected));
+        }
+
+        lines.push(format!("Created at: {}", proposal.created_at));
+
+        if let Some(ref approved_at) = proposal.approved_at {
+            lines.push(format!("Approved at: {}", approved_at));
+        }
+        if let Some(ref rejected_at) = proposal.rejected_at {
+            lines.push(format!("Rejected at: {}", rejected_at));
+        }
+        if let Some(ref reason) = proposal.reason {
+            lines.push(format!("Reason: {}", reason));
+        }
+        if let Some(ref revised_at) = proposal.revised_at {
+            lines.push(format!("Revised at: {}", revised_at));
+        }
+
+        lines.push(format!("\nFile: {}", proposal_path.display()));
+
+        Ok(lines.join("\n"))
+    }
+}
+
 pub struct ApproveToolProposalTool;
 
 impl Default for ApproveToolProposalTool {
@@ -978,6 +1152,10 @@ impl Tool for ApproveToolProposalTool {
                     "name": {
                         "type": "string",
                         "description": "name of the tool proposal to approve (without .json extension)"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "optional reason for approval"
                     }
                 },
                 "required": ["name"]
@@ -987,13 +1165,22 @@ impl Tool for ApproveToolProposalTool {
 
     fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
         let name = get_string(&args, "name")?;
+        let reason = get_optional_string(&args, "reason");
 
         let genesis = ToolGenesis::new(ctx.exec.workspace_root.clone());
 
         let proposal = genesis.load_proposal(&name)?;
         match proposal.status {
             ProposalStatus::Proposed => {
-                genesis.update_proposal_status(&name, ProposalStatus::Approved)?;
+                let timestamp = get_current_timestamp();
+                genesis.update_proposal_metadata(
+                    &name,
+                    ProposalStatus::Approved,
+                    Some(timestamp),
+                    None,
+                    reason,
+                    None,
+                )?;
                 Ok(format!("proposal '{}' approved for implementation", name))
             }
             ProposalStatus::Approved => Err(Error::InvalidInput(format!(
@@ -1042,6 +1229,10 @@ impl Tool for RejectToolProposalTool {
                     "name": {
                         "type": "string",
                         "description": "name of the tool proposal to reject (without .json extension)"
+                    },
+                    "reason": {
+                        "type": "string",
+                        "description": "optional reason for rejection"
                     }
                 },
                 "required": ["name"]
@@ -1051,13 +1242,22 @@ impl Tool for RejectToolProposalTool {
 
     fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
         let name = get_string(&args, "name")?;
+        let reason = get_optional_string(&args, "reason");
 
         let genesis = ToolGenesis::new(ctx.exec.workspace_root.clone());
 
         let proposal = genesis.load_proposal(&name)?;
         match proposal.status {
             ProposalStatus::Proposed | ProposalStatus::Approved => {
-                genesis.update_proposal_status(&name, ProposalStatus::Rejected)?;
+                let timestamp = get_current_timestamp();
+                genesis.update_proposal_metadata(
+                    &name,
+                    ProposalStatus::Rejected,
+                    None,
+                    Some(timestamp),
+                    reason,
+                    None,
+                )?;
                 Ok(format!("proposal '{}' rejected", name))
             }
             ProposalStatus::Rejected => Err(Error::InvalidInput(format!(
@@ -1073,6 +1273,152 @@ impl Tool for RejectToolProposalTool {
                 name
             ))),
         }
+    }
+}
+
+pub struct ReviseToolProposalTool;
+
+impl Default for ReviseToolProposalTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ReviseToolProposalTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Tool for ReviseToolProposalTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "revise_tool_proposal".to_string(),
+            description: "revise a proposed tool design before implementation; allowed for proposed and approved proposals; revising an approved proposal resets status to proposed"
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "name of the tool proposal to revise (without .json extension)"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "updated description"
+                    },
+                    "inputs": {
+                        "type": "array",
+                        "description": "updated inputs array"
+                    },
+                    "argv_template": {
+                        "type": "array",
+                        "description": "updated argv template"
+                    },
+                    "verification_args": {
+                        "type": "array",
+                        "description": "updated verification args"
+                    },
+                    "expected_exit": {
+                        "type": "integer",
+                        "description": "updated expected exit code"
+                    },
+                    "expected_output_contains": {
+                        "type": "string",
+                        "description": "updated expected output substring"
+                    }
+                },
+                "required": ["name"]
+            }),
+        }
+    }
+
+    fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
+        let name = get_string(&args, "name")?;
+
+        let genesis = ToolGenesis::new(ctx.exec.workspace_root.clone());
+        let proposal = genesis.load_proposal(&name)?;
+        let original_status = proposal.status;
+
+        match original_status {
+            ProposalStatus::Proposed | ProposalStatus::Approved => {}
+            ProposalStatus::Implemented => {
+                return Err(Error::InvalidInput(format!(
+                    "proposal '{}' has already been implemented; cannot revise",
+                    name
+                )));
+            }
+            ProposalStatus::Verified => {
+                return Err(Error::InvalidInput(format!(
+                    "proposal '{}' has already been verified; cannot revise",
+                    name
+                )));
+            }
+            ProposalStatus::Rejected => {
+                return Err(Error::InvalidInput(format!(
+                    "proposal '{}' was rejected; cannot revise",
+                    name
+                )));
+            }
+        }
+
+        let mut updated_proposal = proposal;
+        updated_proposal.revised_at = Some(get_current_timestamp());
+
+        if let Some(desc) = get_optional_string(&args, "description") {
+            updated_proposal.description = desc;
+        }
+        if let Some(inputs) = args.get("inputs") {
+            if let Some(arr) = inputs.as_array() {
+                let parsed: Vec<ToolInput> = arr
+                    .iter()
+                    .filter_map(|v| serde_json::from_value(v.clone()).ok())
+                    .collect();
+                updated_proposal.inputs = parsed;
+            }
+        }
+        if let Some(argv) = args.get("argv_template") {
+            if let Some(arr) = argv.as_array() {
+                updated_proposal.argv_template = arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect();
+            }
+        }
+        if let Some(verification_args) = args.get("verification_args") {
+            if let Some(arr) = verification_args.as_array() {
+                updated_proposal.verification.verification_args = arr
+                    .iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect();
+            }
+        }
+        if let Some(expected_exit) = args.get("expected_exit") {
+            if let Some(code) = expected_exit.as_i64() {
+                updated_proposal.verification.expected_exit = code as i32;
+            }
+        }
+        if let Some(expected) = get_optional_string(&args, "expected_output_contains") {
+            updated_proposal.verification.expected_output_contains = Some(expected);
+        }
+
+        if original_status == ProposalStatus::Approved {
+            updated_proposal.status = ProposalStatus::Proposed;
+            updated_proposal.approved_at = None;
+        }
+
+        genesis.save_proposal(&updated_proposal)?;
+
+        let status_note = if original_status == ProposalStatus::Approved {
+            "; status reset to proposed"
+        } else {
+            ""
+        };
+
+        Ok(format!(
+            "proposal '{}' revised successfully{}",
+            name, status_note
+        ))
     }
 }
 
@@ -1406,6 +1752,21 @@ fn get_string(value: &serde_json::Value, key: &str) -> Result<String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| Error::InvalidInput(format!("missing or invalid '{}' field", key)))
+}
+
+fn get_optional_string(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn get_current_timestamp() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    format!("{}", duration.as_secs())
 }
 
 use crate::tools::Tool;
@@ -1909,6 +2270,7 @@ mod tests {
             },
             status: ProposalStatus::Proposed,
             created_at: "1.0".to_string(),
+            ..ToolDesign::default()
         };
 
         let path = genesis.save_proposal(&design).unwrap();
@@ -1943,6 +2305,7 @@ mod tests {
             },
             status: ProposalStatus::Approved,
             created_at: "1.0".to_string(),
+            ..ToolDesign::default()
         };
         genesis.save_proposal(&design).unwrap();
 
@@ -1984,6 +2347,7 @@ mod tests {
             },
             status: ProposalStatus::Implemented,
             created_at: "1.0".to_string(),
+            ..ToolDesign::default()
         };
         genesis.save_proposal(&design).unwrap();
 
@@ -2022,6 +2386,7 @@ mod tests {
             },
             status: ProposalStatus::Proposed,
             created_at: "1.0".to_string(),
+            ..ToolDesign::default()
         };
         genesis.save_proposal(&design).unwrap();
 
@@ -2056,6 +2421,7 @@ mod tests {
             },
             status: ProposalStatus::Proposed,
             created_at: "1.0".to_string(),
+            ..ToolDesign::default()
         };
         genesis.save_proposal(&design).unwrap();
 
@@ -2091,6 +2457,7 @@ mod tests {
             },
             status: ProposalStatus::Approved,
             created_at: "1.0".to_string(),
+            ..ToolDesign::default()
         };
         genesis.save_proposal(&design).unwrap();
 
@@ -2123,6 +2490,7 @@ mod tests {
             },
             status: ProposalStatus::Proposed,
             created_at: "1.0".to_string(),
+            ..ToolDesign::default()
         };
         genesis.save_proposal(&design).unwrap();
 
@@ -2158,6 +2526,7 @@ mod tests {
             },
             status: ProposalStatus::Approved,
             created_at: "1.0".to_string(),
+            ..ToolDesign::default()
         };
         genesis.save_proposal(&design).unwrap();
 
@@ -2192,6 +2561,7 @@ mod tests {
             },
             status: ProposalStatus::Rejected,
             created_at: "1.0".to_string(),
+            ..ToolDesign::default()
         };
         genesis.save_proposal(&design).unwrap();
 
@@ -2224,6 +2594,7 @@ mod tests {
             },
             status: ProposalStatus::Proposed,
             created_at: "1.0".to_string(),
+            ..ToolDesign::default()
         };
         genesis.save_proposal(&design).unwrap();
 
@@ -2260,6 +2631,7 @@ mod tests {
             },
             status: ProposalStatus::Rejected,
             created_at: "1.0".to_string(),
+            ..ToolDesign::default()
         };
         genesis.save_proposal(&design).unwrap();
 
@@ -2296,6 +2668,7 @@ mod tests {
             },
             status: ProposalStatus::Proposed,
             created_at: "1.0".to_string(),
+            ..ToolDesign::default()
         };
         genesis.save_proposal(&design).unwrap();
 
