@@ -1,8 +1,11 @@
 use anyhow::Result;
 use clap::Parser;
 use pi_core::{
-    context::ExecutionContext, tools::default_tools, Agent, Message, OpenRouterProvider, Provider,
-    ProviderResponse, RuntimeOptions,
+    context::ExecutionContext,
+    create_provider,
+    model::{ModelRoute, ProviderId},
+    tools::default_tools,
+    Agent, Message, Provider, ProviderResponse, RuntimeOptions,
 };
 use std::path::PathBuf;
 use tracing::info;
@@ -13,6 +16,9 @@ use tracing_subscriber::EnvFilter;
 struct Cli {
     #[arg(long, help = "OpenRouter API key")]
     api_key: Option<String>,
+
+    #[arg(long, help = "Provider to use (default: openrouter)")]
+    provider: Option<String>,
 
     #[arg(long, default_value = "minimax/minimax-m2.7", help = "Model to use")]
     model: String,
@@ -50,15 +56,18 @@ fn main() -> Result<()> {
         .with_max_provider_retries(args.max_retries.unwrap_or(3))
         .with_provider_timeout_secs(args.timeout_secs.unwrap_or(120));
 
+    let route = ModelRoute::new(ProviderId::OpenRouter, args.model);
+
     let api_key = args
         .api_key
         .or_else(|| std::env::var("OPENROUTER_API_KEY").ok());
     let provider: Box<dyn Provider> = if let Some(api_key) = api_key {
-        Box::new(OpenRouterProvider::with_timeout(
-            api_key,
-            args.model,
+        create_provider(
+            &route,
+            &api_key,
+            default_tools().specs(),
             options.provider_timeout_secs,
-        ))
+        )?
     } else {
         info!("No API key provided, using echo provider (for testing)");
         Box::new(EchoProvider)
