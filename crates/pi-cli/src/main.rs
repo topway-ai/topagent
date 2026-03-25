@@ -3,7 +3,7 @@ use clap::Parser;
 use pi_core::{
     context::ExecutionContext,
     create_provider,
-    model::{ModelRoute, ProviderId},
+    model::{ProviderId, RoutingPolicy, TaskCategory},
     tools::default_tools,
     Agent, Message, Provider, ProviderResponse, RuntimeOptions,
 };
@@ -17,11 +17,11 @@ struct Cli {
     #[arg(long, help = "OpenRouter API key")]
     api_key: Option<String>,
 
-    #[arg(long, help = "Provider to use (default: openrouter)")]
-    provider: Option<String>,
+    #[arg(long, default_value = "openrouter", help = "Provider to use")]
+    provider: String,
 
-    #[arg(long, default_value = "minimax/minimax-m2.7", help = "Model to use")]
-    model: String,
+    #[arg(long, help = "Model to use (overrides default for provider)")]
+    model: Option<String>,
 
     #[arg(long, help = "Working directory for file operations")]
     cwd: Option<PathBuf>,
@@ -56,12 +56,16 @@ fn main() -> Result<()> {
         .with_max_provider_retries(args.max_retries.unwrap_or(3))
         .with_provider_timeout_secs(args.timeout_secs.unwrap_or(120));
 
-    let route = ModelRoute::new(ProviderId::OpenRouter, args.model);
+    let provider_id = ProviderId::parse(&args.provider).map_err(|e| anyhow::anyhow!("{}", e))?;
+
+    let route = RoutingPolicy::select_route(TaskCategory::Default, args.model.as_deref());
 
     let api_key = args
         .api_key
         .or_else(|| std::env::var("OPENROUTER_API_KEY").ok());
     let provider: Box<dyn Provider> = if let Some(api_key) = api_key {
+        let mut route = route;
+        route.provider_id = provider_id;
         create_provider(
             &route,
             &api_key,

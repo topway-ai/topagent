@@ -24,7 +24,7 @@ pub use error::{Error, Result};
 pub use external::{ExternalTool, ExternalToolRegistry};
 pub use hooks::{HookRegistry, ToolHooks};
 pub use message::{Content, Message, Role};
-pub use model::{ModelRoute, ProviderId};
+pub use model::{ModelRoute, ProviderId, RoutingPolicy, TaskCategory};
 pub use openrouter::OpenRouterProvider;
 pub use plan::{Plan, TodoItem, TodoStatus};
 pub use project::{
