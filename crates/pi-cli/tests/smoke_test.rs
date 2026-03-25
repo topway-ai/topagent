@@ -9,7 +9,7 @@ fn test_cli_smoke_help() {
 #[test]
 fn test_cli_smoke_instruction() {
     let mut cmd = Command::cargo_bin("pi").unwrap();
-    cmd.arg("say hello")
+    cmd.args(["run", "say hello"])
         .assert()
         .success()
         .stdout(predicates::str::contains("Understood"));

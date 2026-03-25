@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod channel;
 pub mod commands;
 pub mod context;
 pub mod error;
@@ -19,6 +20,8 @@ pub mod tool_spec;
 pub mod tools;
 
 pub use agent::Agent;
+pub use channel::adapter::{ChannelAdapter, ChannelError, IncomingMessage, OutgoingMessage};
+pub use channel::telegram::TelegramAdapter;
 pub use context::ExecutionContext;
 pub use error::{Error, Result};
 pub use external::{ExternalTool, ExternalToolRegistry};
