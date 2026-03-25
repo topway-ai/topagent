@@ -1,15 +1,14 @@
-use crate::Result;
 use crate::context::ToolContext;
 use crate::error::Error;
 use crate::external::ExternalTool;
 use crate::tool_spec::ToolSpec;
+use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
 
 const TOOLS_DIR: &str = ".rust-pi/tools";
 const GENESIS_DIR: &str = ".rust-pi/tool-genesis";
-const MAX_REPAIR_ATTEMPTS: usize = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolManifest {
@@ -25,7 +24,7 @@ pub struct ToolManifest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerificationSpec {
-    pub command: String,
+    pub invocation_args: String,
     #[serde(default)]
     pub expected_exit: i32,
     #[serde(default)]
@@ -85,11 +84,8 @@ impl ToolGenesis {
             });
         }
 
-        std::fs::create_dir_all(&tool_dir).map_err(|e| {
-            Error::Io(std::io::Error::other(
-                e.to_string(),
-            ))
-        })?;
+        std::fs::create_dir_all(&tool_dir)
+            .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
 
         let script_path = tool_dir.join("script.sh");
         std::fs::write(&script_path, command).map_err(Error::Io)?;
@@ -97,11 +93,7 @@ impl ToolGenesis {
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
-                .map_err(|e| {
-                    Error::Io(std::io::Error::other(
-                        e.to_string(),
-                    ))
-                })?;
+                .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
         }
 
         let manifest = ToolManifest {
@@ -192,12 +184,21 @@ impl ToolGenesis {
         }
         manifest.verified = false;
 
+        let script_path = tool_dir.join("script.sh");
+        std::fs::write(&script_path, new_command).map_err(Error::Io)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
+        }
+
         let manifest_json = serde_json::to_string_pretty(&manifest)
             .map_err(|e| Error::InvalidInput(e.to_string()))?;
         std::fs::write(&manifest_path, &manifest_json).map_err(Error::Io)?;
 
-        let verify_result = if let Some(v) = &manifest.verification {
-            self.verify_tool(name, v)?
+        let verify_result = if let Some(v) = manifest.verification.clone() {
+            self.verify_tool(name, &v)?
         } else {
             false
         };
@@ -235,11 +236,18 @@ impl ToolGenesis {
 
         let mut cmd = Command::new("sh");
         cmd.current_dir(&self.workspace_root);
-        cmd.arg("-c");
-        cmd.arg(&spec.command);
+        cmd.arg(script_path);
+        if !spec.invocation_args.is_empty() {
+            for arg in spec.invocation_args.split_whitespace() {
+                cmd.arg(arg);
+            }
+        }
 
         let output = cmd.output().map_err(|e| {
-            Error::ToolFailed(format!("verification command failed to execute: {}", e))
+            Error::ToolFailed(format!(
+                "verification failed to run generated script: {}",
+                e
+            ))
         })?;
 
         let exit_match = output.status.code() == Some(spec.expected_exit);
@@ -271,9 +279,14 @@ impl ToolGenesis {
             if !manifest_path.exists() {
                 continue;
             }
-            let content = std::fs::read_to_string(&manifest_path).map_err(Error::Io)?;
-            let manifest: ToolManifest =
-                serde_json::from_str(&content).map_err(|e| Error::InvalidInput(e.to_string()))?;
+            let content = match std::fs::read_to_string(&manifest_path) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let manifest: ToolManifest = match serde_json::from_str(&content) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
 
             if !manifest.verified {
                 continue;
@@ -324,11 +337,8 @@ impl ToolGenesis {
 
     fn write_genesis_record(&self, record: &GenesisRecord) -> Result<()> {
         let genesis_dir = self.genesis_dir();
-        std::fs::create_dir_all(&genesis_dir).map_err(|e| {
-            Error::Io(std::io::Error::other(
-                e.to_string(),
-            ))
-        })?;
+        std::fs::create_dir_all(&genesis_dir)
+            .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
 
         let filename = format!(
             "{}-{}.json",
@@ -479,9 +489,9 @@ impl Tool for CreateToolTool {
                         "type": "string",
                         "description": "optional shell argument template using {arg_name} placeholders, e.g. '{input} --flag'",
                     },
-                    "verification_command": {
+                    "verification_invocation_args": {
                         "type": "string",
-                        "description": "shell command to run for verification (should exit 0 on success)"
+                        "description": "arguments to pass to the generated script during verification (e.g. '--test' runs 'sh script.sh --test')"
                     },
                     "expected_exit": {
                         "type": "integer",
@@ -492,7 +502,7 @@ impl Tool for CreateToolTool {
                         "description": "optional string that must appear in verification output"
                     }
                 },
-                "required": ["requirement", "name", "description", "script", "verification_command"]
+                "required": ["requirement", "name", "description", "script", "verification_invocation_args"]
             }),
         }
     }
@@ -506,7 +516,11 @@ impl Tool for CreateToolTool {
             .get("args_template")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty());
-        let verification_command = get_string(&args, "verification_command")?;
+        let invocation_args = args
+            .get("verification_invocation_args")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let expected_exit = args
             .get("expected_exit")
             .and_then(|v| v.as_i64())
@@ -525,26 +539,8 @@ impl Tool for CreateToolTool {
 
         let genesis = ToolGenesis::new(ctx.exec.workspace_root.clone());
 
-        let script_path = genesis.tools_dir().join(&name).join("script.sh");
-        std::fs::create_dir_all(script_path.parent().unwrap()).map_err(|e| {
-            Error::Io(std::io::Error::other(
-                e.to_string(),
-            ))
-        })?;
-        std::fs::write(&script_path, &script).map_err(Error::Io)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
-                .map_err(|e| {
-                    Error::Io(std::io::Error::other(
-                        e.to_string(),
-                    ))
-                })?;
-        }
-
         let verification = Some(VerificationSpec {
-            command: verification_command,
+            invocation_args,
             expected_exit,
             expected_output_contains,
         });
@@ -559,21 +555,17 @@ impl Tool for CreateToolTool {
         )?;
 
         if result.success {
+            let script_path = genesis.tools_dir().join(&name).join("script.sh");
             Ok(format!(
                 "tool '{}' created and verified successfully\npath: {}",
                 result.tool_name,
                 script_path.display()
             ))
-        } else if result.repair_attempts >= MAX_REPAIR_ATTEMPTS {
-            Err(Error::ToolFailed(format!(
-                "tool '{}' failed verification after {} attempts: {}",
-                result.tool_name, result.repair_attempts, result.message
-            )))
         } else {
             Ok(format!(
                 "tool '{}' created but verification failed: {}\n\
-                 use create_tool with name='{}' and repair=true to retry",
-                result.tool_name, result.message, result.tool_name
+                 use repair_tool to fix and re-verify",
+                result.tool_name, result.message
             ))
         }
     }
@@ -598,7 +590,7 @@ impl Tool for RepairToolTool {
         ToolSpec {
             name: "repair_tool".to_string(),
             description:
-                "repair a failed generated tool and re-verify it (max 3 repair attempts per tool)"
+                "repair a failed generated tool by providing a new script and re-verify once; if verification still fails, call repair_tool again with corrected inputs"
                     .to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -615,9 +607,9 @@ impl Tool for RepairToolTool {
                         "type": "string",
                         "description": "optional updated argument template"
                     },
-                    "verification_command": {
+                    "verification_invocation_args": {
                         "type": "string",
-                        "description": "updated verification shell command"
+                        "description": "arguments to pass to the script during verification"
                     },
                     "expected_exit": {
                         "type": "integer",
@@ -628,7 +620,7 @@ impl Tool for RepairToolTool {
                         "description": "optional string that must appear in output"
                     }
                 },
-                "required": ["name", "script", "verification_command"]
+                "required": ["name", "script", "verification_invocation_args"]
             }),
         }
     }
@@ -640,7 +632,11 @@ impl Tool for RepairToolTool {
             .get("args_template")
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty());
-        let verification_command = get_string(&args, "verification_command")?;
+        let invocation_args = args
+            .get("verification_invocation_args")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let expected_exit = args
             .get("expected_exit")
             .and_then(|v| v.as_i64())
@@ -653,21 +649,8 @@ impl Tool for RepairToolTool {
 
         let genesis = ToolGenesis::new(ctx.exec.workspace_root.clone());
 
-        let script_path = genesis.tools_dir().join(&name).join("script.sh");
-        std::fs::write(&script_path, &script).map_err(Error::Io)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
-                .map_err(|e| {
-                    Error::Io(std::io::Error::other(
-                        e.to_string(),
-                    ))
-                })?;
-        }
-
         let verification = Some(VerificationSpec {
-            command: verification_command,
+            invocation_args,
             expected_exit,
             expected_output_contains,
         });
@@ -681,7 +664,7 @@ impl Tool for RepairToolTool {
             ))
         } else {
             Err(Error::ToolFailed(format!(
-                "tool '{}' still failing after repair: {}",
+                "tool '{}' still failing after repair: {}\ncall repair_tool again with corrected script",
                 result.tool_name, result.message
             )))
         }
@@ -718,7 +701,7 @@ mod tests {
                 "echo hello",
                 None,
                 Some(VerificationSpec {
-                    command: "echo hello".to_string(),
+                    invocation_args: "hello".to_string(),
                     expected_exit: 0,
                     expected_output_contains: Some("hello".to_string()),
                 }),
@@ -747,7 +730,7 @@ mod tests {
                 "exit 1",
                 None,
                 Some(VerificationSpec {
-                    command: "exit 1".to_string(),
+                    invocation_args: "".to_string(),
                     expected_exit: 0,
                     expected_output_contains: None,
                 }),
@@ -771,9 +754,9 @@ mod tests {
                 "echo one",
                 None,
                 Some(VerificationSpec {
-                    command: "echo one".to_string(),
+                    invocation_args: "".to_string(),
                     expected_exit: 0,
-                    expected_output_contains: None,
+                    expected_output_contains: Some("one".to_string()),
                 }),
             )
             .unwrap();
@@ -796,9 +779,9 @@ mod tests {
                 "echo ok",
                 None,
                 Some(VerificationSpec {
-                    command: "echo ok".to_string(),
+                    invocation_args: "".to_string(),
                     expected_exit: 0,
-                    expected_output_contains: None,
+                    expected_output_contains: Some("ok".to_string()),
                 }),
             )
             .unwrap();
@@ -822,7 +805,7 @@ mod tests {
             "name": "bad/name",
             "description": "test",
             "script": "echo hi",
-            "verification_command": "echo hi"
+            "verification_invocation_args": ""
         });
 
         let result = tool.execute(bad_args, &ctx);
@@ -842,7 +825,7 @@ mod tests {
                 "exit 1",
                 None,
                 Some(VerificationSpec {
-                    command: "exit 1".to_string(),
+                    invocation_args: "".to_string(),
                     expected_exit: 0,
                     expected_output_contains: None,
                 }),
@@ -857,14 +840,166 @@ mod tests {
                 "echo fixed",
                 None,
                 Some(&VerificationSpec {
-                    command: "echo fixed".to_string(),
+                    invocation_args: "".to_string(),
                     expected_exit: 0,
-                    expected_output_contains: None,
+                    expected_output_contains: Some("fixed".to_string()),
                 }),
             )
             .unwrap();
 
         assert!(repair_result.success);
         assert_eq!(repair_result.repair_attempts, 1);
+    }
+
+    #[test]
+    fn test_verification_invokes_generated_script() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let script = "echo SCRIPT_OUTPUT";
+        let result = genesis
+            .create_tool(
+                "verify script was run",
+                "script_check",
+                "checks script runs",
+                script,
+                None,
+                Some(VerificationSpec {
+                    invocation_args: "".to_string(),
+                    expected_exit: 0,
+                    expected_output_contains: Some("SCRIPT_OUTPUT".to_string()),
+                }),
+            )
+            .unwrap();
+
+        assert!(
+            result.success,
+            "verification should pass when script output matches"
+        );
+        assert!(result.verification_passed);
+    }
+
+    #[test]
+    fn test_incomplete_artifact_not_promoted() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        genesis
+            .create_tool(
+                "test",
+                "incomplete_tool",
+                "incomplete",
+                "echo test",
+                None,
+                Some(VerificationSpec {
+                    invocation_args: "".to_string(),
+                    expected_exit: 0,
+                    expected_output_contains: Some("test".to_string()),
+                }),
+            )
+            .unwrap();
+
+        let tool_dir = temp.path().join(".rust-pi/tools/incomplete_tool");
+        let manifest_path = tool_dir.join("manifest.json");
+        let script_path = tool_dir.join("script.sh");
+
+        let mut manifest: ToolManifest =
+            serde_json::from_str(&std::fs::read_to_string(&manifest_path).unwrap()).unwrap();
+        manifest.verified = true;
+        std::fs::write(
+            &manifest_path,
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        std::fs::remove_file(&script_path).unwrap();
+
+        let loaded = genesis.load_verified_tools().unwrap();
+        assert!(
+            loaded.is_empty(),
+            "tool with missing script should not be loaded even if manifest says verified"
+        );
+    }
+
+    #[test]
+    fn test_verification_fails_for_wrong_output() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let result = genesis
+            .create_tool(
+                "test wrong output",
+                "wrong_output",
+                "fails output check",
+                "echo ACTUAL_OUTPUT",
+                None,
+                Some(VerificationSpec {
+                    invocation_args: "".to_string(),
+                    expected_exit: 0,
+                    expected_output_contains: Some("WRONG_OUTPUT".to_string()),
+                }),
+            )
+            .unwrap();
+
+        assert!(
+            !result.success,
+            "verification should fail when output does not match"
+        );
+        assert!(!result.verification_passed);
+    }
+
+    #[test]
+    fn test_repair_is_single_step() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        genesis
+            .create_tool(
+                "test",
+                "single_repair",
+                "broken",
+                "exit 1",
+                None,
+                Some(VerificationSpec {
+                    invocation_args: "".to_string(),
+                    expected_exit: 0,
+                    expected_output_contains: None,
+                }),
+            )
+            .unwrap();
+
+        let repair_result = genesis
+            .repair_tool(
+                "single_repair",
+                "exit 1",
+                None,
+                Some(&VerificationSpec {
+                    invocation_args: "".to_string(),
+                    expected_exit: 0,
+                    expected_output_contains: None,
+                }),
+            )
+            .unwrap();
+
+        assert!(
+            !repair_result.success,
+            "second repair step should still fail for same broken script"
+        );
+        assert_eq!(
+            repair_result.repair_attempts, 1,
+            "repair_attempts should be exactly 1 (manual single-step)"
+        );
+    }
+
+    #[test]
+    fn test_corrupt_manifest_not_loaded_as_verified() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let tool_dir = temp.path().join(".rust-pi/tools/bad_manifest");
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::write(tool_dir.join("manifest.json"), "not valid json{{{").unwrap();
+
+        let loaded = genesis.load_verified_tools().unwrap();
+        assert!(loaded.is_empty(), "corrupt manifest should not be loaded");
     }
 }

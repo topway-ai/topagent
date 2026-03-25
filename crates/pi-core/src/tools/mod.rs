@@ -16,9 +16,9 @@ pub use save_lesson::SaveLessonTool;
 pub use save_plan::SavePlanTool;
 pub use write::WriteTool;
 
-use crate::Result;
 use crate::context::ToolContext;
 use crate::tool_spec::ToolSpec;
+use crate::Result;
 use std::collections::HashMap;
 
 pub trait Tool: Send + Sync {

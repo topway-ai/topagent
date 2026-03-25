@@ -408,6 +408,92 @@ fn test_agent_commands_json_missing_is_ok() {
 }
 
 #[test]
+fn test_repeated_runs_do_not_duplicate_genesis_tools() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root);
+
+    struct TestProvider;
+    impl Provider for TestProvider {
+        fn complete(&self, _messages: &[Message]) -> pi_core::Result<ProviderResponse> {
+            Ok(ProviderResponse::Message(Message::assistant("done")))
+        }
+    }
+
+    let mut agent = Agent::new(Box::new(TestProvider), make_tools());
+
+    let specs_first_run = agent.tool_specs();
+
+    agent.run(&ctx, "first run").unwrap();
+    let specs_second_run = agent.tool_specs();
+
+    agent.run(&ctx, "second run").unwrap();
+    let specs_third_run = agent.tool_specs();
+
+    assert_eq!(
+        specs_first_run.len(),
+        specs_second_run.len(),
+        "tool count should not change between runs"
+    );
+    assert_eq!(
+        specs_first_run.len(),
+        specs_third_run.len(),
+        "tool count should not change after third run"
+    );
+
+    let tool_names: Vec<&str> = specs_first_run.iter().map(|s| s.name.as_str()).collect();
+    assert!(
+        tool_names.contains(&"create_tool"),
+        "create_tool should be registered"
+    );
+    assert!(
+        tool_names.contains(&"repair_tool"),
+        "repair_tool should be registered"
+    );
+    assert!(
+        tool_names.contains(&"list_generated_tools"),
+        "list_generated_tools should be registered"
+    );
+}
+
+#[test]
+fn test_genesis_tools_become_external_after_verification() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().to_path_buf();
+    std::fs::create_dir_all(root.join(".rust-pi/tools/my_tool")).unwrap();
+    std::fs::write(root.join(".rust-pi/tools/my_tool/script.sh"), "echo hello").unwrap();
+    std::fs::write(
+        root.join(".rust-pi/tools/my_tool/manifest.json"),
+        serde_json::json!({
+            "name": "my_tool",
+            "description": "a verified tool",
+            "command": "echo hello",
+            "verified": true
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let ctx = ExecutionContext::new(root);
+
+    struct TestProvider;
+    impl Provider for TestProvider {
+        fn complete(&self, _messages: &[Message]) -> pi_core::Result<ProviderResponse> {
+            Ok(ProviderResponse::Message(Message::assistant("done")))
+        }
+    }
+
+    let mut agent = Agent::new(Box::new(TestProvider), make_tools());
+    agent.run(&ctx, "test").unwrap();
+
+    let external = agent.external_tools();
+    assert!(
+        external.get("my_tool").is_some(),
+        "verified generated tool should be loaded as external tool"
+    );
+}
+
+#[test]
 fn test_agent_commands_json_invalid_fails() {
     let temp = TempDir::new().unwrap();
     let commands_json = temp.path().join("commands.json");

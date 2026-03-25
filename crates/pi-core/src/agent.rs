@@ -8,7 +8,7 @@ use crate::runtime::RuntimeOptions;
 use crate::session::Session;
 use crate::tool_genesis::{CreateToolTool, ListGeneratedToolsTool, RepairToolTool, ToolGenesis};
 use crate::tools::{SaveLessonTool, SavePlanTool, Tool, ToolRegistry, UpdatePlanTool};
-use crate::{Error, Message, Provider, ProviderResponse, Result};
+use crate::{Error, Message, Provider, ProviderResponse, Result, ToolSpec};
 use std::cell::RefCell;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -48,6 +48,10 @@ impl Agent {
 
         registry.add(Box::new(SaveLessonTool::new()));
 
+        registry.add(Box::new(CreateToolTool::new()));
+        registry.add(Box::new(RepairToolTool::new()));
+        registry.add(Box::new(ListGeneratedToolsTool::new()));
+
         Self {
             session: Session::new(),
             provider,
@@ -70,6 +74,10 @@ impl Agent {
 
     pub fn hooks_mut(&mut self) -> &mut HookRegistry {
         &mut self.hooks
+    }
+
+    pub fn tool_specs(&self) -> Vec<ToolSpec> {
+        self.tools.specs()
     }
 
     pub fn external_tools(&self) -> &ExternalToolRegistry {
@@ -133,9 +141,6 @@ impl Agent {
         for tool in verified_tools {
             self.external_tools.register(tool);
         }
-        self.tools.add(Box::new(CreateToolTool::new()));
-        self.tools.add(Box::new(RepairToolTool::new()));
-        self.tools.add(Box::new(ListGeneratedToolsTool::new()));
         Ok(())
     }
 
