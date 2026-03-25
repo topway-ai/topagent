@@ -333,12 +333,23 @@ impl ToolGenesis {
                 continue;
             }
 
-            let args_template = if !manifest.argv_template.is_empty() {
-                build_args_template_from_argv(&script_path, &manifest.argv_template)
-            } else if let Some(ref tmpl) = manifest.args_template {
-                format!("{} {}", script_path.display(), tmpl)
+            let has_argv_template = !manifest.argv_template.is_empty();
+            let argv_template: Option<Vec<String>> = if has_argv_template {
+                let mut parts = vec![script_path.display().to_string()];
+                parts.extend(manifest.argv_template);
+                Some(parts)
             } else {
-                format!("{} $@", script_path.display())
+                None
+            };
+
+            let args_template: Option<String> = if !has_argv_template {
+                if let Some(ref tmpl) = manifest.args_template {
+                    Some(format!("{} {}", script_path.display(), tmpl))
+                } else {
+                    Some(format!("{} $@", script_path.display()))
+                }
+            } else {
+                None
             };
 
             let input_schema = if !manifest.inputs.is_empty() {
@@ -351,9 +362,14 @@ impl ToolGenesis {
                 })
             };
 
-            let tool = ExternalTool::new(&manifest.name, &manifest.description, "sh")
-                .with_args_template(&args_template)
+            let mut tool = ExternalTool::new(&manifest.name, &manifest.description, "sh")
                 .with_input_schema(input_schema);
+            if let Some(argv) = argv_template {
+                tool = tool.with_argv_template(argv);
+            }
+            if let Some(tmpl) = args_template {
+                tool = tool.with_args_template(&tmpl);
+            }
             tools.push(tool);
         }
         Ok(tools)
@@ -448,23 +464,6 @@ fn timestamp_for_filename(ts: &str) -> String {
 
 fn sanitize_filename(name: &str) -> String {
     name.replace("/", "_").replace(" ", "_")
-}
-
-fn build_args_template_from_argv(
-    script_path: &std::path::Path,
-    argv_template: &[String],
-) -> String {
-    let mut parts = Vec::new();
-    parts.push(script_path.display().to_string());
-    for arg in argv_template {
-        if arg.starts_with('{') && arg.ends_with('}') {
-            let var_name = &arg[1..arg.len() - 1];
-            parts.push(format!("{{{}}}", var_name));
-        } else {
-            parts.push(arg.clone());
-        }
-    }
-    parts.join(" ")
 }
 
 fn build_input_schema(inputs: &[ToolInput]) -> serde_json::Value {
@@ -1234,5 +1233,120 @@ mod tests {
 
         let loaded = genesis.load_verified_tools().unwrap();
         assert!(loaded.is_empty(), "corrupt manifest should not be loaded");
+    }
+
+    #[test]
+    fn test_structured_generated_tool_reusable_with_spaces() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let result = genesis
+            .create_tool(
+                "echo with args",
+                "echo_args",
+                "echo args tool",
+                "echo \"$@\"",
+                None,
+                vec![ToolInput {
+                    name: "msg".to_string(),
+                    description: "message to echo".to_string(),
+                    required: true,
+                }],
+                vec!["{msg}".to_string()],
+                Some(VerificationSpec {
+                    verification_args: vec!["test".to_string()],
+                    expected_exit: 0,
+                    expected_output_contains: Some("test".to_string()),
+                }),
+            )
+            .unwrap();
+
+        assert!(
+            result.success,
+            "tool creation and verification should succeed"
+        );
+
+        let loaded = genesis.load_verified_tools().unwrap();
+        assert_eq!(loaded.len(), 1);
+
+        let tool = &loaded[0];
+        assert_eq!(tool.spec().name, "echo_args");
+
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+        let result = tool.execute(&serde_json::json!({"msg": "hello world with spaces"}), &ctx);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("hello world with spaces"));
+    }
+
+    #[test]
+    fn test_structured_generated_tool_reusable_special_chars() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let result = genesis
+            .create_tool(
+                "printf special chars",
+                "printf_special",
+                "printf tool",
+                "printf '%s' \"$1\"",
+                None,
+                vec![ToolInput {
+                    name: "arg".to_string(),
+                    description: "argument".to_string(),
+                    required: true,
+                }],
+                vec!["{arg}".to_string()],
+                Some(VerificationSpec {
+                    verification_args: vec!["ok".to_string()],
+                    expected_exit: 0,
+                    expected_output_contains: Some("ok".to_string()),
+                }),
+            )
+            .unwrap();
+
+        assert!(result.success);
+
+        let loaded = genesis.load_verified_tools().unwrap();
+        assert_eq!(loaded.len(), 1);
+
+        let tool = &loaded[0];
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+        let result = tool.execute(&serde_json::json!({"arg": "$HOME/foo --bar"}), &ctx);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("$HOME/foo --bar"));
+    }
+
+    #[test]
+    fn test_legacy_manifest_still_loads() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let tool_dir = temp.path().join(".rust-pi/tools/legacy_tool");
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::write(
+            tool_dir.join("manifest.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "name": "legacy_tool",
+                "description": "legacy tool without argv_template",
+                "command": "echo",
+                "args_template": "LEGACY {msg}",
+                "verified": true
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(tool_dir.join("script.sh"), "echo script").unwrap();
+
+        let loaded = genesis.load_verified_tools().unwrap();
+        assert_eq!(loaded.len(), 1);
+
+        let tool = &loaded[0];
+        assert_eq!(tool.spec().name, "legacy_tool");
     }
 }

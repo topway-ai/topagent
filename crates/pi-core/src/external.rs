@@ -10,7 +10,10 @@ pub struct ExternalToolConfig {
     pub name: String,
     pub description: String,
     pub command: String,
+    #[serde(default)]
     pub args_template: Option<String>,
+    #[serde(default)]
+    pub argv_template: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -27,6 +30,7 @@ impl ExternalTool {
                 description: description.to_string(),
                 command: command.to_string(),
                 args_template: None,
+                argv_template: None,
             },
             input_schema: serde_json::json!({
                 "type": "object",
@@ -56,6 +60,11 @@ impl ExternalTool {
         self
     }
 
+    pub fn with_argv_template(mut self, argv: Vec<String>) -> Self {
+        self.config.argv_template = Some(argv);
+        self
+    }
+
     pub fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: self.config.name.clone(),
@@ -68,7 +77,18 @@ impl ExternalTool {
         let mut cmd = Command::new(&self.config.command);
         cmd.current_dir(&ctx.exec.workspace_root);
 
-        if let Some(template) = &self.config.args_template {
+        if let Some(ref argv_template) = self.config.argv_template {
+            for part in argv_template {
+                if part.starts_with('{') && part.ends_with('}') {
+                    let key = &part[1..part.len() - 1];
+                    if let Some(value) = args.get(key).and_then(|v| v.as_str()) {
+                        cmd.arg(value);
+                    }
+                } else {
+                    cmd.arg(part);
+                }
+            }
+        } else if let Some(template) = &self.config.args_template {
             let args_str = substitute_args(template, args);
             cmd.arg(&args_str);
         } else if let Some(obj) = args.as_object() {
@@ -255,5 +275,100 @@ mod tests {
         let ctx = ToolContext::new(&exec, &runtime);
         let result = tool.execute(&serde_json::json!({}), &ctx);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_external_tool_with_structured_argv() {
+        let tool = ExternalTool::new("echo", "echo tool", "echo").with_argv_template(vec![
+            "Hello,".to_string(),
+            "{name}".to_string(),
+            "!".to_string(),
+        ]);
+
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+        let result = tool.execute(&serde_json::json!({"name": "World"}), &ctx);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("Hello,"));
+        assert!(output.contains("World"));
+        assert!(output.contains("!"));
+    }
+
+    #[test]
+    fn test_external_tool_structured_argv_preserves_spaces() {
+        let tool = ExternalTool::new("echo", "echo tool", "echo")
+            .with_argv_template(vec!["{msg}".to_string()]);
+
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+        let result = tool.execute(&serde_json::json!({"msg": "hello world with spaces"}), &ctx);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("hello world with spaces"));
+    }
+
+    #[test]
+    fn test_external_tool_structured_argv_special_chars() {
+        let tool = ExternalTool::new("echo", "echo tool", "echo")
+            .with_argv_template(vec!["{input}".to_string()]);
+
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+        let result = tool.execute(&serde_json::json!({"input": "foo --bar=baz \"qux\""}), &ctx);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("foo --bar=baz \"qux\""));
+    }
+
+    #[test]
+    fn test_external_tool_structured_argv_no_extra_shell_parsing() {
+        let tool = ExternalTool::new("printf", "printf tool", "printf")
+            .with_argv_template(vec!["%s\\n".to_string(), "{arg}".to_string()]);
+
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+        let result = tool.execute(&serde_json::json!({"arg": "$HOME"}), &ctx);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("$HOME"));
+        assert!(!output.contains("/home"));
+    }
+
+    #[test]
+    fn test_external_tool_structured_priority_over_legacy() {
+        let tool = ExternalTool::new("echo", "echo tool", "echo")
+            .with_argv_template(vec!["{msg}".to_string()])
+            .with_args_template("LEGACY {msg}");
+
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+        let result = tool.execute(&serde_json::json!({"msg": "structured"}), &ctx);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("structured"));
+        assert!(!output.contains("LEGACY"));
+    }
+
+    #[test]
+    fn test_external_tool_no_args_still_works() {
+        let tool = ExternalTool::new("true", "does nothing", "true").with_argv_template(vec![]);
+
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+        let result = tool.execute(&serde_json::json!({}), &ctx);
+        assert!(result.is_ok());
     }
 }
