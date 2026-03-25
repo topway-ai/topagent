@@ -1,10 +1,10 @@
 use std::sync::{Arc, Mutex, RwLock};
 use tempfile::TempDir;
 use topagent_core::{
-    Agent, Content, Message, Provider, ProviderResponse, Role, RuntimeOptions,
     context::ExecutionContext,
     plan::should_use_plan,
     tools::{BashTool, EditTool, ReadTool, Tool, WriteTool},
+    Agent, Content, Message, Provider, ProviderResponse, Role, RuntimeOptions,
 };
 
 fn make_test_context() -> (ExecutionContext, TempDir) {

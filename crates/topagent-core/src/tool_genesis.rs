@@ -62,6 +62,7 @@ pub struct GenesisRecord {
 pub enum ProposalStatus {
     #[default]
     Proposed,
+    Approved,
     Implemented,
     Verified,
     Rejected,
@@ -71,6 +72,7 @@ impl std::fmt::Display for ProposalStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ProposalStatus::Proposed => write!(f, "proposed"),
+            ProposalStatus::Approved => write!(f, "approved"),
             ProposalStatus::Implemented => write!(f, "implemented"),
             ProposalStatus::Verified => write!(f, "verified"),
             ProposalStatus::Rejected => write!(f, "rejected"),
@@ -866,6 +868,12 @@ impl Tool for ImplementToolProposalTool {
                 name
             )));
         }
+        if proposal.status != ProposalStatus::Approved {
+            return Err(Error::InvalidInput(format!(
+                "proposal '{}' is not approved (status: {})",
+                name, proposal.status
+            )));
+        }
 
         let verification = VerificationSpec {
             verification_args: proposal.verification.verification_args,
@@ -884,7 +892,7 @@ impl Tool for ImplementToolProposalTool {
         )?;
 
         if result.success {
-            genesis.update_proposal_status(&name, ProposalStatus::Implemented)?;
+            genesis.update_proposal_status(&name, ProposalStatus::Verified)?;
             let script_path = genesis.tools_dir().join(&name).join("script.sh");
             Ok(format!(
                 "tool '{}' created and verified successfully from proposal\npath: {}",
@@ -892,6 +900,7 @@ impl Tool for ImplementToolProposalTool {
                 script_path.display()
             ))
         } else {
+            genesis.update_proposal_status(&name, ProposalStatus::Implemented)?;
             Ok(format!(
                 "tool '{}' created but verification failed: {}\n\
                  use repair_tool to fix and re-verify",
@@ -940,6 +949,130 @@ impl Tool for ListToolProposalsTool {
             lines.push(format!("- [{}] {}: {}", p.status, p.name, p.description));
         }
         Ok(lines.join("\n"))
+    }
+}
+
+pub struct ApproveToolProposalTool;
+
+impl Default for ApproveToolProposalTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ApproveToolProposalTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Tool for ApproveToolProposalTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "approve_tool_proposal".to_string(),
+            description: "approve a proposed tool design for implementation; only approved proposals can be implemented"
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "name of the tool proposal to approve (without .json extension)"
+                    }
+                },
+                "required": ["name"]
+            }),
+        }
+    }
+
+    fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
+        let name = get_string(&args, "name")?;
+
+        let genesis = ToolGenesis::new(ctx.exec.workspace_root.clone());
+
+        let proposal = genesis.load_proposal(&name)?;
+        match proposal.status {
+            ProposalStatus::Proposed => {
+                genesis.update_proposal_status(&name, ProposalStatus::Approved)?;
+                Ok(format!("proposal '{}' approved for implementation", name))
+            }
+            ProposalStatus::Approved => Err(Error::InvalidInput(format!(
+                "proposal '{}' is already approved",
+                name
+            ))),
+            ProposalStatus::Implemented => Err(Error::InvalidInput(format!(
+                "proposal '{}' has already been implemented",
+                name
+            ))),
+            ProposalStatus::Verified => Err(Error::InvalidInput(format!(
+                "proposal '{}' has already been verified",
+                name
+            ))),
+            ProposalStatus::Rejected => Err(Error::InvalidInput(format!(
+                "proposal '{}' was rejected",
+                name
+            ))),
+        }
+    }
+}
+
+pub struct RejectToolProposalTool;
+
+impl Default for RejectToolProposalTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RejectToolProposalTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Tool for RejectToolProposalTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "reject_tool_proposal".to_string(),
+            description: "reject a proposed tool design; rejected proposals cannot be implemented"
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "name of the tool proposal to reject (without .json extension)"
+                    }
+                },
+                "required": ["name"]
+            }),
+        }
+    }
+
+    fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
+        let name = get_string(&args, "name")?;
+
+        let genesis = ToolGenesis::new(ctx.exec.workspace_root.clone());
+
+        let proposal = genesis.load_proposal(&name)?;
+        match proposal.status {
+            ProposalStatus::Proposed | ProposalStatus::Approved => {
+                genesis.update_proposal_status(&name, ProposalStatus::Rejected)?;
+                Ok(format!("proposal '{}' rejected", name))
+            }
+            ProposalStatus::Rejected => Err(Error::InvalidInput(format!(
+                "proposal '{}' is already rejected",
+                name
+            ))),
+            ProposalStatus::Implemented => Err(Error::InvalidInput(format!(
+                "proposal '{}' has already been implemented",
+                name
+            ))),
+            ProposalStatus::Verified => Err(Error::InvalidInput(format!(
+                "proposal '{}' has already been verified",
+                name
+            ))),
+        }
     }
 }
 
@@ -1808,7 +1941,7 @@ mod tests {
                 expected_exit: 0,
                 expected_output_contains: Some("ok".to_string()),
             },
-            status: ProposalStatus::Proposed,
+            status: ProposalStatus::Approved,
             created_at: "1.0".to_string(),
         };
         genesis.save_proposal(&design).unwrap();
@@ -1823,6 +1956,9 @@ mod tests {
         assert!(result.is_ok());
         let output = result.unwrap();
         assert!(output.contains("created and verified"));
+
+        let proposal = genesis.load_proposal("echo_proposed").unwrap();
+        assert_eq!(proposal.status, ProposalStatus::Verified);
     }
 
     #[test]
@@ -1895,5 +2031,287 @@ mod tests {
         let output = result.unwrap();
         assert!(output.contains("proposal_one"));
         assert!(output.contains("proposed"));
+    }
+
+    #[test]
+    fn test_approve_tool_proposal() {
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let design = ToolDesign {
+            requirement: "test".to_string(),
+            name: "test_approve".to_string(),
+            description: "Test approval".to_string(),
+            rationale: "testing".to_string(),
+            inputs: vec![],
+            argv_template: vec![],
+            verification: VerificationPlan {
+                verification_args: vec![],
+                expected_exit: 0,
+                expected_output_contains: None,
+            },
+            status: ProposalStatus::Proposed,
+            created_at: "1.0".to_string(),
+        };
+        genesis.save_proposal(&design).unwrap();
+
+        let tool = ApproveToolProposalTool::new();
+        let result = tool.execute(serde_json::json!({"name": "test_approve"}), &ctx);
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("approved"));
+
+        let proposal = genesis.load_proposal("test_approve").unwrap();
+        assert_eq!(proposal.status, ProposalStatus::Approved);
+    }
+
+    #[test]
+    fn test_approve_already_approved_proposal_fails() {
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let design = ToolDesign {
+            requirement: "test".to_string(),
+            name: "already_approved".to_string(),
+            description: "already approved".to_string(),
+            rationale: "testing".to_string(),
+            inputs: vec![],
+            argv_template: vec![],
+            verification: VerificationPlan {
+                verification_args: vec![],
+                expected_exit: 0,
+                expected_output_contains: None,
+            },
+            status: ProposalStatus::Approved,
+            created_at: "1.0".to_string(),
+        };
+        genesis.save_proposal(&design).unwrap();
+
+        let tool = ApproveToolProposalTool::new();
+        let result = tool.execute(serde_json::json!({"name": "already_approved"}), &ctx);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already approved"));
+    }
+
+    #[test]
+    fn test_reject_tool_proposal() {
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let design = ToolDesign {
+            requirement: "test".to_string(),
+            name: "test_reject".to_string(),
+            description: "Test rejection".to_string(),
+            rationale: "testing".to_string(),
+            inputs: vec![],
+            argv_template: vec![],
+            verification: VerificationPlan {
+                verification_args: vec![],
+                expected_exit: 0,
+                expected_output_contains: None,
+            },
+            status: ProposalStatus::Proposed,
+            created_at: "1.0".to_string(),
+        };
+        genesis.save_proposal(&design).unwrap();
+
+        let tool = RejectToolProposalTool::new();
+        let result = tool.execute(serde_json::json!({"name": "test_reject"}), &ctx);
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("rejected"));
+
+        let proposal = genesis.load_proposal("test_reject").unwrap();
+        assert_eq!(proposal.status, ProposalStatus::Rejected);
+    }
+
+    #[test]
+    fn test_reject_approved_proposal() {
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let design = ToolDesign {
+            requirement: "test".to_string(),
+            name: "reject_approved".to_string(),
+            description: "Reject an approved proposal".to_string(),
+            rationale: "testing".to_string(),
+            inputs: vec![],
+            argv_template: vec![],
+            verification: VerificationPlan {
+                verification_args: vec![],
+                expected_exit: 0,
+                expected_output_contains: None,
+            },
+            status: ProposalStatus::Approved,
+            created_at: "1.0".to_string(),
+        };
+        genesis.save_proposal(&design).unwrap();
+
+        let tool = RejectToolProposalTool::new();
+        let result = tool.execute(serde_json::json!({"name": "reject_approved"}), &ctx);
+        assert!(result.is_ok());
+
+        let proposal = genesis.load_proposal("reject_approved").unwrap();
+        assert_eq!(proposal.status, ProposalStatus::Rejected);
+    }
+
+    #[test]
+    fn test_reject_already_rejected_proposal_fails() {
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let design = ToolDesign {
+            requirement: "test".to_string(),
+            name: "already_rejected".to_string(),
+            description: "already rejected".to_string(),
+            rationale: "testing".to_string(),
+            inputs: vec![],
+            argv_template: vec![],
+            verification: VerificationPlan {
+                verification_args: vec![],
+                expected_exit: 0,
+                expected_output_contains: None,
+            },
+            status: ProposalStatus::Rejected,
+            created_at: "1.0".to_string(),
+        };
+        genesis.save_proposal(&design).unwrap();
+
+        let tool = RejectToolProposalTool::new();
+        let result = tool.execute(serde_json::json!({"name": "already_rejected"}), &ctx);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already rejected"));
+    }
+
+    #[test]
+    fn test_implement_unapproved_proposal_fails() {
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let design = ToolDesign {
+            requirement: "test".to_string(),
+            name: "unapproved".to_string(),
+            description: "not approved".to_string(),
+            rationale: "testing".to_string(),
+            inputs: vec![],
+            argv_template: vec![],
+            verification: VerificationPlan {
+                verification_args: vec![],
+                expected_exit: 0,
+                expected_output_contains: None,
+            },
+            status: ProposalStatus::Proposed,
+            created_at: "1.0".to_string(),
+        };
+        genesis.save_proposal(&design).unwrap();
+
+        let tool = ImplementToolProposalTool::new();
+        let result = tool.execute(
+            serde_json::json!({"name": "unapproved", "script": "echo test"}),
+            &ctx,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("not approved"));
+    }
+
+    #[test]
+    fn test_implement_rejected_proposal_fails() {
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let design = ToolDesign {
+            requirement: "test".to_string(),
+            name: "rejected_proposal".to_string(),
+            description: "rejected".to_string(),
+            rationale: "testing".to_string(),
+            inputs: vec![],
+            argv_template: vec![],
+            verification: VerificationPlan {
+                verification_args: vec![],
+                expected_exit: 0,
+                expected_output_contains: None,
+            },
+            status: ProposalStatus::Rejected,
+            created_at: "1.0".to_string(),
+        };
+        genesis.save_proposal(&design).unwrap();
+
+        let tool = ImplementToolProposalTool::new();
+        let result = tool.execute(
+            serde_json::json!({"name": "rejected_proposal", "script": "echo test"}),
+            &ctx,
+        );
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("rejected"));
+    }
+
+    #[test]
+    fn test_proposal_full_lifecycle() {
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let design = ToolDesign {
+            requirement: "echo lifecycle test".to_string(),
+            name: "lifecycle_test".to_string(),
+            description: "Full lifecycle test".to_string(),
+            rationale: "testing".to_string(),
+            inputs: vec![],
+            argv_template: vec![],
+            verification: VerificationPlan {
+                verification_args: vec![],
+                expected_exit: 0,
+                expected_output_contains: Some("ok".to_string()),
+            },
+            status: ProposalStatus::Proposed,
+            created_at: "1.0".to_string(),
+        };
+        genesis.save_proposal(&design).unwrap();
+
+        let approve_tool = ApproveToolProposalTool::new();
+        let result = approve_tool.execute(serde_json::json!({"name": "lifecycle_test"}), &ctx);
+        assert!(result.is_ok());
+        let proposal = genesis.load_proposal("lifecycle_test").unwrap();
+        assert_eq!(proposal.status, ProposalStatus::Approved);
+
+        let implement_tool = ImplementToolProposalTool::new();
+        let result = implement_tool.execute(
+            serde_json::json!({"name": "lifecycle_test", "script": "echo ok"}),
+            &ctx,
+        );
+        assert!(result.is_ok());
+        let proposal = genesis.load_proposal("lifecycle_test").unwrap();
+        assert_eq!(proposal.status, ProposalStatus::Verified);
     }
 }
