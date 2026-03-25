@@ -96,7 +96,7 @@ impl ExternalTool {
         }
 
         for placeholder in &placeholders {
-            if !args.get(*placeholder).is_some() {
+            if args.get(*placeholder).is_none() {
                 return Err(Error::InvalidInput(format!(
                     "missing required input '{}' for tool '{}'",
                     placeholder, self.config.name

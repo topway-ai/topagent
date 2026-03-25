@@ -1,14 +1,15 @@
+use crate::Result;
 use crate::context::ToolContext;
 use crate::error::Error;
 use crate::external::ExternalTool;
 use crate::tool_spec::ToolSpec;
-use crate::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
 
 const TOOLS_DIR: &str = ".rust-pi/tools";
 const GENESIS_DIR: &str = ".rust-pi/tool-genesis";
+const PROPOSALS_DIR: &str = "proposals";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolInput {
@@ -56,6 +57,47 @@ pub struct GenesisRecord {
     pub created_at: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ProposalStatus {
+    #[default]
+    Proposed,
+    Implemented,
+    Verified,
+    Rejected,
+}
+
+impl std::fmt::Display for ProposalStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProposalStatus::Proposed => write!(f, "proposed"),
+            ProposalStatus::Implemented => write!(f, "implemented"),
+            ProposalStatus::Verified => write!(f, "verified"),
+            ProposalStatus::Rejected => write!(f, "rejected"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolDesign {
+    pub requirement: String,
+    pub name: String,
+    pub description: String,
+    pub rationale: String,
+    pub inputs: Vec<ToolInput>,
+    pub argv_template: Vec<String>,
+    pub verification: VerificationPlan,
+    pub status: ProposalStatus,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerificationPlan {
+    pub verification_args: Vec<String>,
+    pub expected_exit: i32,
+    pub expected_output_contains: Option<String>,
+}
+
 pub struct ToolGenesis {
     workspace_root: PathBuf,
 }
@@ -71,6 +113,56 @@ impl ToolGenesis {
 
     pub fn genesis_dir(&self) -> PathBuf {
         self.workspace_root.join(GENESIS_DIR)
+    }
+
+    pub fn proposals_dir(&self) -> PathBuf {
+        self.genesis_dir().join(PROPOSALS_DIR)
+    }
+
+    pub fn save_proposal(&self, design: &ToolDesign) -> Result<PathBuf> {
+        let proposals_dir = self.proposals_dir();
+        std::fs::create_dir_all(&proposals_dir)
+            .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
+
+        let proposal_path = proposals_dir.join(format!("{}.json", design.name));
+        let json =
+            serde_json::to_string_pretty(design).map_err(|e| Error::InvalidInput(e.to_string()))?;
+        std::fs::write(&proposal_path, json).map_err(Error::Io)?;
+        Ok(proposal_path)
+    }
+
+    pub fn load_proposal(&self, name: &str) -> Result<ToolDesign> {
+        let proposal_path = self.proposals_dir().join(format!("{}.json", name));
+        let content = std::fs::read_to_string(&proposal_path).map_err(Error::Io)?;
+        serde_json::from_str(&content).map_err(|e| Error::InvalidInput(e.to_string()))
+    }
+
+    pub fn list_proposals(&self) -> Result<Vec<ToolDesign>> {
+        let proposals_dir = self.proposals_dir();
+        if !proposals_dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut proposals = Vec::new();
+        for entry in std::fs::read_dir(&proposals_dir).map_err(Error::Io)? {
+            let entry = entry.map_err(Error::Io)?;
+            let path = entry.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(proposal) = serde_json::from_str::<ToolDesign>(&content) {
+                        proposals.push(proposal);
+                    }
+                }
+            }
+        }
+        Ok(proposals)
+    }
+
+    pub fn update_proposal_status(&self, name: &str, status: ProposalStatus) -> Result<()> {
+        let mut proposal = self.load_proposal(name)?;
+        proposal.status = status;
+        self.save_proposal(&proposal)?;
+        Ok(())
     }
 
     pub fn create_tool(
@@ -540,6 +632,312 @@ impl Tool for ListGeneratedToolsTool {
                 "[unverified]"
             };
             lines.push(format!("- {} {}: {}", status, t.name, t.description));
+        }
+        Ok(lines.join("\n"))
+    }
+}
+
+pub struct DesignToolTool;
+
+impl Default for DesignToolTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DesignToolTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Tool for DesignToolTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "design_tool".to_string(),
+            description: "design a new tool from an abstract requirement; produces a structured proposal for review before implementation".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "requirement": {
+                        "type": "string",
+                        "description": "abstract natural language requirement for the tool, e.g. 'I need a tool that searches for files by name pattern'"
+                    },
+                    "name": {
+                        "type": "string",
+                        "description": "proposed unique name for the tool (alphanumeric + underscore only)"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "human-readable description of what the tool will do"
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "brief explanation of why this tool is needed and how it fits the workflow"
+                    },
+                    "inputs": {
+                        "type": "array",
+                        "description": "named inputs the tool will accept",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string" },
+                                "description": { "type": "string" },
+                                "required": { "type": "boolean" }
+                            },
+                            "required": ["name", "description"]
+                        }
+                    },
+                    "argv_template": {
+                        "type": "array",
+                        "description": "command argv template with {var_name} placeholders, e.g. ['./script.sh', '{path}', '--flag', '{pattern}']"
+                    },
+                    "verification_args": {
+                        "type": "array",
+                        "description": "arguments to pass during verification",
+                        "items": { "type": "string" }
+                    },
+                    "expected_exit": {
+                        "type": "integer",
+                        "description": "expected exit code for verification (default: 0)"
+                    },
+                    "expected_output_contains": {
+                        "type": "string",
+                        "description": "optional string that must appear in verification output"
+                    }
+                },
+                "required": ["requirement", "name", "description", "rationale", "verification_args"]
+            }),
+        }
+    }
+
+    fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
+        let requirement = get_string(&args, "requirement")?;
+        let name = get_string(&args, "name")?;
+        let description = get_string(&args, "description")?;
+        let rationale = get_string(&args, "rationale")?;
+
+        if !name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return Err(Error::InvalidInput(
+                "tool name must be alphanumeric + underscore only".to_string(),
+            ));
+        }
+
+        let inputs: Vec<ToolInput> = args
+            .get("inputs")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        let obj = item.as_object()?;
+                        let name = obj.get("name")?.as_str()?.to_string();
+                        let description = obj.get("description")?.as_str()?.to_string();
+                        let required = obj
+                            .get("required")
+                            .and_then(|r| r.as_bool())
+                            .unwrap_or(true);
+                        Some(ToolInput {
+                            name,
+                            description,
+                            required,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let argv_template: Vec<String> = args
+            .get("argv_template")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let verification_args: Vec<String> = args
+            .get("verification_args")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|s| s.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let expected_exit = args
+            .get("expected_exit")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
+        let expected_output_contains = args
+            .get("expected_output_contains")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        let design = ToolDesign {
+            requirement,
+            name: name.clone(),
+            description,
+            rationale,
+            inputs,
+            argv_template,
+            verification: VerificationPlan {
+                verification_args,
+                expected_exit,
+                expected_output_contains,
+            },
+            status: ProposalStatus::Proposed,
+            created_at: chrono_timestamp(),
+        };
+
+        let genesis = ToolGenesis::new(ctx.exec.workspace_root.clone());
+        let proposal_path = genesis.save_proposal(&design)?;
+        Ok(format!(
+            "tool design proposal saved for review\n\
+             proposal: {}\n\
+             run implement_tool_proposal to create the tool from this design",
+            proposal_path.display()
+        ))
+    }
+}
+
+pub struct ImplementToolProposalTool;
+
+impl Default for ImplementToolProposalTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ImplementToolProposalTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Tool for ImplementToolProposalTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "implement_tool_proposal".to_string(),
+            description:
+                "implement a tool from an approved design proposal; creates and verifies the tool"
+                    .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "name of the tool proposal to implement (without .json extension)"
+                    },
+                    "script": {
+                        "type": "string",
+                        "description": "shell script content that implements the tool"
+                    }
+                },
+                "required": ["name", "script"]
+            }),
+        }
+    }
+
+    fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
+        let name = get_string(&args, "name")?;
+        let script = get_string(&args, "script")?;
+
+        let genesis = ToolGenesis::new(ctx.exec.workspace_root.clone());
+
+        let proposal = genesis.load_proposal(&name)?;
+        if proposal.status == ProposalStatus::Implemented {
+            return Err(Error::InvalidInput(format!(
+                "proposal '{}' has already been implemented",
+                name
+            )));
+        }
+        if proposal.status == ProposalStatus::Verified {
+            return Err(Error::InvalidInput(format!(
+                "proposal '{}' has already been verified",
+                name
+            )));
+        }
+        if proposal.status == ProposalStatus::Rejected {
+            return Err(Error::InvalidInput(format!(
+                "proposal '{}' was rejected",
+                name
+            )));
+        }
+
+        let verification = VerificationSpec {
+            verification_args: proposal.verification.verification_args,
+            expected_exit: proposal.verification.expected_exit,
+            expected_output_contains: proposal.verification.expected_output_contains,
+        };
+
+        let result = genesis.create_tool(
+            &proposal.requirement,
+            &proposal.name,
+            &proposal.description,
+            &script,
+            proposal.inputs,
+            proposal.argv_template,
+            Some(verification),
+        )?;
+
+        if result.success {
+            genesis.update_proposal_status(&name, ProposalStatus::Implemented)?;
+            let script_path = genesis.tools_dir().join(&name).join("script.sh");
+            Ok(format!(
+                "tool '{}' created and verified successfully from proposal\npath: {}",
+                result.tool_name,
+                script_path.display()
+            ))
+        } else {
+            Ok(format!(
+                "tool '{}' created but verification failed: {}\n\
+                 use repair_tool to fix and re-verify",
+                result.tool_name, result.message
+            ))
+        }
+    }
+}
+
+pub struct ListToolProposalsTool;
+
+impl Default for ListToolProposalsTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ListToolProposalsTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Tool for ListToolProposalsTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "list_tool_proposals".to_string(),
+            description: "list all tool design proposals in .rust-pi/tool-genesis/proposals/"
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        }
+    }
+
+    fn execute(&self, _args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
+        let genesis = ToolGenesis::new(ctx.exec.workspace_root.clone());
+        let proposals = genesis.list_proposals()?;
+        if proposals.is_empty() {
+            return Ok("no tool proposals found in .rust-pi/tool-genesis/proposals/".to_string());
+        }
+        let mut lines = Vec::new();
+        for p in proposals {
+            lines.push(format!("- [{}] {}: {}", p.status, p.name, p.description));
         }
         Ok(lines.join("\n"))
     }
@@ -1324,5 +1722,178 @@ mod tests {
             0,
             "legacy manifest without argv_template should be rejected"
         );
+    }
+
+    #[test]
+    fn test_design_tool_creates_proposal() {
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+        let tool = DesignToolTool::new();
+
+        let args = serde_json::json!({
+            "requirement": "I need a tool that echoes a message",
+            "name": "echo_msg",
+            "description": "Echoes the provided message",
+            "rationale": "Useful for testing",
+            "inputs": [
+                {"name": "msg", "description": "message to echo", "required": true}
+            ],
+            "argv_template": ["echo", "{msg}"],
+            "verification_args": ["hello"],
+            "expected_exit": 0,
+            "expected_output_contains": "hello"
+        });
+
+        let result = tool.execute(args, &ctx);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("tool design proposal saved"));
+        assert!(output.contains("proposal"));
+    }
+
+    #[test]
+    fn test_proposal_persisted_to_proposals_dir() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let design = ToolDesign {
+            requirement: "test requirement".to_string(),
+            name: "test_proposal".to_string(),
+            description: "A test proposal".to_string(),
+            rationale: "Testing".to_string(),
+            inputs: vec![ToolInput {
+                name: "input".to_string(),
+                description: "an input".to_string(),
+                required: true,
+            }],
+            argv_template: vec!["echo".to_string(), "{input}".to_string()],
+            verification: VerificationPlan {
+                verification_args: vec!["test".to_string()],
+                expected_exit: 0,
+                expected_output_contains: Some("test".to_string()),
+            },
+            status: ProposalStatus::Proposed,
+            created_at: "1.0".to_string(),
+        };
+
+        let path = genesis.save_proposal(&design).unwrap();
+        assert!(path.to_string_lossy().contains("proposals"));
+        assert!(path.to_string_lossy().contains("test_proposal.json"));
+
+        let loaded = genesis.load_proposal("test_proposal").unwrap();
+        assert_eq!(loaded.name, "test_proposal");
+        assert_eq!(loaded.requirement, "test requirement");
+    }
+
+    #[test]
+    fn test_implement_proposal_creates_tool() {
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let design = ToolDesign {
+            requirement: "echo a message".to_string(),
+            name: "echo_proposed".to_string(),
+            description: "Echoes provided message".to_string(),
+            rationale: "Testing".to_string(),
+            inputs: vec![],
+            argv_template: vec![],
+            verification: VerificationPlan {
+                verification_args: vec![],
+                expected_exit: 0,
+                expected_output_contains: Some("ok".to_string()),
+            },
+            status: ProposalStatus::Proposed,
+            created_at: "1.0".to_string(),
+        };
+        genesis.save_proposal(&design).unwrap();
+
+        let tool = ImplementToolProposalTool::new();
+        let args = serde_json::json!({
+            "name": "echo_proposed",
+            "script": "echo ok"
+        });
+
+        let result = tool.execute(args, &ctx);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("created and verified"));
+    }
+
+    #[test]
+    fn test_implement_already_implemented_proposal_fails() {
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let design = ToolDesign {
+            requirement: "echo".to_string(),
+            name: "already_done".to_string(),
+            description: "already done".to_string(),
+            rationale: "test".to_string(),
+            inputs: vec![],
+            argv_template: vec![],
+            verification: VerificationPlan {
+                verification_args: vec![],
+                expected_exit: 0,
+                expected_output_contains: None,
+            },
+            status: ProposalStatus::Implemented,
+            created_at: "1.0".to_string(),
+        };
+        genesis.save_proposal(&design).unwrap();
+
+        let tool = ImplementToolProposalTool::new();
+        let args = serde_json::json!({
+            "name": "already_done",
+            "script": "echo test"
+        });
+
+        let result = tool.execute(args, &ctx);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("already been implemented"));
+    }
+
+    #[test]
+    fn test_list_tool_proposals() {
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let design = ToolDesign {
+            requirement: "test".to_string(),
+            name: "proposal_one".to_string(),
+            description: "First proposal".to_string(),
+            rationale: "testing".to_string(),
+            inputs: vec![],
+            argv_template: vec![],
+            verification: VerificationPlan {
+                verification_args: vec![],
+                expected_exit: 0,
+                expected_output_contains: None,
+            },
+            status: ProposalStatus::Proposed,
+            created_at: "1.0".to_string(),
+        };
+        genesis.save_proposal(&design).unwrap();
+
+        let tool = ListToolProposalsTool::new();
+        let result = tool.execute(serde_json::json!({}), &ctx);
+        assert!(result.is_ok());
+        let output = result.unwrap();
+        assert!(output.contains("proposal_one"));
+        assert!(output.contains("proposed"));
     }
 }

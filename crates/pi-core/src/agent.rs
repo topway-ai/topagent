@@ -6,7 +6,10 @@ use crate::project::get_project_instructions_or_error;
 use crate::prompt;
 use crate::runtime::RuntimeOptions;
 use crate::session::Session;
-use crate::tool_genesis::{CreateToolTool, ListGeneratedToolsTool, RepairToolTool, ToolGenesis};
+use crate::tool_genesis::{
+    CreateToolTool, DesignToolTool, ImplementToolProposalTool, ListGeneratedToolsTool,
+    ListToolProposalsTool, RepairToolTool, ToolGenesis,
+};
 use crate::tools::{SaveLessonTool, SavePlanTool, Tool, ToolRegistry, UpdatePlanTool};
 use crate::{Error, Message, Provider, ProviderResponse, Result, ToolSpec};
 use std::cell::RefCell;
@@ -51,6 +54,9 @@ impl Agent {
         registry.add(Box::new(CreateToolTool::new()));
         registry.add(Box::new(RepairToolTool::new()));
         registry.add(Box::new(ListGeneratedToolsTool::new()));
+        registry.add(Box::new(DesignToolTool::new()));
+        registry.add(Box::new(ImplementToolProposalTool::new()));
+        registry.add(Box::new(ListToolProposalsTool::new()));
 
         Self {
             session: Session::new(),
