@@ -11,8 +11,6 @@ pub struct ExternalToolConfig {
     pub description: String,
     pub command: String,
     #[serde(default)]
-    pub args_template: Option<String>,
-    #[serde(default)]
     pub argv_template: Option<Vec<String>>,
 }
 
@@ -29,7 +27,6 @@ impl ExternalTool {
                 name: name.to_string(),
                 description: description.to_string(),
                 command: command.to_string(),
-                args_template: None,
                 argv_template: None,
             },
             input_schema: serde_json::json!({
@@ -55,11 +52,6 @@ impl ExternalTool {
         self
     }
 
-    pub fn with_args_template(mut self, template: &str) -> Self {
-        self.config.args_template = Some(template.to_string());
-        self
-    }
-
     pub fn with_argv_template(mut self, argv: Vec<String>) -> Self {
         self.config.argv_template = Some(argv);
         self
@@ -74,30 +66,62 @@ impl ExternalTool {
     }
 
     pub fn execute(&self, args: &serde_json::Value, ctx: &ToolContext) -> Result<String> {
+        let argv_template = self.config.argv_template.as_ref().ok_or_else(|| {
+            Error::InvalidInput(format!(
+                "external tool '{}' has no argv_template configured",
+                self.config.name
+            ))
+        })?;
+
+        let placeholders: Vec<&str> = argv_template
+            .iter()
+            .filter_map(|p| {
+                if p.starts_with('{') && p.ends_with('}') {
+                    Some(&p[1..p.len() - 1])
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if let Some(obj) = args.as_object() {
+            for key in obj.keys() {
+                if !placeholders.contains(&key.as_str()) {
+                    return Err(Error::InvalidInput(format!(
+                        "unknown input '{}' for tool '{}'",
+                        key, self.config.name
+                    )));
+                }
+            }
+        }
+
+        for placeholder in &placeholders {
+            if !args.get(*placeholder).is_some() {
+                return Err(Error::InvalidInput(format!(
+                    "missing required input '{}' for tool '{}'",
+                    placeholder, self.config.name
+                )));
+            }
+        }
+
         let mut cmd = Command::new(&self.config.command);
         cmd.current_dir(&ctx.exec.workspace_root);
 
-        if let Some(ref argv_template) = self.config.argv_template {
-            for part in argv_template {
-                if part.starts_with('{') && part.ends_with('}') {
-                    let key = &part[1..part.len() - 1];
-                    if let Some(value) = args.get(key).and_then(|v| v.as_str()) {
-                        cmd.arg(value);
+        for part in argv_template {
+            if part.starts_with('{') && part.ends_with('}') {
+                let key = &part[1..part.len() - 1];
+                if let Some(value) = args.get(key) {
+                    if let Some(s) = value.as_str() {
+                        cmd.arg(s);
+                    } else {
+                        return Err(Error::InvalidInput(format!(
+                            "input '{}' for tool '{}' must be a string",
+                            key, self.config.name
+                        )));
                     }
-                } else {
-                    cmd.arg(part);
                 }
-            }
-        } else if let Some(template) = &self.config.args_template {
-            let args_str = substitute_args(template, args);
-            cmd.arg(&args_str);
-        } else if let Some(obj) = args.as_object() {
-            for (_key, value) in obj {
-                if let Some(s) = value.as_str() {
-                    cmd.arg(s);
-                } else {
-                    cmd.arg(value.to_string());
-                }
+            } else {
+                cmd.arg(part);
             }
         }
 
@@ -133,22 +157,6 @@ impl ExternalTool {
 
         Ok(result)
     }
-}
-
-fn substitute_args(template: &str, args: &serde_json::Value) -> String {
-    let mut result = template.to_string();
-    if let Some(obj) = args.as_object() {
-        for (key, value) in obj {
-            let placeholder = format!("{{{}}}", key);
-            let replacement = if let Some(s) = value.as_str() {
-                s.to_string()
-            } else {
-                value.to_string()
-            };
-            result = result.replace(&placeholder, &replacement);
-        }
-    }
-    result
 }
 
 pub struct ExternalToolRegistry {
@@ -213,69 +221,6 @@ mod tests {
     use crate::context::{ExecutionContext, ToolContext};
     use crate::runtime::RuntimeOptions;
     use tempfile::TempDir;
-
-    #[test]
-    fn test_external_tool_simple_execution() {
-        let tool =
-            ExternalTool::new("echo", "echo tool", "echo").with_description("echoes arguments");
-
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-        let result = tool.execute(&serde_json::json!({"msg": "hello"}), &ctx);
-        assert!(result.is_ok());
-        assert!(result.unwrap().contains("hello"));
-    }
-
-    #[test]
-    fn test_external_tool_with_template() {
-        let mut tool = ExternalTool::new("greet", "greeting tool", "echo");
-        tool.config.args_template = Some("Hello, {name}!".to_string());
-
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-        let result = tool.execute(&serde_json::json!({"name": "World"}), &ctx);
-        assert!(result.is_ok());
-        assert!(result.unwrap().contains("Hello, World!"));
-    }
-
-    #[test]
-    fn test_external_tool_registry() {
-        let mut registry = ExternalToolRegistry::new();
-        let tool = ExternalTool::new("test", "test tool", "true");
-        registry.register(tool);
-
-        assert!(registry.get("test").is_some());
-        assert_eq!(registry.names(), vec!["test"]);
-    }
-
-    #[test]
-    fn test_external_tool_registry_load_from_str() {
-        let mut registry = ExternalToolRegistry::new();
-        let json = r#"[
-            {"name": "tool1", "description": "first tool", "command": "echo", "args_template": null},
-            {"name": "tool2", "description": "second tool", "command": "ls", "args_template": "-la"}
-        ]"#;
-        registry.load_from_str(json).unwrap();
-
-        assert!(registry.get("tool1").is_some());
-        assert!(registry.get("tool2").is_some());
-    }
-
-    #[test]
-    fn test_external_tool_fails_clearly() {
-        let tool = ExternalTool::new("false", "fails", "false");
-
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-        let result = tool.execute(&serde_json::json!({}), &ctx);
-        assert!(result.is_err());
-    }
 
     #[test]
     fn test_external_tool_with_structured_argv() {
@@ -344,31 +289,96 @@ mod tests {
     }
 
     #[test]
-    fn test_external_tool_structured_priority_over_legacy() {
-        let tool = ExternalTool::new("echo", "echo tool", "echo")
-            .with_argv_template(vec!["{msg}".to_string()])
-            .with_args_template("LEGACY {msg}");
-
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-        let result = tool.execute(&serde_json::json!({"msg": "structured"}), &ctx);
-        assert!(result.is_ok());
-        let output = result.unwrap();
-        assert!(output.contains("structured"));
-        assert!(!output.contains("LEGACY"));
-    }
-
-    #[test]
-    fn test_external_tool_no_args_still_works() {
-        let tool = ExternalTool::new("true", "does nothing", "true").with_argv_template(vec![]);
+    fn test_external_tool_fails_clearly() {
+        let tool = ExternalTool::new("false", "fails", "false").with_argv_template(vec![]);
 
         let temp = TempDir::new().unwrap();
         let exec = ExecutionContext::new(temp.path().to_path_buf());
         let runtime = RuntimeOptions::default();
         let ctx = ToolContext::new(&exec, &runtime);
         let result = tool.execute(&serde_json::json!({}), &ctx);
-        assert!(result.is_ok());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_external_tool_missing_required_input_fails() {
+        let tool = ExternalTool::new("echo", "echo tool", "echo")
+            .with_argv_template(vec!["{msg}".to_string()]);
+
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+        let result = tool.execute(&serde_json::json!({}), &ctx);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("missing required input 'msg'"));
+    }
+
+    #[test]
+    fn test_external_tool_unknown_input_key_fails() {
+        let tool = ExternalTool::new("echo", "echo tool", "echo")
+            .with_argv_template(vec!["{msg}".to_string()]);
+
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+        let result = tool.execute(&serde_json::json!({"msg": "hello", "unknown": "key"}), &ctx);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("unknown input 'unknown'"));
+    }
+
+    #[test]
+    fn test_external_tool_non_string_input_fails() {
+        let tool = ExternalTool::new("echo", "echo tool", "echo")
+            .with_argv_template(vec!["{msg}".to_string()]);
+
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+        let result = tool.execute(&serde_json::json!({"msg": 123}), &ctx);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("must be a string"));
+    }
+
+    #[test]
+    fn test_external_tool_no_argv_template_fails() {
+        let tool = ExternalTool::new("echo", "echo tool", "echo");
+
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+        let result = tool.execute(&serde_json::json!({}), &ctx);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("no argv_template"));
+    }
+
+    #[test]
+    fn test_external_tool_registry() {
+        let mut registry = ExternalToolRegistry::new();
+        let tool = ExternalTool::new("test", "test tool", "true").with_argv_template(vec![]);
+        registry.register(tool);
+
+        assert!(registry.get("test").is_some());
+        assert_eq!(registry.names(), vec!["test"]);
+    }
+
+    #[test]
+    fn test_external_tool_registry_load_from_str() {
+        let mut registry = ExternalToolRegistry::new();
+        let json = r#"[
+            {"name": "tool1", "description": "first tool", "command": "echo", "argv_template": []},
+            {"name": "tool2", "description": "second tool", "command": "ls", "argv_template": ["-la"]}
+        ]"#;
+        registry.load_from_str(json).unwrap();
+
+        assert!(registry.get("tool1").is_some());
+        assert!(registry.get("tool2").is_some());
     }
 }

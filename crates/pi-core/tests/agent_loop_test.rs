@@ -468,7 +468,10 @@ fn test_genesis_tools_become_external_after_verification() {
             "name": "my_tool",
             "description": "a verified tool",
             "command": "echo hello",
-            "verified": true
+            "verified": true,
+            "inputs": [],
+            "argv_template": [],
+            "manifest_version": 1
         })
         .to_string(),
     )

@@ -27,14 +27,11 @@ pub struct ToolManifest {
     pub name: String,
     pub description: String,
     pub command: String,
-    #[serde(default)]
-    pub args_template: Option<String>,
     pub verification: Option<VerificationSpec>,
     #[serde(default)]
     pub verified: bool,
     #[serde(default)]
     pub inputs: Vec<ToolInput>,
-    #[serde(default)]
     pub argv_template: Vec<String>,
     #[serde(default)]
     pub manifest_version: Option<u32>,
@@ -82,7 +79,6 @@ impl ToolGenesis {
         name: &str,
         description: &str,
         command: &str,
-        args_template: Option<&str>,
         inputs: Vec<ToolInput>,
         argv_template: Vec<String>,
         verification: Option<VerificationSpec>,
@@ -126,7 +122,6 @@ impl ToolGenesis {
             name: name.to_string(),
             description: description.to_string(),
             command: command.to_string(),
-            args_template: args_template.map(String::from),
             verification: verification.clone(),
             verified: false,
             inputs,
@@ -189,7 +184,6 @@ impl ToolGenesis {
         &self,
         name: &str,
         new_command: &str,
-        new_args_template: Option<&str>,
         new_inputs: Option<Vec<ToolInput>>,
         new_argv_template: Option<Vec<String>>,
         new_verification: Option<&VerificationSpec>,
@@ -209,7 +203,6 @@ impl ToolGenesis {
             serde_json::from_str(&content).map_err(|e| Error::InvalidInput(e.to_string()))?;
 
         manifest.command = new_command.to_string();
-        manifest.args_template = new_args_template.map(String::from);
         if let Some(inputs) = new_inputs {
             manifest.inputs = inputs;
         }
@@ -333,43 +326,30 @@ impl ToolGenesis {
                 continue;
             }
 
-            let has_argv_template = !manifest.argv_template.is_empty();
-            let argv_template: Option<Vec<String>> = if has_argv_template {
-                let mut parts = vec![script_path.display().to_string()];
-                parts.extend(manifest.argv_template);
-                Some(parts)
-            } else {
-                None
-            };
+            if manifest.manifest_version.is_none() {
+                eprintln!(
+                    "tool '{}' has no manifest_version, skipping (regenerate with create_tool or repair_tool)",
+                    manifest.name
+                );
+                continue;
+            }
 
-            let args_template: Option<String> = if !has_argv_template {
-                if let Some(ref tmpl) = manifest.args_template {
-                    Some(format!("{} {}", script_path.display(), tmpl))
-                } else {
-                    Some(format!("{} $@", script_path.display()))
-                }
-            } else {
-                None
-            };
+            if let Err(e) = validate_manifest_interface(&manifest) {
+                eprintln!(
+                    "tool '{}' has invalid interface: {}, skipping",
+                    manifest.name, e
+                );
+                continue;
+            }
 
-            let input_schema = if !manifest.inputs.is_empty() {
-                build_input_schema(&manifest.inputs)
-            } else {
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                })
-            };
+            let mut full_argv = vec![script_path.display().to_string()];
+            full_argv.extend(manifest.argv_template.clone());
 
-            let mut tool = ExternalTool::new(&manifest.name, &manifest.description, "sh")
+            let input_schema = build_input_schema(&manifest.inputs);
+
+            let tool = ExternalTool::new(&manifest.name, &manifest.description, "sh")
+                .with_argv_template(full_argv)
                 .with_input_schema(input_schema);
-            if let Some(argv) = argv_template {
-                tool = tool.with_argv_template(argv);
-            }
-            if let Some(tmpl) = args_template {
-                tool = tool.with_args_template(&tmpl);
-            }
             tools.push(tool);
         }
         Ok(tools)
@@ -464,6 +444,37 @@ fn timestamp_for_filename(ts: &str) -> String {
 
 fn sanitize_filename(name: &str) -> String {
     name.replace("/", "_").replace(" ", "_")
+}
+
+fn validate_manifest_interface(manifest: &ToolManifest) -> Result<()> {
+    let mut input_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for input in &manifest.inputs {
+        if !input_names.insert(input.name.as_str()) {
+            return Err(Error::InvalidInput(format!(
+                "duplicate input name '{}'",
+                input.name
+            )));
+        }
+    }
+
+    for part in &manifest.argv_template {
+        if part.starts_with('{') && part.ends_with('}') {
+            let placeholder = &part[1..part.len() - 1];
+            if placeholder.is_empty() {
+                return Err(Error::InvalidInput(
+                    "empty placeholder in argv_template".to_string(),
+                ));
+            }
+            if !input_names.contains(placeholder) {
+                return Err(Error::InvalidInput(format!(
+                    "placeholder '{{{}}}' in argv_template has no matching input",
+                    placeholder
+                )));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn build_input_schema(inputs: &[ToolInput]) -> serde_json::Value {
@@ -572,10 +583,6 @@ impl Tool for CreateToolTool {
                         "type": "string",
                         "description": "shell script content (executable commands)"
                     },
-                    "args_template": {
-                        "type": "string",
-                        "description": "optional legacy shell argument template using {arg_name} placeholders, e.g. '{input} --flag'",
-                    },
                     "inputs": {
                         "type": "array",
                         "description": "named string inputs for the tool",
@@ -617,10 +624,6 @@ impl Tool for CreateToolTool {
         let name = get_string(&args, "name")?;
         let description = get_string(&args, "description")?;
         let script = get_string(&args, "script")?;
-        let args_template = args
-            .get("args_template")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty());
 
         let inputs: Vec<ToolInput> = args
             .get("inputs")
@@ -694,7 +697,6 @@ impl Tool for CreateToolTool {
             &name,
             &description,
             &script,
-            args_template,
             inputs,
             argv_template,
             verification,
@@ -749,10 +751,6 @@ impl Tool for RepairToolTool {
                         "type": "string",
                         "description": "updated shell script content"
                     },
-                    "args_template": {
-                        "type": "string",
-                        "description": "optional updated argument template"
-                    },
                     "inputs": {
                         "type": "array",
                         "description": "optional named inputs for the tool",
@@ -792,10 +790,6 @@ impl Tool for RepairToolTool {
     fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
         let name = get_string(&args, "name")?;
         let script = get_string(&args, "script")?;
-        let args_template = args
-            .get("args_template")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.is_empty());
 
         let inputs: Option<Vec<ToolInput>> =
             args.get("inputs").and_then(|v| v.as_array()).map(|arr| {
@@ -858,14 +852,8 @@ impl Tool for RepairToolTool {
             expected_output_contains,
         });
 
-        let result = genesis.repair_tool(
-            &name,
-            &script,
-            args_template,
-            inputs,
-            argv_template,
-            verification.as_ref(),
-        )?;
+        let result =
+            genesis.repair_tool(&name, &script, inputs, argv_template, verification.as_ref())?;
 
         if result.success {
             Ok(format!(
@@ -909,7 +897,6 @@ mod tests {
                 "echo_hello",
                 "echo hello",
                 "echo hello",
-                None,
                 vec![],
                 vec![],
                 Some(VerificationSpec {
@@ -940,7 +927,6 @@ mod tests {
                 "failing_tool",
                 "fails",
                 "exit 1",
-                None,
                 vec![],
                 vec![],
                 Some(VerificationSpec {
@@ -966,7 +952,6 @@ mod tests {
                 "tool_one",
                 "first",
                 "echo one",
-                None,
                 vec![],
                 vec![],
                 Some(VerificationSpec {
@@ -993,7 +978,6 @@ mod tests {
                 "record_test",
                 "test",
                 "echo ok",
-                None,
                 vec![],
                 vec![],
                 Some(VerificationSpec {
@@ -1041,7 +1025,6 @@ mod tests {
                 "repairable",
                 "initially broken",
                 "exit 1",
-                None,
                 vec![],
                 vec![],
                 Some(VerificationSpec {
@@ -1058,7 +1041,6 @@ mod tests {
             .repair_tool(
                 "repairable",
                 "echo fixed",
-                None,
                 None,
                 None,
                 Some(&VerificationSpec {
@@ -1085,7 +1067,6 @@ mod tests {
                 "script_check",
                 "checks script runs",
                 script,
-                None,
                 vec![],
                 vec![],
                 Some(VerificationSpec {
@@ -1114,7 +1095,6 @@ mod tests {
                 "incomplete_tool",
                 "incomplete",
                 "echo test",
-                None,
                 vec![],
                 vec![],
                 Some(VerificationSpec {
@@ -1157,7 +1137,6 @@ mod tests {
                 "wrong_output",
                 "fails output check",
                 "echo ACTUAL_OUTPUT",
-                None,
                 vec![],
                 vec![],
                 Some(VerificationSpec {
@@ -1186,7 +1165,6 @@ mod tests {
                 "single_repair",
                 "broken",
                 "exit 1",
-                None,
                 vec![],
                 vec![],
                 Some(VerificationSpec {
@@ -1201,7 +1179,6 @@ mod tests {
             .repair_tool(
                 "single_repair",
                 "exit 1",
-                None,
                 None,
                 None,
                 Some(&VerificationSpec {
@@ -1246,7 +1223,6 @@ mod tests {
                 "echo_args",
                 "echo args tool",
                 "echo \"$@\"",
-                None,
                 vec![ToolInput {
                     name: "msg".to_string(),
                     description: "message to echo".to_string(),
@@ -1292,7 +1268,6 @@ mod tests {
                 "printf_special",
                 "printf tool",
                 "printf '%s' \"$1\"",
-                None,
                 vec![ToolInput {
                     name: "arg".to_string(),
                     description: "argument".to_string(),
@@ -1323,7 +1298,7 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_manifest_still_loads() {
+    fn test_legacy_manifest_rejected() {
         let temp = TempDir::new().unwrap();
         let genesis = ToolGenesis::new(temp.path().to_path_buf());
 
@@ -1344,9 +1319,10 @@ mod tests {
         std::fs::write(tool_dir.join("script.sh"), "echo script").unwrap();
 
         let loaded = genesis.load_verified_tools().unwrap();
-        assert_eq!(loaded.len(), 1);
-
-        let tool = &loaded[0];
-        assert_eq!(tool.spec().name, "legacy_tool");
+        assert_eq!(
+            loaded.len(),
+            0,
+            "legacy manifest without argv_template should be rejected"
+        );
     }
 }
