@@ -80,7 +80,7 @@ impl std::fmt::Display for ProposalStatus {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ToolDesign {
     pub requirement: String,
     pub name: String,
@@ -106,56 +106,6 @@ pub struct VerificationPlan {
     pub verification_args: Vec<String>,
     pub expected_exit: i32,
     pub expected_output_contains: Option<String>,
-}
-
-impl ToolDesign {
-    pub fn new(
-        requirement: String,
-        name: String,
-        description: String,
-        rationale: String,
-        inputs: Vec<ToolInput>,
-        argv_template: Vec<String>,
-        verification: VerificationPlan,
-        status: ProposalStatus,
-        created_at: String,
-    ) -> Self {
-        Self {
-            requirement,
-            name,
-            description,
-            rationale,
-            inputs,
-            argv_template,
-            verification,
-            status,
-            created_at,
-            approved_at: None,
-            rejected_at: None,
-            reason: None,
-            revised_at: None,
-        }
-    }
-}
-
-impl Default for ToolDesign {
-    fn default() -> Self {
-        Self {
-            requirement: String::new(),
-            name: String::new(),
-            description: String::new(),
-            rationale: String::new(),
-            inputs: Vec::new(),
-            argv_template: Vec::new(),
-            verification: VerificationPlan::default(),
-            status: ProposalStatus::default(),
-            created_at: String::new(),
-            approved_at: None,
-            rejected_at: None,
-            reason: None,
-            revised_at: None,
-        }
-    }
 }
 
 pub struct ToolGenesis {
@@ -551,6 +501,19 @@ impl ToolGenesis {
         Ok(manifests)
     }
 
+    pub fn delete_generated_tool(&self, name: &str) -> Result<()> {
+        let tool_dir = self.tools_dir().join(name);
+        if !tool_dir.exists() {
+            return Err(Error::InvalidInput(format!(
+                "tool '{}' does not exist at {}",
+                name,
+                tool_dir.display()
+            )));
+        }
+        std::fs::remove_dir_all(&tool_dir).map_err(Error::Io)?;
+        Ok(())
+    }
+
     fn write_genesis_record(&self, record: &GenesisRecord) -> Result<()> {
         let genesis_dir = self.genesis_dir();
         std::fs::create_dir_all(&genesis_dir)
@@ -688,7 +651,7 @@ impl Tool for ListGeneratedToolsTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "list_generated_tools".to_string(),
-            description: "list all generated tools in .topagent/tools/ with their name, description, and verification status".to_string(),
+            description: "list workspace-local generated tools in .topagent/tools/ with their name, description, and verification status".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {},
@@ -716,6 +679,47 @@ impl Tool for ListGeneratedToolsTool {
     }
 }
 
+pub struct DeleteGeneratedToolTool;
+
+impl Default for DeleteGeneratedToolTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DeleteGeneratedToolTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Tool for DeleteGeneratedToolTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "delete_generated_tool".to_string(),
+            description: "delete a generated tool from .topagent/tools/; the tool is disposed and can be recreated if needed"
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "name of the generated tool to delete"
+                    }
+                },
+                "required": ["name"]
+            }),
+        }
+    }
+
+    fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
+        let name = get_string(&args, "name")?;
+        let genesis = ToolGenesis::new(ctx.exec.workspace_root.clone());
+        genesis.delete_generated_tool(&name)?;
+        Ok(format!("tool '{}' deleted from .topagent/tools/", name))
+    }
+}
+
 pub struct DesignToolTool;
 
 impl Default for DesignToolTool {
@@ -734,7 +738,7 @@ impl Tool for DesignToolTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "design_tool".to_string(),
-            description: "design a new tool from an abstract requirement; produces a structured proposal for review before implementation".to_string(),
+            description: "design a new tool from a requirement; creates a proposal that can be implemented, revised, or discarded".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1440,7 +1444,7 @@ impl Tool for CreateToolTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "create_tool".to_string(),
-            description: "create a new reusable workspace-local tool with verification; tools are stored in .topagent/tools/ and only become available after passing verification".to_string(),
+            description: "create a workspace-local tool with verification; tools are disposable and can be deleted and recreated easily".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -2686,5 +2690,217 @@ mod tests {
         assert!(result.is_ok());
         let proposal = genesis.load_proposal("lifecycle_test").unwrap();
         assert_eq!(proposal.status, ProposalStatus::Verified);
+    }
+
+    #[test]
+    fn test_delete_generated_tool_removes_from_set() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        genesis
+            .create_tool(
+                "test",
+                "to_delete",
+                "will be deleted",
+                "echo ok",
+                vec![],
+                vec![],
+                Some(VerificationSpec {
+                    verification_args: vec![],
+                    expected_exit: 0,
+                    expected_output_contains: Some("ok".to_string()),
+                }),
+            )
+            .unwrap();
+
+        let tools = genesis.list_generated_tools().unwrap();
+        assert_eq!(tools.len(), 1);
+
+        genesis.delete_generated_tool("to_delete").unwrap();
+
+        let tools = genesis.list_generated_tools().unwrap();
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_delete_missing_tool_fails() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let result = genesis.delete_generated_tool("nonexistent");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn test_delete_removes_verified_tool() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        genesis
+            .create_tool(
+                "test",
+                "verified_tool",
+                "verified tool",
+                "echo verified",
+                vec![],
+                vec![],
+                Some(VerificationSpec {
+                    verification_args: vec![],
+                    expected_exit: 0,
+                    expected_output_contains: Some("verified".to_string()),
+                }),
+            )
+            .unwrap();
+
+        let loaded = genesis.load_verified_tools().unwrap();
+        assert_eq!(loaded.len(), 1);
+
+        genesis.delete_generated_tool("verified_tool").unwrap();
+
+        let loaded = genesis.load_verified_tools().unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_delete_and_recreate_replaces_tool() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        genesis
+            .create_tool(
+                "test",
+                "replaceable",
+                "original",
+                "echo original",
+                vec![],
+                vec![],
+                Some(VerificationSpec {
+                    verification_args: vec![],
+                    expected_exit: 0,
+                    expected_output_contains: Some("original".to_string()),
+                }),
+            )
+            .unwrap();
+
+        genesis.delete_generated_tool("replaceable").unwrap();
+
+        genesis
+            .create_tool(
+                "test",
+                "replaceable",
+                "replacement",
+                "echo replacement",
+                vec![],
+                vec![],
+                Some(VerificationSpec {
+                    verification_args: vec![],
+                    expected_exit: 0,
+                    expected_output_contains: Some("replacement".to_string()),
+                }),
+            )
+            .unwrap();
+
+        let tools = genesis.list_generated_tools().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].description, "replacement");
+    }
+
+    #[test]
+    fn test_bad_tool_can_be_deleted() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let result = genesis
+            .create_tool(
+                "test",
+                "bad_tool",
+                "broken tool",
+                "exit 1",
+                vec![],
+                vec![],
+                Some(VerificationSpec {
+                    verification_args: vec![],
+                    expected_exit: 0,
+                    expected_output_contains: None,
+                }),
+            )
+            .unwrap();
+
+        assert!(!result.success);
+
+        genesis.delete_generated_tool("bad_tool").unwrap();
+
+        let tools = genesis.list_generated_tools().unwrap();
+        assert!(tools.is_empty());
+    }
+
+    #[test]
+    fn test_structured_tool_can_be_deleted() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        genesis
+            .create_tool(
+                "echo with args",
+                "echo_tool",
+                "echo args tool",
+                "echo \"$@\"",
+                vec![ToolInput {
+                    name: "msg".to_string(),
+                    description: "message to echo".to_string(),
+                    required: true,
+                }],
+                vec!["{msg}".to_string()],
+                Some(VerificationSpec {
+                    verification_args: vec!["test".to_string()],
+                    expected_exit: 0,
+                    expected_output_contains: Some("test".to_string()),
+                }),
+            )
+            .unwrap();
+
+        let loaded = genesis.load_verified_tools().unwrap();
+        assert_eq!(loaded.len(), 1);
+
+        genesis.delete_generated_tool("echo_tool").unwrap();
+
+        let loaded = genesis.load_verified_tools().unwrap();
+        assert!(loaded.is_empty());
+    }
+
+    #[test]
+    fn test_delete_generated_tool_via_tool() {
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        genesis
+            .create_tool(
+                "test",
+                "tool_to_delete",
+                "will be deleted via tool",
+                "echo ok",
+                vec![],
+                vec![],
+                Some(VerificationSpec {
+                    verification_args: vec![],
+                    expected_exit: 0,
+                    expected_output_contains: Some("ok".to_string()),
+                }),
+            )
+            .unwrap();
+
+        let tool = DeleteGeneratedToolTool::new();
+        let result = tool.execute(serde_json::json!({"name": "tool_to_delete"}), &ctx);
+        assert!(result.is_ok());
+        assert!(result.unwrap().contains("deleted"));
+
+        let tools = genesis.list_generated_tools().unwrap();
+        assert!(tools.is_empty());
     }
 }

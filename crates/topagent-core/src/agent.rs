@@ -7,9 +7,10 @@ use crate::prompt;
 use crate::runtime::RuntimeOptions;
 use crate::session::Session;
 use crate::tool_genesis::{
-    ApproveToolProposalTool, CreateToolTool, DesignToolTool, ImplementToolProposalTool,
-    ListGeneratedToolsTool, ListToolProposalsTool, RejectToolProposalTool, RepairToolTool,
-    ReviseToolProposalTool, ShowToolProposalTool, ToolGenesis,
+    ApproveToolProposalTool, CreateToolTool, DeleteGeneratedToolTool, DesignToolTool,
+    ImplementToolProposalTool, ListGeneratedToolsTool, ListToolProposalsTool,
+    RejectToolProposalTool, RepairToolTool, ReviseToolProposalTool, ShowToolProposalTool,
+    ToolGenesis,
 };
 use crate::tools::{SaveLessonTool, SavePlanTool, Tool, ToolRegistry, UpdatePlanTool};
 use crate::{Error, Message, Provider, ProviderResponse, Result, ToolSpec};
@@ -55,6 +56,7 @@ impl Agent {
         registry.add(Box::new(CreateToolTool::new()));
         registry.add(Box::new(RepairToolTool::new()));
         registry.add(Box::new(ListGeneratedToolsTool::new()));
+        registry.add(Box::new(DeleteGeneratedToolTool::new()));
         registry.add(Box::new(DesignToolTool::new()));
         registry.add(Box::new(ApproveToolProposalTool::new()));
         registry.add(Box::new(RejectToolProposalTool::new()));
