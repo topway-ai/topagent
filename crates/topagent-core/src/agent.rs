@@ -38,7 +38,7 @@ pub struct Agent {
 }
 
 struct RunBaseline {
-    dirty_files: Vec<String>,
+    pre_existing_dirty: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -205,7 +205,7 @@ impl Agent {
     fn capture_run_baseline(&self, workspace_root: &Path) {
         let mut dirty = Vec::new();
 
-        // Get files changed from last commit (staged + unstaged)
+        // Capture pre-existing dirty + untracked files at run start for truthful attribution
         if let Ok(output) = std::process::Command::new("git")
             .args(["diff", "--name-only", "HEAD"])
             .current_dir(workspace_root)
@@ -235,16 +235,12 @@ impl Agent {
             }
         }
 
-        *self.run_baseline.borrow_mut() = Some(RunBaseline { dirty_files: dirty });
+        *self.run_baseline.borrow_mut() = Some(RunBaseline {
+            pre_existing_dirty: dirty,
+        });
     }
 
     fn reconcile_changed_files(&self, workspace_root: &Path) {
-        let baseline = self.run_baseline.borrow();
-        let baseline = match baseline.as_ref() {
-            Some(b) => b,
-            None => return,
-        };
-
         let mut current_dirty = Vec::new();
 
         // Get files changed from last commit (staged + unstaged)
@@ -277,10 +273,9 @@ impl Agent {
             }
         }
 
-        // Find new files that weren't dirty at run start
         let mut changed = self.changed_files.borrow_mut();
         for file in current_dirty {
-            if !baseline.dirty_files.contains(&file) && !changed.contains(&file) {
+            if !changed.contains(&file) {
                 changed.push(file);
             }
         }
@@ -300,6 +295,20 @@ impl Agent {
 
         if Self::is_verification_command(trimmed) {
             return BashCommandClass::Verification;
+        }
+
+        // Detect common mutation patterns before safe prefixes
+        if lower.contains(" >")
+            || lower.contains(">>")
+            || lower.contains("|")
+            || lower.contains("rm ")
+            || lower.contains("mv ")
+            || lower.contains("cp ")
+            || lower.contains("touch ")
+            || lower.contains("mkdir ")
+            || lower.contains("echo ") && lower.contains(">")
+        {
+            return BashCommandClass::MutationRisk;
         }
 
         let research_safe_prefixes = [
@@ -625,6 +634,9 @@ impl Agent {
                             let result = external_tool.execute(&args, &tool_ctx);
                             *self.external_tool_ran.borrow_mut() = true;
                             self.reconcile_changed_files(&ctx.workspace_root);
+                            if self.execution_stage == ExecutionStage::Research {
+                                self.execution_stage = ExecutionStage::Edit;
+                            }
                             self.session.add_message(Message::tool_request(
                                 id.clone(),
                                 name.clone(),
@@ -723,13 +735,25 @@ impl Agent {
                     };
 
                     if name == "bash" {
+                        let class = if let Some(cmd_str) = &bash_cmd {
+                            Self::classify_bash_command(cmd_str)
+                        } else {
+                            BashCommandClass::MutationRisk
+                        };
                         if let Some(cmd) = bash_cmd {
                             let exit_code = extract_exit_code(&result);
                             self.bash_history
                                 .borrow_mut()
                                 .push((cmd, result.clone(), exit_code));
                         }
-                        self.reconcile_changed_files(&ctx.workspace_root);
+                        if class == BashCommandClass::MutationRisk
+                            || class == BashCommandClass::Verification
+                        {
+                            self.reconcile_changed_files(&ctx.workspace_root);
+                            if self.execution_stage == ExecutionStage::Research {
+                                self.execution_stage = ExecutionStage::Edit;
+                            }
+                        }
                     }
 
                     if let Some(hooks) = self.hooks.get(&name) {
@@ -806,6 +830,9 @@ impl Agent {
                                 let result = external_tool.execute(&args, &tool_ctx);
                                 *self.external_tool_ran.borrow_mut() = true;
                                 self.reconcile_changed_files(&ctx.workspace_root);
+                                if self.execution_stage == ExecutionStage::Research {
+                                    self.execution_stage = ExecutionStage::Edit;
+                                }
                                 self.session.add_message(Message::tool_request(
                                     id.clone(),
                                     name.clone(),
@@ -888,6 +915,11 @@ impl Agent {
                         };
 
                         if name == "bash" {
+                            let class = if let Some(cmd_str) = &bash_cmd {
+                                Self::classify_bash_command(cmd_str)
+                            } else {
+                                BashCommandClass::MutationRisk
+                            };
                             if let Some(cmd) = bash_cmd {
                                 let exit_code = extract_exit_code(&result);
                                 self.bash_history.borrow_mut().push((
@@ -896,7 +928,14 @@ impl Agent {
                                     exit_code,
                                 ));
                             }
-                            self.reconcile_changed_files(&ctx.workspace_root);
+                            if class == BashCommandClass::MutationRisk
+                                || class == BashCommandClass::Verification
+                            {
+                                self.reconcile_changed_files(&ctx.workspace_root);
+                                if self.execution_stage == ExecutionStage::Research {
+                                    self.execution_stage = ExecutionStage::Edit;
+                                }
+                            }
                         }
 
                         if let Some(hooks) = self.hooks.get(&name) {
@@ -945,6 +984,21 @@ impl Agent {
             return response.to_string();
         }
 
+        let baseline = self.run_baseline.borrow();
+        let pre_existing = baseline
+            .as_ref()
+            .map_or(vec![], |b| b.pre_existing_dirty.clone());
+        let labeled_files: Vec<String> = files
+            .iter()
+            .map(|f| {
+                if pre_existing.contains(f) {
+                    format!("{} (pre-existing dirty, modified during run)", f)
+                } else {
+                    f.clone()
+                }
+            })
+            .collect();
+
         let diff_summary = if !files.is_empty() {
             Self::generate_diff_summary(workspace_root, &files)
         } else {
@@ -952,7 +1006,7 @@ impl Agent {
         };
 
         let mut evidence = TaskEvidence {
-            files_changed: files.clone(),
+            files_changed: labeled_files,
             diff_summary,
             verification_commands_run: Vec::new(),
             unresolved_issues: Vec::new(),
