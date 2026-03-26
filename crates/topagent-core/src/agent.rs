@@ -34,6 +34,11 @@ pub struct Agent {
     resolved_route: ModelRoute,
     execution_stage: ExecutionStage,
     external_tool_ran: RefCell<bool>,
+    run_baseline: RefCell<Option<RunBaseline>>,
+}
+
+struct RunBaseline {
+    dirty_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -102,6 +107,7 @@ impl Agent {
             resolved_route,
             execution_stage: ExecutionStage::Research,
             external_tool_ran: RefCell::new(false),
+            run_baseline: RefCell::new(None),
         }
     }
 
@@ -162,11 +168,6 @@ impl Agent {
     }
 
     pub fn get_route(&self) -> ModelRoute {
-        if self.planning_gate_active {
-            if let Some(ref model) = self.options.research_model {
-                return ModelRoute::openrouter(model);
-            }
-        }
         match self.execution_stage {
             ExecutionStage::Edit => {
                 if let Some(ref model) = self.options.edit_model {
@@ -178,13 +179,111 @@ impl Agent {
                     return ModelRoute::openrouter(model);
                 }
             }
-            ExecutionStage::Research => {}
+            ExecutionStage::Research => {
+                if self.planning_gate_active {
+                    if let Some(ref model) = self.options.research_model {
+                        return ModelRoute::openrouter(model);
+                    }
+                }
+            }
         }
         self.resolved_route.clone()
     }
 
     pub fn set_execution_stage(&mut self, stage: ExecutionStage) {
         self.execution_stage = stage;
+    }
+
+    pub fn execution_stage(&self) -> ExecutionStage {
+        self.execution_stage
+    }
+
+    pub fn is_planning_gate_active(&self) -> bool {
+        self.planning_gate_active
+    }
+
+    fn capture_run_baseline(&self, workspace_root: &Path) {
+        let mut dirty = Vec::new();
+
+        // Get files changed from last commit (staged + unstaged)
+        if let Ok(output) = std::process::Command::new("git")
+            .args(["diff", "--name-only", "HEAD"])
+            .current_dir(workspace_root)
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    dirty.push(trimmed.to_string());
+                }
+            }
+        }
+
+        // Get untracked files
+        if let Ok(output) = std::process::Command::new("git")
+            .args(["ls-files", "--others", "--exclude-standard"])
+            .current_dir(workspace_root)
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !dirty.contains(&trimmed.to_string()) {
+                    dirty.push(trimmed.to_string());
+                }
+            }
+        }
+
+        *self.run_baseline.borrow_mut() = Some(RunBaseline { dirty_files: dirty });
+    }
+
+    fn reconcile_changed_files(&self, workspace_root: &Path) {
+        let baseline = self.run_baseline.borrow();
+        let baseline = match baseline.as_ref() {
+            Some(b) => b,
+            None => return,
+        };
+
+        let mut current_dirty = Vec::new();
+
+        // Get files changed from last commit (staged + unstaged)
+        if let Ok(output) = std::process::Command::new("git")
+            .args(["diff", "--name-only", "HEAD"])
+            .current_dir(workspace_root)
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() {
+                    current_dirty.push(trimmed.to_string());
+                }
+            }
+        }
+
+        // Get untracked files
+        if let Ok(output) = std::process::Command::new("git")
+            .args(["ls-files", "--others", "--exclude-standard"])
+            .current_dir(workspace_root)
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let trimmed = line.trim();
+                if !trimmed.is_empty() && !current_dirty.contains(&trimmed.to_string()) {
+                    current_dirty.push(trimmed.to_string());
+                }
+            }
+        }
+
+        // Find new files that weren't dirty at run start
+        let mut changed = self.changed_files.borrow_mut();
+        for file in current_dirty {
+            if !baseline.dirty_files.contains(&file) && !changed.contains(&file) {
+                changed.push(file);
+            }
+        }
     }
 
     fn is_mutation_tool(name: &str) -> bool {
@@ -388,8 +487,12 @@ impl Agent {
         self.bash_history.borrow_mut().clear();
         *self.external_tool_ran.borrow_mut() = false;
 
+        self.capture_run_baseline(&ctx.workspace_root);
+
         self.planning_gate_active =
             self.options.require_plan && should_require_research_plan_build(instruction);
+
+        self.execution_stage = ExecutionStage::Research;
 
         self.session.add_message(Message::user(instruction));
 
@@ -521,6 +624,7 @@ impl Agent {
                             }
                             let result = external_tool.execute(&args, &tool_ctx);
                             *self.external_tool_ran.borrow_mut() = true;
+                            self.reconcile_changed_files(&ctx.workspace_root);
                             self.session.add_message(Message::tool_request(
                                 id.clone(),
                                 name.clone(),
@@ -625,6 +729,7 @@ impl Agent {
                                 .borrow_mut()
                                 .push((cmd, result.clone(), exit_code));
                         }
+                        self.reconcile_changed_files(&ctx.workspace_root);
                     }
 
                     if let Some(hooks) = self.hooks.get(&name) {
@@ -634,6 +739,22 @@ impl Agent {
                     if let Some(path) = changed_path {
                         self.record_changed_file(path);
                     }
+
+                    if Self::is_mutation_tool(&name) {
+                        self.reconcile_changed_files(&ctx.workspace_root);
+                        if self.execution_stage == ExecutionStage::Research {
+                            self.execution_stage = ExecutionStage::Edit;
+                        }
+                    }
+
+                    if Self::is_plan_tool(&name) {
+                        if let Ok(plan) = self.plan.lock() {
+                            if !plan.is_empty() {
+                                self.planning_gate_active = false;
+                            }
+                        }
+                    }
+
                     self.session
                         .add_message(Message::tool_request(id.clone(), name, args));
                     self.session.add_message(Message::tool_result(id, result));
@@ -684,6 +805,7 @@ impl Agent {
                                 }
                                 let result = external_tool.execute(&args, &tool_ctx);
                                 *self.external_tool_ran.borrow_mut() = true;
+                                self.reconcile_changed_files(&ctx.workspace_root);
                                 self.session.add_message(Message::tool_request(
                                     id.clone(),
                                     name.clone(),
@@ -774,6 +896,7 @@ impl Agent {
                                     exit_code,
                                 ));
                             }
+                            self.reconcile_changed_files(&ctx.workspace_root);
                         }
 
                         if let Some(hooks) = self.hooks.get(&name) {
@@ -781,6 +904,22 @@ impl Agent {
                         }
 
                         self.track_changed_file(&name, &args);
+
+                        if Self::is_mutation_tool(&name) {
+                            self.reconcile_changed_files(&ctx.workspace_root);
+                            if self.execution_stage == ExecutionStage::Research {
+                                self.execution_stage = ExecutionStage::Edit;
+                            }
+                        }
+
+                        if Self::is_plan_tool(&name) {
+                            if let Ok(plan) = self.plan.lock() {
+                                if !plan.is_empty() {
+                                    self.planning_gate_active = false;
+                                }
+                            }
+                        }
+
                         self.session
                             .add_message(Message::tool_request(id.clone(), name, args));
                         self.session.add_message(Message::tool_result(id, result));
@@ -802,8 +941,7 @@ impl Agent {
 
     fn build_proof_of_work(&self, response: &str, workspace_root: &Path) -> String {
         let files = self.changed_files.borrow().clone();
-        let external_tool_ran = *self.external_tool_ran.borrow();
-        if files.is_empty() && self.bash_history.borrow().is_empty() && !external_tool_ran {
+        if files.is_empty() && self.bash_history.borrow().is_empty() {
             return response.to_string();
         }
 
@@ -834,12 +972,6 @@ impl Agent {
             }
         }
 
-        if external_tool_ran {
-            evidence.unresolved_issues.push(
-                "External/tools were used - file changes may not be fully tracked".to_string(),
-            );
-        }
-
         if !files.is_empty() && evidence.verification_commands_run.is_empty() {
             evidence
                 .unresolved_issues
@@ -861,25 +993,44 @@ impl Agent {
         }
         let mut summary_parts = Vec::new();
         for file in changed_files {
-            let output = std::process::Command::new("git")
-                .args(["diff", "--stat", file])
+            // Check if file is untracked (new file)
+            let is_untracked = std::process::Command::new("git")
+                .args(["ls-files", "--others", "--exclude-standard", file])
                 .current_dir(workspace_root)
-                .output();
+                .output()
+                .map(|out| !String::from_utf8_lossy(&out.stdout).trim().is_empty())
+                .unwrap_or(false);
 
-            match output {
-                Ok(out) => {
-                    let stdout = String::from_utf8_lossy(&out.stdout);
-                    let stderr = String::from_utf8_lossy(&out.stderr);
-                    if !stdout.trim().is_empty() {
-                        summary_parts.push(stdout.to_string());
-                    } else if !stderr.trim().is_empty() {
-                        summary_parts.push(format!("{}: (no diff)", file));
-                    } else {
-                        summary_parts.push(format!("{}: (unchanged)", file));
-                    }
+            if is_untracked {
+                // For new files, show the content as added
+                if let Ok(content) = std::fs::read_to_string(workspace_root.join(file)) {
+                    let line_count = content.lines().count();
+                    summary_parts.push(format!("{}: {} lines added", file, line_count));
+                } else {
+                    summary_parts.push(format!("{}: (new file)", file));
                 }
-                Err(e) => {
-                    summary_parts.push(format!("{}: (diff unavailable: {})", file, e));
+            } else {
+                // For modified files, show git diff stat
+                let output = std::process::Command::new("git")
+                    .args(["diff", "--stat", file])
+                    .current_dir(workspace_root)
+                    .output();
+
+                match output {
+                    Ok(out) => {
+                        let stdout = String::from_utf8_lossy(&out.stdout);
+                        let stderr = String::from_utf8_lossy(&out.stderr);
+                        if !stdout.trim().is_empty() {
+                            summary_parts.push(stdout.to_string());
+                        } else if !stderr.trim().is_empty() {
+                            summary_parts.push(format!("{}: (no diff)", file));
+                        } else {
+                            summary_parts.push(format!("{}: (unchanged)", file));
+                        }
+                    }
+                    Err(e) => {
+                        summary_parts.push(format!("{}: (diff unavailable: {})", file, e));
+                    }
                 }
             }
         }

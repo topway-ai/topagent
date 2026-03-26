@@ -8,10 +8,10 @@ pub fn create_provider(
     tools: Vec<ToolSpec>,
     timeout_secs: u64,
 ) -> Result<Box<dyn Provider>> {
+    let _ = &route.model_id; // model is determined by route at call time
     match route.provider_id {
         ProviderId::OpenRouter => Ok(Box::new(OpenRouterProvider::with_tools_and_timeout(
             api_key,
-            &route.model_id,
             tools,
             timeout_secs,
         ))),

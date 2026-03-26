@@ -319,6 +319,7 @@ impl Provider for EchoProvider {
     fn complete(
         &self,
         messages: &[topagent_core::Message],
+        _route: &topagent_core::ModelRoute,
     ) -> Result<ProviderResponse, topagent_core::Error> {
         let last = messages
             .last()

@@ -4,8 +4,8 @@ use topagent_core::{
     context::ExecutionContext,
     model::TaskCategory,
     tools::{BashTool, EditTool, GitDiffTool, ReadTool, Tool, WriteTool},
-    Agent, Content, Error, Message, Provider, ProviderResponse, Role, RuntimeOptions, TaskResult,
-    ToolCallEntry,
+    Agent, Content, Error, ExecutionStage, Message, Provider, ProviderResponse, Role,
+    RuntimeOptions, TaskResult, ToolCallEntry,
 };
 
 fn make_test_context() -> (ExecutionContext, TempDir) {
@@ -1293,4 +1293,323 @@ impl Provider for BasicTestProvider {
             )))
         }
     }
+}
+
+#[test]
+fn test_bash_mutation_tracked_in_proof_of_work() {
+    let temp = TempDir::new().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    // Create initial commit
+    std::fs::write(temp.path().join("README.md"), "# Initial").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root);
+
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "echo 'hello' > new_file.txt"}),
+        },
+        ProviderResponse::Message(Message::assistant("File created via bash".to_string())),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "create a file");
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    assert!(
+        output.contains("new_file.txt"),
+        "bash-created file should appear in proof of work: {}",
+        output
+    );
+}
+
+#[test]
+fn test_external_tool_mutation_tracked() {
+    let temp = TempDir::new().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    // Create initial commit
+    std::fs::write(temp.path().join("README.md"), "# Initial").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    // Create external tool that touches a file
+    std::fs::write(
+        temp.path().join("commands.json"),
+        r#"[{"name": "create_file", "description": "Create a file", "command": "touch", "argv_template": ["{filename}"]}]"#
+    ).unwrap();
+
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root);
+
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "create_file".into(),
+            args: serde_json::json!({"filename": "external_created.txt"}),
+        },
+        ProviderResponse::Message(Message::assistant("External tool executed".to_string())),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "create a file with external tool");
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    assert!(
+        output.contains("external_created.txt"),
+        "external-tool-created file should appear in proof of work: {}",
+        output
+    );
+}
+
+#[test]
+fn test_read_only_task_no_fake_changes() {
+    let temp = TempDir::new().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    // Create initial commit
+    std::fs::write(temp.path().join("README.md"), "# Initial").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root);
+
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path": "README.md"}),
+        },
+        ProviderResponse::Message(Message::assistant("File contents shown".to_string())),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "read the file");
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    assert!(
+        !output.contains("Files Changed"),
+        "read-only task should not show file changes: {}",
+        output
+    );
+    assert!(
+        !output.contains("README.md"),
+        "read-only task should not list files: {}",
+        output
+    );
+}
+
+#[test]
+fn test_preexisting_dirty_not_attributed_to_run() {
+    let temp = TempDir::new().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    // Create initial commit
+    std::fs::write(temp.path().join("README.md"), "# Initial").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    // Create pre-existing dirty file
+    std::fs::write(temp.path().join("dirty.txt"), "pre-existing dirty content").unwrap();
+
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root);
+
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "ls -la"}),
+        },
+        ProviderResponse::Message(Message::assistant("Listed files".to_string())),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "list files");
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    assert!(
+        !output.contains("dirty.txt"),
+        "pre-existing dirty file should not appear in this run's proof of work: {}",
+        output
+    );
+}
+
+#[test]
+fn test_execution_stage_transitions_to_edit() {
+    let (ctx, _temp) = make_test_context();
+    std::fs::write(ctx.resolve_path("test.txt").unwrap(), "original").unwrap();
+
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "new.txt", "content": "new content"}),
+        },
+        ProviderResponse::Message(Message::assistant("Done".to_string())),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "write a file");
+    assert!(result.is_ok());
+
+    // Check that execution stage moved to Edit
+    assert_eq!(
+        agent.execution_stage(),
+        ExecutionStage::Edit,
+        "execution stage should be Edit after write operation"
+    );
+}
+
+#[test]
+fn test_planning_gate_cleared_after_plan_creation() {
+    let (ctx, _temp) = make_test_context();
+    let options = RuntimeOptions::new().with_require_plan(true);
+    let provider = BasicTestProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".to_string(),
+            name: "update_plan".to_string(),
+            args: serde_json::json!({"items": [{"content": "Step 1", "status": "pending"}]}),
+        },
+        ProviderResponse::Message(Message::assistant("Plan created".to_string())),
+    ]);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+
+    let result = agent.run(&ctx, "refactor the entire codebase and then test it");
+    assert!(result.is_ok());
+
+    // Planning gate should be cleared after plan is created
+    assert!(
+        !agent.is_planning_gate_active(),
+        "planning gate should be cleared after plan creation"
+    );
+}
+
+#[test]
+fn test_route_selection_follows_execution_stage() {
+    let (ctx, _temp) = make_test_context();
+    let options = RuntimeOptions::new()
+        .with_research_model("research-model".to_string())
+        .with_edit_model("edit-model".to_string())
+        .with_review_model("review-model".to_string());
+
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "test.txt", "content": "content"}),
+        },
+        ProviderResponse::Message(Message::assistant("Done".to_string())),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+
+    let result = agent.run(&ctx, "write a file");
+    assert!(result.is_ok());
+
+    // After write operation, route should use edit model
+    let route = agent.get_route();
+    assert_eq!(
+        route.model_id, "edit-model",
+        "route should use edit model after entering edit stage"
+    );
 }

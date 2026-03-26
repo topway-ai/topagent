@@ -7,24 +7,19 @@ const OPENROUTER_BASE_URL: &str = "https://openrouter.ai/api/v1";
 #[derive(Debug, Clone)]
 pub struct OpenRouterProvider {
     api_key: String,
-    model: String,
     client: reqwest::blocking::Client,
     tools: Vec<ToolSpec>,
 }
 
 impl OpenRouterProvider {
     pub fn new(api_key: impl Into<String>, model: impl Into<String>) -> Self {
-        Self::with_timeout(api_key, model, 120)
+        let _ = model; // model is determined by route at call time
+        Self::with_timeout(api_key, 120)
     }
 
-    pub fn with_timeout(
-        api_key: impl Into<String>,
-        model: impl Into<String>,
-        timeout_secs: u64,
-    ) -> Self {
+    pub fn with_timeout(api_key: impl Into<String>, timeout_secs: u64) -> Self {
         Self {
             api_key: api_key.into(),
-            model: model.into(),
             client: reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(timeout_secs))
                 .build()
@@ -38,18 +33,17 @@ impl OpenRouterProvider {
         model: impl Into<String>,
         tools: Vec<ToolSpec>,
     ) -> Self {
-        Self::with_tools_and_timeout(api_key, model, tools, 120)
+        let _ = model; // model is determined by route at call time
+        Self::with_tools_and_timeout(api_key, tools, 120)
     }
 
     pub fn with_tools_and_timeout(
         api_key: impl Into<String>,
-        model: impl Into<String>,
         tools: Vec<ToolSpec>,
         timeout_secs: u64,
     ) -> Self {
         Self {
             api_key: api_key.into(),
-            model: model.into(),
             client: reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(timeout_secs))
                 .build()
