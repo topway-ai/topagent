@@ -72,28 +72,28 @@ fn format_output_with_limit(output: Output, max_size: usize) -> Result<String> {
 
     let mut result = String::new();
     if !stdout_raw.is_empty() {
-        result.push_str("stdout:\n");
+        result.push_str("Output: ");
         result.push_str(&stdout);
         if stdout_truncated {
             result.push_str(&format!(
-                "\n[Output truncated: {} bytes total, showing first {}]\n",
+                "\n[Output truncated: {} bytes total, showing first {}]",
                 stdout_len, max_size
             ));
         }
         result.push('\n');
     }
     if !stderr_raw.is_empty() {
-        result.push_str("stderr:\n");
+        result.push_str("Stderr: ");
         result.push_str(&stderr);
         if stderr_truncated {
             result.push_str(&format!(
-                "\n[Output truncated: {} bytes total, showing first {}]\n",
+                "\n[Stderr truncated: {} bytes total, showing first {}]",
                 stderr_len, max_size
             ));
         }
         result.push('\n');
     }
-    result.push_str(&format!("exit status: {}", status));
+    result.push_str(&format!("Exit code: {}", status));
     Ok(result)
 }
 

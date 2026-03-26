@@ -956,3 +956,102 @@ fn test_task_result_format_with_failed_verification() {
     assert!(formatted.contains("FAIL"));
     assert!(formatted.contains("error: build failed"));
 }
+
+#[test]
+fn test_planning_gate_blocks_mutation_tool() {
+    let (ctx, _temp) = make_test_context();
+    let options = RuntimeOptions::new().with_require_plan(true);
+    let provider = BasicTestProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "test.txt", "content": "hello"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "2".to_string(),
+            name: "update_plan".to_string(),
+            args: serde_json::json!({"items": [{"id": 0, "description": "First step", "status": "done"}]}),
+        },
+        ProviderResponse::Message(Message::assistant("Plan created".to_string())),
+    ]);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+    let result = agent.run(&ctx, "refactor the entire codebase and then test it");
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    assert!(output.contains("Plan created"));
+}
+
+#[test]
+fn test_planning_gate_allows_plan_tool() {
+    let (ctx, _temp) = make_test_context();
+    let options = RuntimeOptions::new().with_require_plan(true);
+    let provider = BasicTestProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".to_string(),
+            name: "update_plan".to_string(),
+            args: serde_json::json!({"items": [{"id": 0, "description": "First step", "status": "done"}]}),
+        },
+        ProviderResponse::Message(Message::assistant("Plan created".to_string())),
+    ]);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+    let result = agent.run(&ctx, "refactor the entire codebase and then test it");
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_planning_gate_allows_read_tool() {
+    let (ctx, _temp) = make_test_context();
+    let options = RuntimeOptions::new().with_require_plan(true);
+    let provider = BasicTestProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".to_string(),
+            name: "read".to_string(),
+            args: serde_json::json!({"path": "test.txt"}),
+        },
+        ProviderResponse::Message(Message::assistant("File contents".to_string())),
+    ]);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+    let result = agent.run(&ctx, "refactor the entire codebase and then test it");
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_trivial_task_not_blocked() {
+    let (ctx, _temp) = make_test_context();
+    let options = RuntimeOptions::new().with_require_plan(true);
+    let provider = BasicTestProvider::new(vec![ProviderResponse::Message(Message::assistant(
+        "Done".to_string(),
+    ))]);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+    let result = agent.run(&ctx, "read this file");
+    assert!(result.is_ok());
+}
+
+struct BasicTestProvider {
+    responses: Vec<ProviderResponse>,
+    idx: Arc<RwLock<usize>>,
+}
+
+impl BasicTestProvider {
+    fn new(responses: Vec<ProviderResponse>) -> Self {
+        Self {
+            responses,
+            idx: Arc::new(RwLock::new(0)),
+        }
+    }
+}
+
+impl Provider for BasicTestProvider {
+    fn complete(&self, _messages: &[Message]) -> Result<ProviderResponse, Error> {
+        let mut idx = self.idx.write().unwrap();
+        if *idx < self.responses.len() {
+            let resp = self.responses[*idx].clone();
+            *idx += 1;
+            Ok(resp)
+        } else {
+            Ok(ProviderResponse::Message(Message::assistant(
+                "Done".to_string(),
+            )))
+        }
+    }
+}

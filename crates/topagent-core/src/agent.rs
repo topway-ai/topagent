@@ -1,6 +1,7 @@
 use crate::context::{ExecutionContext, ToolContext};
 use crate::external::ExternalToolRegistry;
 use crate::hooks::HookRegistry;
+use crate::model::{ModelRoute, RoutingPolicy};
 use crate::plan::{should_require_research_plan_build, Plan};
 use crate::project::get_project_instructions_or_error;
 use crate::prompt;
@@ -29,6 +30,8 @@ pub struct Agent {
     hooks: HookRegistry,
     changed_files: RefCell<Vec<String>>,
     bash_history: RefCell<Vec<(String, String, i32)>>,
+    planning_gate_active: bool,
+    resolved_route: ModelRoute,
 }
 
 impl Agent {
@@ -67,6 +70,7 @@ impl Agent {
         registry.add(Box::new(ImplementToolProposalTool::new()));
         registry.add(Box::new(ListToolProposalsTool::new()));
 
+        let resolved_route = RoutingPolicy::select_route(options.task_category, None);
         Self {
             session: Session::new(),
             provider,
@@ -77,6 +81,8 @@ impl Agent {
             hooks: HookRegistry::new(),
             changed_files: RefCell::new(Vec::new()),
             bash_history: RefCell::new(Vec::new()),
+            planning_gate_active: false,
+            resolved_route,
         }
     }
 
@@ -136,6 +142,58 @@ impl Agent {
         }
     }
 
+    pub fn get_route(&self) -> ModelRoute {
+        self.resolved_route.clone()
+    }
+
+    fn is_mutation_tool(name: &str) -> bool {
+        matches!(name, "write" | "edit" | "bash" | "git_commit" | "git_add")
+    }
+
+    fn is_plan_tool(name: &str) -> bool {
+        matches!(name, "update_plan" | "save_plan")
+    }
+
+    fn check_planning_gate(&self, tool_name: &str) -> Option<String> {
+        if !self.planning_gate_active {
+            return None;
+        }
+        if Self::is_plan_tool(tool_name) {
+            return None;
+        }
+        if !Self::is_mutation_tool(tool_name) {
+            return None;
+        }
+        if let Ok(plan) = self.plan.lock() {
+            if !plan.is_empty() {
+                return None;
+            }
+        }
+        Some(format!(
+            "Planning required for this task. Please create a plan using update_plan before using {}.",
+            tool_name
+        ))
+    }
+
+    fn is_verification_command(cmd: &str) -> bool {
+        let lower = cmd.to_lowercase();
+        lower.contains("test")
+            || lower.contains("build")
+            || lower.contains("check")
+            || lower.contains("verify")
+            || lower.contains("lint")
+            || lower.contains("clippy")
+            || lower.contains("fmt")
+            || lower.contains("format")
+    }
+
+    fn extract_bash_command(args: &serde_json::Value) -> String {
+        args.get("command")
+            .and_then(|c| c.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "<unknown>".to_string())
+    }
+
     pub fn load_external_tools_from_file<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
         let content = std::fs::read_to_string(path).map_err(Error::Io)?;
         self.external_tools.load_from_str(&content)
@@ -164,6 +222,9 @@ impl Agent {
         self.external_tools = ExternalToolRegistry::new();
         self.load_commands_from_workspace(&ctx.workspace_root)?;
         self.load_generated_tools_from_workspace(&ctx.workspace_root)?;
+
+        self.planning_gate_active =
+            self.options.require_plan && should_require_research_plan_build(instruction);
 
         self.session.add_message(Message::user(instruction));
 
@@ -344,7 +405,23 @@ impl Agent {
                         }
                     }
 
+                    if let Some(block_msg) = self.check_planning_gate(&name) {
+                        self.session.add_message(Message::tool_request(
+                            id.clone(),
+                            name.clone(),
+                            args,
+                        ));
+                        self.session
+                            .add_message(Message::tool_result(id, block_msg));
+                        continue;
+                    }
+
                     let changed_path = self.extract_changed_path(&name, &args);
+                    let bash_cmd = if name == "bash" {
+                        Some(Self::extract_bash_command(&args))
+                    } else {
+                        None
+                    };
                     let mut result = match tool.execute(args.clone(), &tool_ctx) {
                         Ok(r) => r,
                         Err(e) => {
@@ -362,13 +439,11 @@ impl Agent {
                     };
 
                     if name == "bash" {
-                        if let Ok(output) = parse_bash_output(&result) {
+                        if let Some(cmd) = bash_cmd {
                             let exit_code = extract_exit_code(&result);
-                            self.bash_history.borrow_mut().push((
-                                output,
-                                result.clone(),
-                                exit_code,
-                            ));
+                            self.bash_history
+                                .borrow_mut()
+                                .push((cmd, result.clone(), exit_code));
                         }
                     }
 
@@ -465,6 +540,22 @@ impl Agent {
                             }
                         }
 
+                        if let Some(block_msg) = self.check_planning_gate(&name) {
+                            self.session.add_message(Message::tool_request(
+                                id.clone(),
+                                name.clone(),
+                                args.clone(),
+                            ));
+                            self.session
+                                .add_message(Message::tool_result(id, block_msg));
+                            continue;
+                        }
+
+                        let bash_cmd = if name == "bash" {
+                            Some(Self::extract_bash_command(&args))
+                        } else {
+                            None
+                        };
                         let mut result = match tool.execute(args.clone(), &tool_ctx) {
                             Ok(r) => r,
                             Err(e) => {
@@ -482,10 +573,10 @@ impl Agent {
                         };
 
                         if name == "bash" {
-                            if let Ok(output) = parse_bash_output(&result) {
+                            if let Some(cmd) = bash_cmd {
                                 let exit_code = extract_exit_code(&result);
                                 self.bash_history.borrow_mut().push((
-                                    output,
+                                    cmd,
                                     result.clone(),
                                     exit_code,
                                 ));
@@ -529,16 +620,18 @@ impl Agent {
             unresolved_issues: Vec::new(),
         };
 
-        for (output, full_output, exit_code) in self.bash_history.borrow().iter() {
-            let succeeded = exit_code == &0;
-            evidence
-                .verification_commands_run
-                .push(VerificationCommand {
-                    command: output.clone(),
-                    output: full_output.clone(),
-                    exit_code: *exit_code,
-                    succeeded,
-                });
+        for (command, full_output, exit_code) in self.bash_history.borrow().iter() {
+            if Self::is_verification_command(command) {
+                let succeeded = exit_code == &0;
+                evidence
+                    .verification_commands_run
+                    .push(VerificationCommand {
+                        command: command.clone(),
+                        output: full_output.clone(),
+                        exit_code: *exit_code,
+                        succeeded,
+                    });
+            }
         }
 
         let task_result = TaskResult::new(response.to_string())
@@ -546,20 +639,6 @@ impl Agent {
             .with_verification_commands(evidence.verification_commands_run.clone());
 
         task_result.format_proof_of_work()
-    }
-}
-
-fn parse_bash_output(result: &str) -> Result<String> {
-    let prefix = "Output: ";
-    if let Some(pos) = result.find(prefix) {
-        let after_prefix = &result[pos + prefix.len()..];
-        if let Some(end) = after_prefix.find("\nExit code:") {
-            Ok(after_prefix[..end].trim().to_string())
-        } else {
-            Ok(after_prefix.trim().to_string())
-        }
-    } else {
-        Ok(result.lines().next().unwrap_or("").to_string())
     }
 }
 
