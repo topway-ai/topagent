@@ -1613,3 +1613,172 @@ fn test_route_selection_follows_execution_stage() {
         "route should use edit model after entering edit stage"
     );
 }
+
+#[test]
+fn test_preexisting_dirty_file_changed_during_run() {
+    let temp = TempDir::new().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    std::fs::write(temp.path().join("README.md"), "# Initial").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    std::fs::write(temp.path().join("dirty.txt"), "original content").unwrap();
+
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root);
+
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "dirty.txt", "content": "modified content"}),
+        },
+        ProviderResponse::Message(Message::assistant("Done".to_string())),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "modify dirty file");
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    assert!(
+        output.contains("dirty.txt"),
+        "pre-existing dirty file that was actually modified should appear in proof of work: {}",
+        output
+    );
+    assert!(
+        output.contains("pre-existing dirty"),
+        "should label as pre-existing dirty: {}",
+        output
+    );
+}
+
+#[test]
+fn test_preexisting_dirty_file_unchanged_not_reported() {
+    let temp = TempDir::new().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    std::fs::write(temp.path().join("README.md"), "# Initial").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    std::fs::write(temp.path().join("dirty.txt"), "pre-existing content").unwrap();
+
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root);
+
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path": "dirty.txt"}),
+        },
+        ProviderResponse::Message(Message::assistant("Read file".to_string())),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "read dirty file");
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    assert!(
+        !output.contains("dirty.txt"),
+        "pre-existing dirty file that was NOT modified should NOT appear in proof of work: {}",
+        output
+    );
+}
+
+#[test]
+fn test_verification_bash_does_not_force_edit_stage() {
+    let (ctx, _temp) = make_test_context();
+
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "cargo test"}),
+        },
+        ProviderResponse::Message(Message::assistant("Tests passed".to_string())),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "run tests");
+    assert!(result.is_ok());
+
+    assert_eq!(
+        agent.execution_stage(),
+        ExecutionStage::Research,
+        "verification bash should NOT force Edit stage when no files are actually mutated"
+    );
+}
+
+#[test]
+fn test_readonly_bash_stays_in_research() {
+    let (ctx, _temp) = make_test_context();
+
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "ls -la"}),
+        },
+        ProviderResponse::Message(Message::assistant("Listed".to_string())),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "list files");
+    assert!(result.is_ok());
+
+    assert_eq!(
+        agent.execution_stage(),
+        ExecutionStage::Research,
+        "read-only bash should stay in Research stage"
+    );
+}

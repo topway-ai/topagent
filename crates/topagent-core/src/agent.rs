@@ -17,6 +17,7 @@ use crate::tool_genesis::{
 use crate::tools::{SaveLessonTool, SavePlanTool, Tool, ToolRegistry, UpdatePlanTool};
 use crate::{Error, Message, Provider, ProviderResponse, Result, ToolSpec};
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -39,6 +40,7 @@ pub struct Agent {
 
 struct RunBaseline {
     pre_existing_dirty: Vec<String>,
+    pre_existing_hashes: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -202,10 +204,24 @@ impl Agent {
         self.planning_gate_active
     }
 
+    fn compute_file_hash(path: &Path) -> Option<String> {
+        use std::collections::hash_map::DefaultHasher;
+        use std::fs::File;
+        use std::hash::{Hash, Hasher};
+        use std::io::Read;
+
+        let mut file = File::open(path).ok()?;
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents).ok()?;
+        let mut hasher = DefaultHasher::new();
+        contents.hash(&mut hasher);
+        Some(format!("{:x}", hasher.finish()))
+    }
+
     fn capture_run_baseline(&self, workspace_root: &Path) {
         let mut dirty = Vec::new();
+        let mut hashes = HashMap::new();
 
-        // Capture pre-existing dirty + untracked files at run start for truthful attribution
         if let Ok(output) = std::process::Command::new("git")
             .args(["diff", "--name-only", "HEAD"])
             .current_dir(workspace_root)
@@ -220,7 +236,6 @@ impl Agent {
             }
         }
 
-        // Get untracked files
         if let Ok(output) = std::process::Command::new("git")
             .args(["ls-files", "--others", "--exclude-standard"])
             .current_dir(workspace_root)
@@ -235,15 +250,30 @@ impl Agent {
             }
         }
 
+        for file in &dirty {
+            let path = workspace_root.join(file);
+            if let Some(hash) = Self::compute_file_hash(&path) {
+                hashes.insert(file.clone(), hash);
+            }
+        }
+
         *self.run_baseline.borrow_mut() = Some(RunBaseline {
             pre_existing_dirty: dirty,
+            pre_existing_hashes: hashes,
         });
     }
 
-    fn reconcile_changed_files(&self, workspace_root: &Path) {
+    fn reconcile_changed_files(&self, workspace_root: &Path) -> bool {
+        let baseline = self.run_baseline.borrow();
+        let pre_existing_dirty = baseline
+            .as_ref()
+            .map_or(vec![], |b| b.pre_existing_dirty.clone());
+        let pre_existing_hashes = baseline
+            .as_ref()
+            .map_or(HashMap::new(), |b| b.pre_existing_hashes.clone());
+
         let mut current_dirty = Vec::new();
 
-        // Get files changed from last commit (staged + unstaged)
         if let Ok(output) = std::process::Command::new("git")
             .args(["diff", "--name-only", "HEAD"])
             .current_dir(workspace_root)
@@ -258,7 +288,6 @@ impl Agent {
             }
         }
 
-        // Get untracked files
         if let Ok(output) = std::process::Command::new("git")
             .args(["ls-files", "--others", "--exclude-standard"])
             .current_dir(workspace_root)
@@ -274,11 +303,35 @@ impl Agent {
         }
 
         let mut changed = self.changed_files.borrow_mut();
+        let mut found_new_change = false;
+
         for file in current_dirty {
-            if !changed.contains(&file) {
-                changed.push(file);
+            let was_pre_existing = pre_existing_dirty.contains(&file);
+
+            if was_pre_existing {
+                if let Some(baseline_hash) = pre_existing_hashes.get(&file) {
+                    let current_hash = Self::compute_file_hash(&workspace_root.join(&file));
+                    if current_hash.as_ref() != Some(baseline_hash) {
+                        if !changed.contains(&file) {
+                            changed.push(file.clone());
+                        }
+                        found_new_change = true;
+                    }
+                } else {
+                    if !changed.contains(&file) {
+                        changed.push(file.clone());
+                    }
+                    found_new_change = true;
+                }
+            } else {
+                if !changed.contains(&file) {
+                    changed.push(file.clone());
+                }
+                found_new_change = true;
             }
         }
+
+        found_new_change
     }
 
     fn is_mutation_tool(name: &str) -> bool {
@@ -633,8 +686,10 @@ impl Agent {
                             }
                             let result = external_tool.execute(&args, &tool_ctx);
                             *self.external_tool_ran.borrow_mut() = true;
-                            self.reconcile_changed_files(&ctx.workspace_root);
-                            if self.execution_stage == ExecutionStage::Research {
+                            let found_new_change =
+                                self.reconcile_changed_files(&ctx.workspace_root);
+                            if found_new_change && self.execution_stage == ExecutionStage::Research
+                            {
                                 self.execution_stage = ExecutionStage::Edit;
                             }
                             self.session.add_message(Message::tool_request(
@@ -746,11 +801,11 @@ impl Agent {
                                 .borrow_mut()
                                 .push((cmd, result.clone(), exit_code));
                         }
-                        if class == BashCommandClass::MutationRisk
-                            || class == BashCommandClass::Verification
-                        {
-                            self.reconcile_changed_files(&ctx.workspace_root);
-                            if self.execution_stage == ExecutionStage::Research {
+                        if class == BashCommandClass::MutationRisk {
+                            let found_new_change =
+                                self.reconcile_changed_files(&ctx.workspace_root);
+                            if found_new_change && self.execution_stage == ExecutionStage::Research
+                            {
                                 self.execution_stage = ExecutionStage::Edit;
                             }
                         }
@@ -829,8 +884,11 @@ impl Agent {
                                 }
                                 let result = external_tool.execute(&args, &tool_ctx);
                                 *self.external_tool_ran.borrow_mut() = true;
-                                self.reconcile_changed_files(&ctx.workspace_root);
-                                if self.execution_stage == ExecutionStage::Research {
+                                let found_new_change =
+                                    self.reconcile_changed_files(&ctx.workspace_root);
+                                if found_new_change
+                                    && self.execution_stage == ExecutionStage::Research
+                                {
                                     self.execution_stage = ExecutionStage::Edit;
                                 }
                                 self.session.add_message(Message::tool_request(
@@ -928,11 +986,12 @@ impl Agent {
                                     exit_code,
                                 ));
                             }
-                            if class == BashCommandClass::MutationRisk
-                                || class == BashCommandClass::Verification
-                            {
-                                self.reconcile_changed_files(&ctx.workspace_root);
-                                if self.execution_stage == ExecutionStage::Research {
+                            if class == BashCommandClass::MutationRisk {
+                                let found_new_change =
+                                    self.reconcile_changed_files(&ctx.workspace_root);
+                                if found_new_change
+                                    && self.execution_stage == ExecutionStage::Research
+                                {
                                     self.execution_stage = ExecutionStage::Edit;
                                 }
                             }
