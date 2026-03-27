@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -9,7 +9,7 @@ use topagent_core::{
     create_provider,
     model::{ModelRoute, ProviderId, RoutingPolicy, TaskCategory},
     tools::default_tools,
-    Agent, Message, Provider, ProviderResponse, RuntimeOptions, TelegramAdapter,
+    Agent, RuntimeOptions, TelegramAdapter,
 };
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
@@ -24,7 +24,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Run {
-        #[arg(long, help = "OpenRouter API key")]
+        #[arg(long, help = "OpenRouter API key (or OPENROUTER_API_KEY)")]
         api_key: Option<String>,
 
         #[arg(long, default_value = "openrouter", help = "Provider to use")]
@@ -33,8 +33,12 @@ enum Commands {
         #[arg(long, help = "Model to use (overrides default for provider)")]
         model: Option<String>,
 
-        #[arg(long, help = "Working directory for file operations")]
-        cwd: Option<PathBuf>,
+        #[arg(
+            long = "workspace",
+            alias = "cwd",
+            help = "Workspace/repo directory for file operations"
+        )]
+        workspace: Option<PathBuf>,
 
         #[arg(long, help = "Maximum steps for agent loop")]
         max_steps: Option<usize>,
@@ -57,11 +61,15 @@ enum Commands {
 #[derive(Subcommand)]
 enum TelegramCommands {
     Serve {
-        #[arg(long, help = "Telegram bot token")]
+        #[arg(long, help = "Telegram bot token (or TELEGRAM_BOT_TOKEN)")]
         token: Option<String>,
 
-        #[arg(long, help = "Working directory for file operations")]
-        cwd: Option<PathBuf>,
+        #[arg(
+            long = "workspace",
+            alias = "cwd",
+            help = "Workspace/repo directory for Telegram-triggered runs"
+        )]
+        workspace: Option<PathBuf>,
 
         #[arg(long, help = "Maximum steps for agent loop")]
         max_steps: Option<usize>,
@@ -75,9 +83,7 @@ enum TelegramCommands {
 }
 
 fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+    init_tracing();
 
     let cli = Cli::parse();
 
@@ -86,7 +92,7 @@ fn main() -> Result<()> {
             api_key,
             provider,
             model,
-            cwd,
+            workspace,
             max_steps,
             max_retries,
             timeout_secs,
@@ -95,7 +101,7 @@ fn main() -> Result<()> {
             api_key,
             provider,
             model,
-            cwd,
+            workspace,
             max_steps,
             max_retries,
             timeout_secs,
@@ -104,53 +110,132 @@ fn main() -> Result<()> {
         Commands::Telegram { telegram_command } => match telegram_command {
             TelegramCommands::Serve {
                 token,
-                cwd,
+                workspace,
                 max_steps,
                 max_retries,
                 timeout_secs,
-            } => run_telegram_serve(token, cwd, max_steps, max_retries, timeout_secs),
+            } => run_telegram_serve(token, workspace, max_steps, max_retries, timeout_secs),
         },
     }
+}
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+}
+
+fn build_runtime_options(
+    max_steps: Option<usize>,
+    max_retries: Option<usize>,
+    timeout_secs: Option<u64>,
+) -> RuntimeOptions {
+    RuntimeOptions::new()
+        .with_max_steps(max_steps.unwrap_or(50))
+        .with_max_provider_retries(max_retries.unwrap_or(3))
+        .with_provider_timeout_secs(timeout_secs.unwrap_or(120))
+}
+
+fn resolve_workspace_path(workspace: Option<PathBuf>) -> Result<PathBuf> {
+    let workspace = match workspace {
+        Some(path) => path,
+        None => std::env::current_dir()
+            .context("Failed to determine the current directory. Use --workspace /path/to/repo.")?,
+    };
+
+    if !workspace.exists() {
+        return Err(anyhow::anyhow!(
+            "Workspace path does not exist: {}. Use --workspace /path/to/repo.",
+            workspace.display()
+        ));
+    }
+
+    if !workspace.is_dir() {
+        return Err(anyhow::anyhow!(
+            "Workspace path is not a directory: {}",
+            workspace.display()
+        ));
+    }
+
+    workspace.canonicalize().map_err(|e| {
+        anyhow::anyhow!(
+            "Workspace path is not accessible: {} ({})",
+            workspace.display(),
+            e
+        )
+    })
+}
+
+fn require_openrouter_api_key(api_key: Option<String>) -> Result<String> {
+    let api_key = api_key
+        .or_else(|| std::env::var("OPENROUTER_API_KEY").ok())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    if api_key.is_empty() {
+        return Err(anyhow::anyhow!(
+            "OpenRouter API key required: set --api-key or OPENROUTER_API_KEY"
+        ));
+    }
+
+    Ok(api_key)
+}
+
+fn require_telegram_token(token: Option<String>) -> Result<String> {
+    let token = token
+        .or_else(|| std::env::var("TELEGRAM_BOT_TOKEN").ok())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    if token.is_empty() {
+        return Err(anyhow::anyhow!(
+            "Telegram bot token required: set --token or TELEGRAM_BOT_TOKEN"
+        ));
+    }
+
+    if !token.contains(':') {
+        return Err(anyhow::anyhow!(
+            "Telegram bot token looks invalid. Expected something like 123456:ABCdef..."
+        ));
+    }
+
+    Ok(token)
 }
 
 fn run_one_shot(
     api_key: Option<String>,
     provider: String,
     model: Option<String>,
-    cwd: Option<PathBuf>,
+    workspace: Option<PathBuf>,
     max_steps: Option<usize>,
     max_retries: Option<usize>,
     timeout_secs: Option<u64>,
     instruction: String,
 ) -> Result<()> {
-    let workspace = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
+    let workspace = resolve_workspace_path(workspace)?;
     let ctx = ExecutionContext::new(workspace);
-
-    info!("starting agent with instruction: {}", instruction);
-    info!("workspace root: {:?}", ctx.workspace_root);
-
-    let options = RuntimeOptions::new()
-        .with_max_steps(max_steps.unwrap_or(50))
-        .with_max_provider_retries(max_retries.unwrap_or(3))
-        .with_provider_timeout_secs(timeout_secs.unwrap_or(120));
+    let options = build_runtime_options(max_steps, max_retries, timeout_secs);
 
     let provider_id = ProviderId::parse(&provider).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let route = RoutingPolicy::select_route(TaskCategory::Default, model.as_deref());
+    let mut route = RoutingPolicy::select_route(TaskCategory::Default, model.as_deref());
+    route.provider_id = provider_id.clone();
+    let api_key = require_openrouter_api_key(api_key)?;
 
-    let api_key = api_key.or_else(|| std::env::var("OPENROUTER_API_KEY").ok());
-    let provider: Box<dyn Provider> = if let Some(api_key) = api_key {
-        let mut route = route;
-        route.provider_id = provider_id;
-        create_provider(
-            &route,
-            &api_key,
-            default_tools().specs(),
-            options.provider_timeout_secs,
-        )?
-    } else {
-        info!("No API key provided, using echo provider (for testing)");
-        Box::new(EchoProvider)
-    };
+    info!(
+        "starting one-shot run | provider: {} | model: {} | workspace: {}",
+        provider_id,
+        route.model_id,
+        ctx.workspace_root.display()
+    );
+    info!("instruction: {}", instruction);
+
+    let provider = create_provider(
+        &route,
+        &api_key,
+        default_tools().specs(),
+        options.provider_timeout_secs,
+    )?;
 
     let mut agent = Agent::with_options(provider, default_tools().into_inner(), options);
 
@@ -169,38 +254,35 @@ fn run_one_shot(
 
 fn run_telegram_serve(
     token: Option<String>,
-    cwd: Option<PathBuf>,
+    workspace: Option<PathBuf>,
     max_steps: Option<usize>,
     max_retries: Option<usize>,
     timeout_secs: Option<u64>,
 ) -> Result<()> {
-    let token = token
-        .or_else(|| std::env::var("TELEGRAM_BOT_TOKEN").ok())
-        .ok_or_else(|| {
-            anyhow::anyhow!("Telegram bot token required: set --token or TELEGRAM_BOT_TOKEN")
-        })?;
-
-    let workspace = cwd.unwrap_or_else(|| std::env::current_dir().unwrap());
+    let token = require_telegram_token(token)?;
+    let workspace = resolve_workspace_path(workspace)?;
     let ctx = ExecutionContext::new(workspace);
-
-    let options = RuntimeOptions::new()
-        .with_max_steps(max_steps.unwrap_or(50))
-        .with_max_provider_retries(max_retries.unwrap_or(3))
-        .with_provider_timeout_secs(timeout_secs.unwrap_or(120));
-
-    let api_key = std::env::var("OPENROUTER_API_KEY").ok().ok_or_else(|| {
-        anyhow::anyhow!("OPENROUTER_API_KEY environment variable required for Telegram mode")
-    })?;
+    let workspace_label = ctx.workspace_root.display().to_string();
+    let options = build_runtime_options(max_steps, max_retries, timeout_secs);
+    let api_key = require_openrouter_api_key(None)?;
 
     let route = RoutingPolicy::select_route(TaskCategory::Default, None);
-
     let adapter = TelegramAdapter::new(&token);
 
-    if let Ok(true) = adapter.check_webhook() {
-        return Err(anyhow::anyhow!(
-            "Telegram webhook is configured. Please remove the webhook to use long polling mode.\n\
-             Use deleteWebhook to disable the webhook: https://core.telegram.org/bots/api#deletewebhook"
-        ));
+    match adapter.check_webhook() {
+        Ok(true) => {
+            return Err(anyhow::anyhow!(
+                "Telegram webhook is configured. Please remove it before using long polling.\n\
+                 Use deleteWebhook to disable the webhook: https://core.telegram.org/bots/api#deletewebhook"
+            ));
+        }
+        Ok(false) => {}
+        Err(e) => {
+            return Err(anyhow::anyhow!(
+                "Failed to check Telegram webhook state: {}. Check the bot token and network access.",
+                e
+            ));
+        }
     }
 
     let bot_info = adapter.get_me().map_err(|e| {
@@ -212,16 +294,19 @@ fn run_telegram_serve(
     })?;
 
     info!(
-        "bot: @{} (id: {}) | workspace: {:?} | mode: private text chats only",
+        "starting Telegram mode | provider: {} | model: {} | workspace: {}",
+        route.provider_id, route.model_id, workspace_label
+    );
+    info!(
+        "bot: @{} (id: {}) | private text chats only | send /start in a private chat",
         bot_info.username.as_deref().unwrap_or("(no username)"),
         bot_info.id,
-        ctx.workspace_root
     );
 
     let mut session_manager = ChatSessionManager::new(route, api_key, options);
     let offset = Arc::new(Mutex::new(0i64));
 
-    info!(" Telegram bot is running, waiting for messages...");
+    info!("telegram polling started");
 
     loop {
         let current_offset = { *offset.lock().unwrap() };
@@ -257,20 +342,28 @@ fn run_telegram_serve(
 
                     if text == "/start" || text == "/help" {
                         let reply = if text == "/start" {
-                            " Rust PI Coding Agent\n\n\
-                             This bot responds to text messages about your project.\n\n\
-                             Commands:\n\
-                             /help - show this message\n\
-                             /reset - clear conversation history\n\n\
-                             Note: private chats only, text messages only."
+                            format!(
+                                "TopAgent\n\n\
+                                 Workspace: {}\n\
+                                 Mode: private text chats only\n\n\
+                                 Commands:\n\
+                                 /help - show this message\n\
+                                 /reset - clear conversation history\n\n\
+                                 Send a plain text task to run TopAgent in this workspace.",
+                                workspace_label
+                            )
                         } else {
-                            " Rust PI Coding Agent\n\n\
-                             Send any text message about your project.\n\
-                             /reset clears your conversation history."
+                            format!(
+                                "TopAgent\n\n\
+                                 Workspace: {}\n\
+                                 Send a plain text task about this workspace.\n\
+                                 /reset clears your conversation history.",
+                                workspace_label
+                            )
                         };
                         let outgoing = OutgoingMessage {
                             chat_id,
-                            text: reply.to_string(),
+                            text: reply,
                         };
                         if let Err(e) = adapter.send_message(outgoing) {
                             error!("failed to send message: {}", e);
@@ -306,41 +399,12 @@ fn run_telegram_serve(
                 }
             }
             Err(e) => {
-                error!("failed to get updates: {}", e);
+                error!(
+                    "failed to get Telegram updates: {}. Retrying in 5 seconds.",
+                    e
+                );
                 std::thread::sleep(std::time::Duration::from_secs(5));
             }
-        }
-    }
-}
-
-struct EchoProvider;
-
-impl Provider for EchoProvider {
-    fn complete(
-        &self,
-        messages: &[topagent_core::Message],
-        _route: &topagent_core::ModelRoute,
-    ) -> Result<ProviderResponse, topagent_core::Error> {
-        let last = messages
-            .last()
-            .map(|m| m.as_text().unwrap_or(""))
-            .unwrap_or("");
-        if last.contains("read") {
-            Ok(ProviderResponse::Message(Message::assistant(
-                "I would read that file for you.",
-            )))
-        } else if last.contains("write") || last.contains("edit") {
-            Ok(ProviderResponse::Message(Message::assistant(
-                "I would write that file for you.",
-            )))
-        } else if last.contains("bash") || last.contains("run") || last.contains("execute") {
-            Ok(ProviderResponse::Message(Message::assistant(
-                "I would execute that command for you.",
-            )))
-        } else {
-            Ok(ProviderResponse::Message(Message::assistant(
-                "Understood. I can help with file operations, bash commands, and code editing.",
-            )))
         }
     }
 }

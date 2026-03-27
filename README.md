@@ -1,118 +1,128 @@
-# Top Agent - Local AI Coding Agent
+# TopAgent
 
-A minimal coding agent that runs locally in your workspace. It uses an LLM via OpenRouter to execute file operations, shell commands, and git actions.
+TopAgent is a local coding agent for a single workspace. It runs on your machine, uses OpenRouter for model access, and can answer either from the CLI or from a Telegram bot.
 
-## Current Status
+## Xubuntu Quick Start
 
-Early-phase project. Works for basic file operations, shell commands, git workflows, and task planning. Not production-tested. Use with caution.
+This is the shortest path to a real end-to-end test on Xubuntu.
 
-## Prerequisites
-
-- Rust (1.75+)
-- OpenRouter API key
-
-## Install Rust
+### 1. Install system dependencies
 
 ```bash
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
+sudo apt update
+sudo apt install -y build-essential curl git
 ```
 
-## Quick Start
+### 2. Install Rust
 
 ```bash
-# Clone and install
-git clone https://github.com/TopWayAI/topagent.git
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+source "$HOME/.cargo/env"
+```
+
+### 3. Build and install TopAgent
+
+```bash
+git clone https://github.com/topway-ai/topagent.git
 cd topagent
 cargo install --path crates/topagent-cli
-
-# Set your API key (do this once per shell session)
-export OPENROUTER_API_KEY=your_key_here
-
-# Run from your project directory
-cd /path/to/your/project
-topagent "summarize this project"
 ```
 
-The agent uses MiniMax M2.7 by default.
-
-## Example Commands
+### 4. Export the required secrets
 
 ```bash
-# Inspect a project
-topagent "give me a summary"
-
-# Check git status
-topagent "show git status"
-
-# Make a small edit
-topagent "add a TODO comment to src/main.rs"
+export OPENROUTER_API_KEY="your_openrouter_key"
+export TELEGRAM_BOT_TOKEN="123456:ABCdefYourBotToken"
 ```
 
-## Alternative: Run Without Installing
-
-If you don't want to install, run the binary directly:
+### 5. Pick the workspace TopAgent should operate in
 
 ```bash
-cargo build --release
-cd /path/to/your/project
-/path/to/topagent/target/release/topagent --api-key YOUR_KEY "summarize this project"
+export TOPAGENT_WORKSPACE="$HOME/path/to/your/repo"
 ```
 
-## Optional: Workspace Files
+TopAgent uses the directory you pass with `--workspace`. If you omit it, TopAgent uses the current directory.
 
-**TOPAGENT.md** - Project instructions (optional, place in workspace root):
-
-```markdown
-# Project Instructions
-
-- Use TypeScript, not JavaScript
-- Run tests before committing
-```
-
-## Telegram Bot (Optional)
-
-Run the agent as a Telegram bot with long polling.
-
-### Setup
-
-1. Create a bot: open Telegram, search for **BotFather**, send `/newbot`
-2. Copy the bot token (e.g. `123456:ABCdef...`)
-3. Export: `export TELEGRAM_BOT_TOKEN=your_token`
-4. Make sure no webhook is active (BotFather will tell you if one is set)
-5. Run:
-   ```bash
-   topagent telegram serve --cwd /path/to/your/project
-   ```
-6. Open Telegram, find your bot, send a private text message
-
-### First-version limitations
-- **private chats only** (groups/supergroups ignored)
-- **text messages only** (photos/docs/other types get a clear reply)
-- **in-memory sessions** (history clears on restart)
-
-### Built-in commands
-- `/start` - show bot info
-- `/help` - show usage
-- `/reset` - clear conversation history for this chat
-
-### CLI Options
+### 6. Verify the CLI path first
 
 ```bash
-topagent --help
-
-Options:
-  --api-key KEY      OpenRouter API key (or set OPENROUTER_API_KEY env var)
-  --model MODEL      Model to use (default: minimax/minimax-m2.7)
-  --cwd DIR          Working directory
-  --max-steps N      Max steps (default: 50)
-  --max-retries N    Retries (default: 3)
-  --timeout-secs N   Timeout (default: 120)
+topagent run --workspace "$TOPAGENT_WORKSPACE" "summarize this repository"
 ```
+
+If startup is correct, TopAgent logs the provider, model, and workspace before it runs.
+
+## Telegram Bot Quick Start
+
+### 1. Create the bot
+
+1. Open Telegram.
+2. Message `@BotFather`.
+3. Run `/newbot`.
+4. Copy the bot token into `TELEGRAM_BOT_TOKEN`.
+
+If this bot was previously used with a webhook, remove the webhook before using TopAgent long polling.
+
+### 2. Start TopAgent in Telegram mode
+
+```bash
+topagent telegram serve --workspace "$TOPAGENT_WORKSPACE"
+```
+
+On startup you should see log lines showing:
+
+- the workspace path
+- the provider and model
+- the bot username
+- that TopAgent is using private text chats only
+
+### 3. Perform the first real Telegram test
+
+1. Open a private chat with your bot.
+2. Send `/start`.
+3. Confirm that the reply shows the same workspace path you passed with `--workspace`.
+4. Send a real task such as:
+
+```text
+Summarize this repository and tell me which files are the main entry points.
+```
+
+## What Success Looks Like
+
+- `topagent run` starts without asking you to guess missing configuration.
+- `topagent telegram serve` starts and prints the workspace and bot identity.
+- `/start` replies in Telegram and shows the workspace path.
+- A plain text message in a private chat produces a real agent response.
+
+## Common First-Run Failures
+
+- `OpenRouter API key required: set --api-key or OPENROUTER_API_KEY`
+  Set `OPENROUTER_API_KEY` or pass `--api-key` to `topagent run`.
+
+- `Telegram bot token required: set --token or TELEGRAM_BOT_TOKEN`
+  Set `TELEGRAM_BOT_TOKEN` or pass `--token` to `topagent telegram serve`.
+
+- `Telegram bot token looks invalid`
+  The token should look like `123456:ABCdef...`.
+
+- `Workspace path does not exist`
+  Fix the `--workspace` path or run TopAgent from inside the repo you want it to use.
+
+- `Telegram webhook is configured`
+  Remove the webhook first, then restart `topagent telegram serve`.
+
+- `Failed to validate bot token (getMe failed)`
+  The token is wrong, revoked, or Telegram is unreachable from this machine.
+
+## Current Limitations
+
+- Telegram mode supports private chats only.
+- Telegram mode supports text messages only.
+- Telegram chat history is stored in memory and resets on process restart.
+- One TopAgent process uses one workspace at a time.
 
 ## Safety
 
-This agent can read/write/edit files, run shell commands, and execute git operations. Only run in directories you trust.
+TopAgent can read, write, edit, run bash commands, and perform git operations inside the chosen workspace. Point it only at directories you trust.
 
 ## Uninstall
 
