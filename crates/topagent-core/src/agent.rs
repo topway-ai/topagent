@@ -41,6 +41,7 @@ pub struct Agent {
 struct RunBaseline {
     pre_existing_dirty: Vec<String>,
     pre_existing_hashes: HashMap<String, String>,
+    pre_existing_unattributed: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -144,10 +145,7 @@ impl Agent {
     fn track_changed_file(&self, tool_name: &str, args: &serde_json::Value) {
         if tool_name == "write" || tool_name == "edit" {
             if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
-                let mut changed = self.changed_files.borrow_mut();
-                if !changed.contains(&path.to_string()) {
-                    changed.push(path.to_string());
-                }
+                self.record_changed_file(path.to_string());
             }
         }
     }
@@ -163,6 +161,9 @@ impl Agent {
     }
 
     fn record_changed_file(&self, path: String) {
+        if self.is_pre_existing_dirty(&path) {
+            return;
+        }
         let mut changed = self.changed_files.borrow_mut();
         if !changed.contains(&path) {
             changed.push(path);
@@ -219,8 +220,91 @@ impl Agent {
     }
 
     fn capture_run_baseline(&self, workspace_root: &Path) {
-        let mut dirty = Vec::new();
+        let dirty = Self::list_dirty_files(workspace_root);
         let mut hashes = HashMap::new();
+        let mut unattributed = Vec::new();
+
+        for file in &dirty {
+            let path = workspace_root.join(file);
+            if let Some(hash) = Self::compute_file_hash(&path) {
+                hashes.insert(file.clone(), hash);
+            } else {
+                unattributed.push(file.clone());
+            }
+        }
+
+        *self.run_baseline.borrow_mut() = Some(RunBaseline {
+            pre_existing_dirty: dirty,
+            pre_existing_hashes: hashes,
+            pre_existing_unattributed: unattributed,
+        });
+    }
+
+    fn reconcile_changed_files(&self, workspace_root: &Path) -> bool {
+        let baseline = self.run_baseline.borrow();
+        let pre_existing_dirty = baseline
+            .as_ref()
+            .map_or(vec![], |b| b.pre_existing_dirty.clone());
+        let pre_existing_hashes = baseline
+            .as_ref()
+            .map_or(HashMap::new(), |b| b.pre_existing_hashes.clone());
+        let current_dirty = Self::list_dirty_files(workspace_root);
+
+        let mut changed = self.changed_files.borrow_mut();
+        let mut found_new_change = false;
+
+        for file in current_dirty {
+            let was_pre_existing = pre_existing_dirty.contains(&file);
+
+            if was_pre_existing {
+                if let Some(baseline_hash) = pre_existing_hashes.get(&file) {
+                    let current_hash = Self::compute_file_hash(&workspace_root.join(&file));
+                    if current_hash.as_ref() != Some(baseline_hash) {
+                        if !changed.contains(&file) {
+                            changed.push(file.clone());
+                        }
+                        found_new_change = true;
+                    }
+                }
+            } else {
+                if !changed.contains(&file) {
+                    changed.push(file.clone());
+                }
+                found_new_change = true;
+            }
+        }
+
+        found_new_change
+    }
+
+    fn is_pre_existing_dirty(&self, path: &str) -> bool {
+        let baseline = self.run_baseline.borrow();
+        baseline
+            .as_ref()
+            .is_some_and(|b| b.pre_existing_dirty.iter().any(|file| file == path))
+    }
+
+    fn unattributed_pre_existing_dirty_files(&self, workspace_root: &Path) -> Vec<String> {
+        let baseline = self.run_baseline.borrow();
+        let Some(baseline) = baseline.as_ref() else {
+            return Vec::new();
+        };
+
+        if baseline.pre_existing_unattributed.is_empty() {
+            return Vec::new();
+        }
+
+        let current_dirty = Self::list_dirty_files(workspace_root);
+        baseline
+            .pre_existing_unattributed
+            .iter()
+            .filter(|file| current_dirty.contains(file))
+            .cloned()
+            .collect()
+    }
+
+    fn list_dirty_files(workspace_root: &Path) -> Vec<String> {
+        let mut dirty = Vec::new();
 
         if let Ok(output) = std::process::Command::new("git")
             .args(["diff", "--name-only", "HEAD"])
@@ -250,88 +334,7 @@ impl Agent {
             }
         }
 
-        for file in &dirty {
-            let path = workspace_root.join(file);
-            if let Some(hash) = Self::compute_file_hash(&path) {
-                hashes.insert(file.clone(), hash);
-            }
-        }
-
-        *self.run_baseline.borrow_mut() = Some(RunBaseline {
-            pre_existing_dirty: dirty,
-            pre_existing_hashes: hashes,
-        });
-    }
-
-    fn reconcile_changed_files(&self, workspace_root: &Path) -> bool {
-        let baseline = self.run_baseline.borrow();
-        let pre_existing_dirty = baseline
-            .as_ref()
-            .map_or(vec![], |b| b.pre_existing_dirty.clone());
-        let pre_existing_hashes = baseline
-            .as_ref()
-            .map_or(HashMap::new(), |b| b.pre_existing_hashes.clone());
-
-        let mut current_dirty = Vec::new();
-
-        if let Ok(output) = std::process::Command::new("git")
-            .args(["diff", "--name-only", "HEAD"])
-            .current_dir(workspace_root)
-            .output()
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    current_dirty.push(trimmed.to_string());
-                }
-            }
-        }
-
-        if let Ok(output) = std::process::Command::new("git")
-            .args(["ls-files", "--others", "--exclude-standard"])
-            .current_dir(workspace_root)
-            .output()
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() && !current_dirty.contains(&trimmed.to_string()) {
-                    current_dirty.push(trimmed.to_string());
-                }
-            }
-        }
-
-        let mut changed = self.changed_files.borrow_mut();
-        let mut found_new_change = false;
-
-        for file in current_dirty {
-            let was_pre_existing = pre_existing_dirty.contains(&file);
-
-            if was_pre_existing {
-                if let Some(baseline_hash) = pre_existing_hashes.get(&file) {
-                    let current_hash = Self::compute_file_hash(&workspace_root.join(&file));
-                    if current_hash.as_ref() != Some(baseline_hash) {
-                        if !changed.contains(&file) {
-                            changed.push(file.clone());
-                        }
-                        found_new_change = true;
-                    }
-                } else {
-                    if !changed.contains(&file) {
-                        changed.push(file.clone());
-                    }
-                    found_new_change = true;
-                }
-            } else {
-                if !changed.contains(&file) {
-                    changed.push(file.clone());
-                }
-                found_new_change = true;
-            }
-        }
-
-        found_new_change
+        dirty
     }
 
     fn is_mutation_tool(name: &str) -> bool {
@@ -801,7 +804,10 @@ impl Agent {
                                 .borrow_mut()
                                 .push((cmd, result.clone(), exit_code));
                         }
-                        if class == BashCommandClass::MutationRisk {
+                        if matches!(
+                            class,
+                            BashCommandClass::MutationRisk | BashCommandClass::Verification
+                        ) {
                             let found_new_change =
                                 self.reconcile_changed_files(&ctx.workspace_root);
                             if found_new_change && self.execution_stage == ExecutionStage::Research
@@ -986,7 +992,10 @@ impl Agent {
                                     exit_code,
                                 ));
                             }
-                            if class == BashCommandClass::MutationRisk {
+                            if matches!(
+                                class,
+                                BashCommandClass::MutationRisk | BashCommandClass::Verification
+                            ) {
                                 let found_new_change =
                                     self.reconcile_changed_files(&ctx.workspace_root);
                                 if found_new_change
@@ -1039,7 +1048,11 @@ impl Agent {
 
     fn build_proof_of_work(&self, response: &str, workspace_root: &Path) -> String {
         let files = self.changed_files.borrow().clone();
-        if files.is_empty() && self.bash_history.borrow().is_empty() {
+        let unattributed_files = self.unattributed_pre_existing_dirty_files(workspace_root);
+        if files.is_empty()
+            && self.bash_history.borrow().is_empty()
+            && unattributed_files.is_empty()
+        {
             return response.to_string();
         }
 
@@ -1051,7 +1064,7 @@ impl Agent {
             .iter()
             .map(|f| {
                 if pre_existing.contains(f) {
-                    format!("{} (pre-existing dirty, modified during run)", f)
+                    format!("{} (pre-existing dirty, changed again during this run)", f)
                 } else {
                     f.clone()
                 }
@@ -1089,6 +1102,22 @@ impl Agent {
             evidence
                 .unresolved_issues
                 .push("Files were modified but no verification commands were run".to_string());
+        }
+
+        if !unattributed_files.is_empty() {
+            let details = unattributed_files
+                .iter()
+                .map(|file| {
+                    format!(
+                        "{} (pre-existing dirty file; baseline unavailable, run attribution uncertain)",
+                        file
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            evidence
+                .unresolved_issues
+                .push(format!("Attribution uncertain: {}", details));
         }
 
         let task_result = TaskResult::new(response.to_string())

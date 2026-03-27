@@ -1733,6 +1733,151 @@ fn test_preexisting_dirty_file_unchanged_not_reported() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn test_preexisting_dirty_file_missing_baseline_is_labeled_uncertain() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = TempDir::new().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    std::fs::write(temp.path().join("README.md"), "# Initial").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    let dirty_path = temp.path().join("dirty.txt");
+    std::fs::write(&dirty_path, "pre-existing content").unwrap();
+    let mut permissions = std::fs::metadata(&dirty_path).unwrap().permissions();
+    permissions.set_mode(0o000);
+    std::fs::set_permissions(&dirty_path, permissions).unwrap();
+
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root);
+
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path": "README.md"}),
+        },
+        ProviderResponse::Message(Message::assistant("Read file".to_string())),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "read file");
+
+    let mut restore_permissions = std::fs::metadata(&dirty_path).unwrap().permissions();
+    restore_permissions.set_mode(0o644);
+    std::fs::set_permissions(&dirty_path, restore_permissions).unwrap();
+
+    assert!(result.is_ok());
+    assert!(
+        agent.changed_files().is_empty(),
+        "missing-baseline dirty file should not be credited as changed"
+    );
+
+    let output = result.unwrap();
+    assert!(
+        !output.contains("dirty.txt (pre-existing dirty, changed again during this run)"),
+        "missing-baseline dirty file should not be reported as changed during this run: {}",
+        output
+    );
+    assert!(
+        output.contains("dirty.txt"),
+        "missing-baseline dirty file should be surfaced as uncertain when reported: {}",
+        output
+    );
+    assert!(
+        output.contains("baseline unavailable, run attribution uncertain"),
+        "missing-baseline dirty file should be labeled uncertain: {}",
+        output
+    );
+}
+
+#[test]
+fn test_write_without_verification_reports_gap() {
+    let temp = TempDir::new().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    std::fs::write(temp.path().join("README.md"), "# Initial").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root);
+
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "new.txt", "content": "new content"}),
+        },
+        ProviderResponse::Message(Message::assistant("Done".to_string())),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "write a file");
+    assert!(result.is_ok());
+
+    let output = result.unwrap();
+    assert!(
+        output.contains("new.txt"),
+        "new file should appear in proof of work: {}",
+        output
+    );
+    assert!(
+        output.contains("Files were modified but no verification commands were run"),
+        "missing verification should be called out explicitly: {}",
+        output
+    );
+}
+
 #[test]
 fn test_verification_bash_does_not_force_edit_stage() {
     let (ctx, _temp) = make_test_context();
@@ -1755,6 +1900,81 @@ fn test_verification_bash_does_not_force_edit_stage() {
         agent.execution_stage(),
         ExecutionStage::Research,
         "verification bash should NOT force Edit stage when no files are actually mutated"
+    );
+}
+
+#[test]
+fn test_verification_bash_mutation_is_tracked_and_switches_stage() {
+    let temp = TempDir::new().unwrap();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.email", "test@test.com"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["config", "user.name", "Test"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    std::fs::write(temp.path().join("README.md"), "# Initial").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "."])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+    std::process::Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(temp.path())
+        .output()
+        .unwrap();
+
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root);
+
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            args: serde_json::json!({
+                "command": "cargo test >/dev/null 2>&1 || true; echo 'mutated' > changed_by_verification.txt; false"
+            }),
+        },
+        ProviderResponse::Message(Message::assistant("Verification finished".to_string())),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "run verification");
+    assert!(result.is_ok());
+
+    assert!(
+        agent
+            .changed_files()
+            .contains(&"changed_by_verification.txt".to_string()),
+        "verification-classified bash should record real mutation"
+    );
+    assert_eq!(
+        agent.execution_stage(),
+        ExecutionStage::Edit,
+        "verification-classified bash should switch to Edit when files actually change"
+    );
+
+    let output = result.unwrap();
+    assert!(
+        output.contains("changed_by_verification.txt"),
+        "verification-created file should appear in proof of work: {}",
+        output
+    );
+    assert!(
+        output.contains("### Verification"),
+        "verification evidence should still be included: {}",
+        output
     );
 }
 
