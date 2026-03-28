@@ -27,28 +27,43 @@ impl LiveProgress {
         let worker = thread::spawn(move || {
             let started_at = Instant::now();
             let mut latest = initial;
+            let mut last_rendered_at = Instant::now();
+            let mut pending_render = false;
 
             if render_initial {
                 render(&latest, Duration::ZERO, false);
+                last_rendered_at = Instant::now();
             }
 
             loop {
                 match rx.recv_timeout(interval) {
                     Ok(update) => {
-                        let should_render = update != latest || update.is_terminal();
+                        let changed = update != latest;
                         latest = update;
-                        if should_render {
-                            render(&latest, started_at.elapsed(), false);
-                        }
                         if latest.is_terminal() {
+                            render(&latest, started_at.elapsed(), false);
                             break;
+                        }
+                        if changed {
+                            if last_rendered_at.elapsed() >= interval {
+                                // Enough time passed — render now.
+                                render(&latest, started_at.elapsed(), false);
+                                last_rendered_at = Instant::now();
+                                pending_render = false;
+                            } else {
+                                // Too soon — defer to next heartbeat.
+                                pending_render = true;
+                            }
                         }
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {
                         if latest.is_terminal() {
                             break;
                         }
-                        render(&latest, started_at.elapsed(), true);
+                        // Render on heartbeat: show pending state change or "still working".
+                        render(&latest, started_at.elapsed(), !pending_render);
+                        last_rendered_at = Instant::now();
+                        pending_render = false;
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 }
@@ -252,6 +267,8 @@ mod tests {
         (progress.callback())(retry.clone());
         (progress.callback())(retry.clone());
         (progress.callback())(retry);
+        // Wait for the heartbeat to flush the deferred retry update.
+        std::thread::sleep(Duration::from_millis(120));
         (progress.callback())(ProgressUpdate::completed());
         progress.wait();
 

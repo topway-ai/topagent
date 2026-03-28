@@ -24,7 +24,7 @@ impl Default for RuntimeOptions {
             max_read_bytes: 64 * 1024,
             max_bash_output_bytes: 64 * 1024,
             provider_timeout_secs: 120,
-            progress_heartbeat_secs: 2,
+            progress_heartbeat_secs: 10,
             max_messages_before_truncation: 100,
             require_plan: true,
             task_category: TaskCategory::Default,
