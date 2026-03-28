@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use std::path::PathBuf;
 
 #[test]
 fn test_cli_smoke_help() {
@@ -7,19 +8,19 @@ fn test_cli_smoke_help() {
 }
 
 #[test]
-fn test_cli_run_help_mentions_workspace() {
+fn test_cli_help_mentions_workspace() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
-    cmd.args(["run", "--help"])
+    cmd.arg("--help")
         .assert()
         .success()
         .stdout(predicates::str::contains("--workspace"));
 }
 
 #[test]
-fn test_cli_run_requires_api_key() {
+fn test_cli_bare_instruction_requires_api_key() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
     cmd.env_remove("OPENROUTER_API_KEY")
-        .args(["run", "say hello"])
+        .args(["say hello"])
         .assert()
         .failure()
         .stderr(predicates::str::contains(
@@ -28,10 +29,9 @@ fn test_cli_run_requires_api_key() {
 }
 
 #[test]
-fn test_cli_run_invalid_workspace_fails_fast() {
+fn test_cli_invalid_workspace_fails_fast() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
     cmd.args([
-        "run",
         "--api-key",
         "test-key",
         "--workspace",
@@ -46,10 +46,22 @@ fn test_cli_run_invalid_workspace_fails_fast() {
 }
 
 #[test]
+fn test_cli_workspace_env_fails_fast() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.env("TOPAGENT_WORKSPACE", "/definitely/missing/path")
+        .args(["--api-key", "test-key", "say hello"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains(
+            "Workspace path does not exist: /definitely/missing/path",
+        ));
+}
+
+#[test]
 fn test_cli_telegram_requires_token() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
     cmd.env_remove("TELEGRAM_BOT_TOKEN")
-        .args(["telegram", "serve"])
+        .args(["telegram"])
         .assert()
         .failure()
         .stderr(predicates::str::contains(
@@ -60,7 +72,7 @@ fn test_cli_telegram_requires_token() {
 #[test]
 fn test_cli_telegram_invalid_token_format() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
-    cmd.args(["telegram", "serve", "--token", "badtoken"])
+    cmd.args(["telegram", "--token", "badtoken"])
         .assert()
         .failure()
         .stderr(predicates::str::contains(
@@ -74,7 +86,6 @@ fn test_cli_telegram_invalid_workspace_fails_fast() {
     cmd.env("OPENROUTER_API_KEY", "test-key")
         .args([
             "telegram",
-            "serve",
             "--token",
             "123456:abcdef",
             "--workspace",
@@ -85,4 +96,14 @@ fn test_cli_telegram_invalid_workspace_fails_fast() {
         .stderr(predicates::str::contains(
             "Workspace path does not exist: /definitely/missing/path",
         ));
+}
+
+#[test]
+fn test_install_script_has_valid_syntax() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let script = repo_root.join("scripts/install.sh");
+
+    let mut cmd = Command::new("bash");
+    cmd.arg("-n").arg(script).assert().success();
 }

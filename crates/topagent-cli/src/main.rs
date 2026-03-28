@@ -15,71 +15,67 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(author, version, about = "topagent: minimal coding agent")]
+#[command(
+    author,
+    version,
+    about = "topagent: minimal coding agent",
+    arg_required_else_help = true
+)]
 struct Cli {
+    #[arg(
+        long,
+        global = true,
+        help = "OpenRouter API key (or OPENROUTER_API_KEY)"
+    )]
+    api_key: Option<String>,
+
+    #[arg(
+        long,
+        global = true,
+        default_value = "openrouter",
+        help = "Provider to use"
+    )]
+    provider: String,
+
+    #[arg(
+        long,
+        global = true,
+        help = "Model to use (overrides the default model)"
+    )]
+    model: Option<String>,
+
+    #[arg(
+        long = "workspace",
+        alias = "cwd",
+        global = true,
+        help = "Workspace/repo directory (or TOPAGENT_WORKSPACE)"
+    )]
+    workspace: Option<PathBuf>,
+
+    #[arg(long, global = true, help = "Maximum steps for the agent loop")]
+    max_steps: Option<usize>,
+
+    #[arg(long, global = true, help = "Maximum provider retries")]
+    max_retries: Option<usize>,
+
+    #[arg(long, global = true, help = "Provider timeout in seconds")]
+    timeout_secs: Option<u64>,
+
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
+
+    #[arg(help = "Instruction for one-shot mode")]
+    instruction: Option<String>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    Run {
-        #[arg(long, help = "OpenRouter API key (or OPENROUTER_API_KEY)")]
-        api_key: Option<String>,
-
-        #[arg(long, default_value = "openrouter", help = "Provider to use")]
-        provider: String,
-
-        #[arg(long, help = "Model to use (overrides default for provider)")]
-        model: Option<String>,
-
-        #[arg(
-            long = "workspace",
-            alias = "cwd",
-            help = "Workspace/repo directory for file operations"
-        )]
-        workspace: Option<PathBuf>,
-
-        #[arg(long, help = "Maximum steps for agent loop")]
-        max_steps: Option<usize>,
-
-        #[arg(long, help = "Maximum provider retries")]
-        max_retries: Option<usize>,
-
-        #[arg(long, help = "Provider timeout in seconds")]
-        timeout_secs: Option<u64>,
-
-        #[arg(help = "Instruction for the agent")]
-        instruction: String,
-    },
     Telegram {
-        #[command(subcommand)]
-        telegram_command: TelegramCommands,
-    },
-}
-
-#[derive(Subcommand)]
-enum TelegramCommands {
-    Serve {
         #[arg(long, help = "Telegram bot token (or TELEGRAM_BOT_TOKEN)")]
         token: Option<String>,
-
-        #[arg(
-            long = "workspace",
-            alias = "cwd",
-            help = "Workspace/repo directory for Telegram-triggered runs"
-        )]
-        workspace: Option<PathBuf>,
-
-        #[arg(long, help = "Maximum steps for agent loop")]
-        max_steps: Option<usize>,
-
-        #[arg(long, help = "Maximum provider retries")]
-        max_retries: Option<usize>,
-
-        #[arg(long, help = "Provider timeout in seconds")]
-        timeout_secs: Option<u64>,
     },
+    #[command(hide = true)]
+    Run { instruction: String },
 }
 
 fn main() -> Result<()> {
@@ -87,8 +83,21 @@ fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    match cli.command {
-        Commands::Run {
+    let Cli {
+        api_key,
+        provider,
+        model,
+        workspace,
+        max_steps,
+        max_retries,
+        timeout_secs,
+        command,
+        instruction,
+    } = cli;
+
+    match command {
+        Some(Commands::Telegram { token }) => run_telegram(
+            token,
             api_key,
             provider,
             model,
@@ -96,8 +105,8 @@ fn main() -> Result<()> {
             max_steps,
             max_retries,
             timeout_secs,
-            instruction,
-        } => run_one_shot(
+        ),
+        Some(Commands::Run { instruction }) => run_one_shot(
             api_key,
             provider,
             model,
@@ -107,15 +116,21 @@ fn main() -> Result<()> {
             timeout_secs,
             instruction,
         ),
-        Commands::Telegram { telegram_command } => match telegram_command {
-            TelegramCommands::Serve {
-                token,
+        None => {
+            let instruction = instruction.ok_or_else(|| {
+                anyhow::anyhow!("Instruction required. Run: topagent \"summarize this repository\"")
+            })?;
+            run_one_shot(
+                api_key,
+                provider,
+                model,
                 workspace,
                 max_steps,
                 max_retries,
                 timeout_secs,
-            } => run_telegram_serve(token, workspace, max_steps, max_retries, timeout_secs),
-        },
+                instruction,
+            )
+        }
     }
 }
 
@@ -136,15 +151,17 @@ fn build_runtime_options(
 }
 
 fn resolve_workspace_path(workspace: Option<PathBuf>) -> Result<PathBuf> {
-    let workspace = match workspace {
+    let workspace = match workspace.or_else(|| std::env::var("TOPAGENT_WORKSPACE").ok().map(PathBuf::from)) {
         Some(path) => path,
         None => std::env::current_dir()
-            .context("Failed to determine the current directory. Use --workspace /path/to/repo.")?,
+            .context(
+                "Failed to determine the current directory. Use --workspace /path/to/repo or set TOPAGENT_WORKSPACE.",
+            )?,
     };
 
     if !workspace.exists() {
         return Err(anyhow::anyhow!(
-            "Workspace path does not exist: {}. Use --workspace /path/to/repo.",
+            "Workspace path does not exist: {}. Use --workspace /path/to/repo or set TOPAGENT_WORKSPACE.",
             workspace.display()
         ));
     }
@@ -216,15 +233,12 @@ fn run_one_shot(
     let workspace = resolve_workspace_path(workspace)?;
     let ctx = ExecutionContext::new(workspace);
     let options = build_runtime_options(max_steps, max_retries, timeout_secs);
-
-    let provider_id = ProviderId::parse(&provider).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let mut route = RoutingPolicy::select_route(TaskCategory::Default, model.as_deref());
-    route.provider_id = provider_id.clone();
+    let route = build_route(provider, model)?;
     let api_key = require_openrouter_api_key(api_key)?;
 
     info!(
         "starting one-shot run | provider: {} | model: {} | workspace: {}",
-        provider_id,
+        route.provider_id,
         route.model_id,
         ctx.workspace_root.display()
     );
@@ -252,8 +266,18 @@ fn run_one_shot(
     }
 }
 
-fn run_telegram_serve(
+fn build_route(provider: String, model: Option<String>) -> Result<ModelRoute> {
+    let provider_id = ProviderId::parse(&provider).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let mut route = RoutingPolicy::select_route(TaskCategory::Default, model.as_deref());
+    route.provider_id = provider_id;
+    Ok(route)
+}
+
+fn run_telegram(
     token: Option<String>,
+    api_key: Option<String>,
+    provider: String,
+    model: Option<String>,
     workspace: Option<PathBuf>,
     max_steps: Option<usize>,
     max_retries: Option<usize>,
@@ -264,9 +288,8 @@ fn run_telegram_serve(
     let ctx = ExecutionContext::new(workspace);
     let workspace_label = ctx.workspace_root.display().to_string();
     let options = build_runtime_options(max_steps, max_retries, timeout_secs);
-    let api_key = require_openrouter_api_key(None)?;
-
-    let route = RoutingPolicy::select_route(TaskCategory::Default, None);
+    let api_key = require_openrouter_api_key(api_key)?;
+    let route = build_route(provider, model)?;
     let adapter = TelegramAdapter::new(&token);
 
     match adapter.check_webhook() {
@@ -314,13 +337,20 @@ fn run_telegram_serve(
             Ok(updates) => {
                 for update in updates {
                     let Some(msg) = &update.message else { continue };
-                    if msg.chat.chat_type != "private" {
-                        continue;
-                    }
-
+                    *offset.lock().unwrap() = update.update_id + 1;
                     let chat_id = msg.chat.id;
                     let message_id = msg.message_id;
-                    *offset.lock().unwrap() = update.update_id + 1;
+
+                    if msg.chat.chat_type != "private" {
+                        let outgoing = OutgoingMessage {
+                            chat_id,
+                            text: "This bot currently supports private chats only. Open a private chat with the bot and try again.".to_string(),
+                        };
+                        if let Err(e) = adapter.send_message(outgoing) {
+                            error!("failed to send message: {}", e);
+                        }
+                        continue;
+                    }
 
                     let Some(text) = msg.text.clone() else {
                         let outgoing = OutgoingMessage {
@@ -349,7 +379,8 @@ fn run_telegram_serve(
                                  Commands:\n\
                                  /help - show this message\n\
                                  /reset - clear conversation history\n\n\
-                                 Send a plain text task to run TopAgent in this workspace.",
+                                 Try this first message:\n\
+                                 Summarize this repository and tell me the main entry points.",
                                 workspace_label
                             )
                         } else {
