@@ -174,6 +174,53 @@ fn has_multiple_action_categories(lower: &str) -> bool {
     categories_found >= 2
 }
 
+fn token_looks_like_file_reference(token: &str) -> bool {
+    let trimmed = token.trim_matches(|c: char| {
+        !(c.is_ascii_alphanumeric() || matches!(c, '.' | '/' | '\\' | '_' | '-'))
+    });
+
+    if trimmed.is_empty() {
+        return false;
+    }
+
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return true;
+    }
+
+    let Some((base, ext)) = trimmed.rsplit_once('.') else {
+        return false;
+    };
+
+    !base.is_empty()
+        && !ext.is_empty()
+        && ext.len() <= 8
+        && ext.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+fn has_narrow_file_scope(instruction: &str, lower: &str) -> bool {
+    lower.contains("this file")
+        || lower.contains("that file")
+        || lower.contains("single file")
+        || lower.contains("one file")
+        || lower.contains("current file")
+        || instruction
+            .split_whitespace()
+            .any(token_looks_like_file_reference)
+}
+
+fn has_small_mutation_request(lower: &str) -> bool {
+    let mutation_words = [
+        "fix ", "edit ", "update ", "change ", "modify ", "rename ", "write ", "patch ",
+    ];
+    mutation_words.iter().any(|w| lower.contains(*w))
+}
+
+fn is_small_scoped_mutation_task(instruction: &str, lower: &str) -> bool {
+    lower.len() <= 160
+        && has_small_mutation_request(lower)
+        && has_narrow_file_scope(instruction, lower)
+}
+
 fn is_trivial_query(lower: &str) -> bool {
     let query_starters = [
         "what is", "where is", "how do", "how does", "show me", "list ", "find ", "search ",
@@ -191,13 +238,16 @@ pub fn should_use_plan(instruction: &str) -> bool {
 
 pub fn should_require_research_plan_build(instruction: &str) -> bool {
     let lower = &instruction.to_lowercase();
-    if has_explicit_sequence(lower) {
-        return true;
-    }
     if has_explicit_plan_request(lower) {
         return true;
     }
     if has_broad_scope(lower) {
+        return true;
+    }
+    if is_small_scoped_mutation_task(instruction, lower) {
+        return false;
+    }
+    if has_explicit_sequence(lower) {
         return true;
     }
     if has_multiple_action_categories(lower) {
@@ -426,6 +476,12 @@ mod tests {
         assert!(!should_use_plan("fix the bug in main.rs"));
         assert!(!should_use_plan("add a new function"));
         assert!(!should_use_plan("modify this file"));
+    }
+
+    #[test]
+    fn test_should_skip_plan_small_scoped_mutation_with_verification() {
+        assert!(!should_use_plan("fix the typo in README.md and run tests"));
+        assert!(!should_use_plan("edit this file and then run cargo fmt"));
     }
 
     #[test]

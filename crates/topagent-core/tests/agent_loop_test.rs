@@ -332,6 +332,11 @@ fn test_agent_surfaces_blocked_progress_when_planning_is_required() {
             name: "bash".into(),
             args: serde_json::json!({"command": "touch blocked.txt"}),
         },
+        ProviderResponse::ToolCall {
+            id: "2".into(),
+            name: "update_plan".into(),
+            args: serde_json::json!({"items": [{"content": "Create blocked.txt", "status": "pending"}]}),
+        },
         ProviderResponse::Message(Message::assistant("blocked")),
     ];
     let provider = topagent_core::ScriptedProvider::new(responses);
@@ -346,6 +351,9 @@ fn test_agent_surfaces_blocked_progress_when_planning_is_required() {
     assert!(updates
         .iter()
         .any(|u| u.kind == ProgressKind::Blocked && u.message.contains("planning required")));
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Planning next steps")));
 }
 
 #[test]
@@ -1181,7 +1189,7 @@ fn test_planning_gate_blocks_mutation_tool() {
         ProviderResponse::ToolCall {
             id: "2".to_string(),
             name: "update_plan".to_string(),
-            args: serde_json::json!({"items": [{"id": 0, "description": "First step", "status": "done"}]}),
+            args: serde_json::json!({"items": [{"content": "First step", "status": "done"}]}),
         },
         ProviderResponse::Message(Message::assistant("Plan created".to_string())),
     ]);
@@ -1200,7 +1208,7 @@ fn test_planning_gate_allows_plan_tool() {
         ProviderResponse::ToolCall {
             id: "1".to_string(),
             name: "update_plan".to_string(),
-            args: serde_json::json!({"items": [{"id": 0, "description": "First step", "status": "done"}]}),
+            args: serde_json::json!({"items": [{"content": "First step", "status": "done"}]}),
         },
         ProviderResponse::Message(Message::assistant("Plan created".to_string())),
     ]);
@@ -1239,6 +1247,30 @@ fn test_trivial_task_not_blocked() {
 }
 
 #[test]
+fn test_small_scoped_mutation_with_verification_request_is_not_forced_to_plan() {
+    let (ctx, _temp) = make_test_context();
+    let options = RuntimeOptions::new().with_require_plan(true);
+    let provider = BasicTestProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "README.md", "content": "updated"}),
+        },
+        ProviderResponse::Message(Message::assistant("Done".to_string())),
+    ]);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+
+    let result = agent.run(&ctx, "fix the typo in README.md and run tests");
+
+    assert!(result.is_ok());
+    assert_eq!(agent.changed_files(), vec!["README.md"]);
+    assert!(
+        !agent.is_planning_gate_active(),
+        "small scoped mutation should not leave planning gate active"
+    );
+}
+
+#[test]
 fn test_safe_bash_allowed_before_plan() {
     use topagent_core::Agent;
     use topagent_core::BashCommandClass;
@@ -1274,7 +1306,7 @@ fn test_unsafe_bash_blocked_before_plan() {
         ProviderResponse::ToolCall {
             id: "2".to_string(),
             name: "update_plan".to_string(),
-            args: serde_json::json!({"items": [{"id": 0, "description": "Step 1", "status": "done"}]}),
+            args: serde_json::json!({"items": [{"content": "Step 1", "status": "done"}]}),
         },
         ProviderResponse::Message(Message::assistant("Done".to_string())),
     ]);
@@ -1352,7 +1384,7 @@ fn test_unsafe_bash_allowed_after_plan_exists() {
         ProviderResponse::ToolCall {
             id: "1".to_string(),
             name: "update_plan".to_string(),
-            args: serde_json::json!({"items": [{"id": 0, "description": "Step 1", "status": "done"}]}),
+            args: serde_json::json!({"items": [{"content": "Step 1", "status": "done"}]}),
         },
         ProviderResponse::ToolCall {
             id: "2".to_string(),
@@ -1366,6 +1398,64 @@ fn test_unsafe_bash_allowed_after_plan_exists() {
     assert!(result.is_ok());
     let output = result.unwrap();
     assert!(output.contains("Done"));
+}
+
+#[test]
+fn test_repeated_planning_blocks_fail_clearly_instead_of_looping() {
+    let (ctx, _temp) = make_test_context();
+    let options = RuntimeOptions::new().with_require_plan(true);
+    let provider = BasicTestProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "blocked-1.txt", "content": "one"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "2".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "blocked-2.txt", "content": "two"}),
+        },
+    ]);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+
+    let result = agent.run(&ctx, "refactor the entire codebase and then test it");
+
+    assert!(result.is_err());
+    let error = result.unwrap_err().to_string();
+    assert!(
+        error.contains("planning is required")
+            || error.contains("no plan could be created")
+            || error.contains("task is blocked"),
+        "unexpected error: {}",
+        error
+    );
+}
+
+#[test]
+fn test_planning_failure_reports_failed_not_completed() {
+    let (ctx, _temp) = make_test_context();
+    let options = RuntimeOptions::new().with_require_plan(true);
+    let provider = BasicTestProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "blocked.txt", "content": "hello"}),
+        },
+        ProviderResponse::Message(Message::assistant(
+            "I could not create a plan, but here is a summary.".to_string(),
+        )),
+    ]);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+    let (updates, callback) = capture_progress_updates();
+    agent.set_progress_callback(Some(callback));
+
+    let result = agent.run(&ctx, "refactor the entire codebase and then test it");
+
+    assert!(result.is_err());
+    let updates = updates.lock().unwrap();
+    assert!(updates.iter().any(|u| u.kind == ProgressKind::Blocked));
+    assert!(updates.iter().any(|u| u.kind == ProgressKind::Failed));
+    assert!(!updates.iter().any(|u| u.kind == ProgressKind::Completed));
 }
 
 #[test]

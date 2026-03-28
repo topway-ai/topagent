@@ -385,6 +385,9 @@ fn run_telegram(
         let current_offset = { *offset.lock().unwrap() };
         match adapter.get_updates(Some(current_offset), Some(30), Some(&["message"])) {
             Ok(updates) => {
+                if polling_retries > 0 {
+                    session_manager.notify_polling_recovered();
+                }
                 polling_retries = 0;
                 session_manager.collect_finished_tasks();
                 for update in updates {
@@ -486,6 +489,7 @@ fn run_telegram(
             }
             Err(e) => {
                 polling_retries += 1;
+                session_manager.notify_polling_retry(polling_retries);
                 error!(
                     "failed to get Telegram updates: {}. Retrying in 5 seconds (attempt {}).",
                     e, polling_retries
@@ -578,6 +582,31 @@ impl ChatSessionManager {
             callback(ProgressUpdate::stopping());
         }
         true
+    }
+
+    fn notify_polling_retry(&self, attempt: usize) {
+        self.broadcast_progress(ProgressUpdate::retrying(format!(
+            "Telegram polling failed, retrying connection (attempt {})...",
+            attempt
+        )));
+    }
+
+    fn notify_polling_recovered(&self) {
+        self.broadcast_progress(ProgressUpdate::working(
+            "Telegram connection restored. Task still running...",
+        ));
+    }
+
+    fn broadcast_progress(&self, update: ProgressUpdate) {
+        for session in self.sessions.values() {
+            let SessionState::Running(task) = session else {
+                continue;
+            };
+
+            if let Some(callback) = &task.progress_callback {
+                callback(update.clone());
+            }
+        }
     }
 
     fn reset_chat(&mut self, chat_id: i64) {
@@ -678,7 +707,9 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
-    use topagent_core::{CancellationToken, ModelRoute, ProgressUpdate, RuntimeOptions};
+    use topagent_core::{
+        CancellationToken, ModelRoute, ProgressKind, ProgressUpdate, RuntimeOptions,
+    };
 
     #[test]
     fn test_workspace_defaults_to_current_directory_for_one_shot_and_telegram() {
@@ -763,5 +794,65 @@ mod tests {
         let mut manager =
             ChatSessionManager::new(route, "test-key".to_string(), RuntimeOptions::default());
         assert!(!manager.stop_chat(42));
+    }
+
+    #[test]
+    fn test_notify_polling_retry_emits_retrying_progress_to_running_chat() {
+        let route = ModelRoute::openrouter("test-model");
+        let mut manager =
+            ChatSessionManager::new(route, "test-key".to_string(), RuntimeOptions::default());
+        let updates = Arc::new(Mutex::new(Vec::<ProgressUpdate>::new()));
+        let sink = updates.clone();
+        let progress_callback: topagent_core::ProgressCallback = Arc::new(move |update| {
+            sink.lock().unwrap().push(update);
+        });
+
+        manager.sessions.insert(
+            42,
+            SessionState::Running(RunningChatTask {
+                cancel_token: CancellationToken::new(),
+                progress_callback: Some(progress_callback),
+            }),
+        );
+
+        manager.notify_polling_retry(2);
+
+        let updates = updates.lock().unwrap();
+        assert!(updates.iter().any(|update| {
+            update.kind == ProgressKind::Retrying
+                && update
+                    .message
+                    .contains("Telegram polling failed, retrying connection (attempt 2)")
+        }));
+    }
+
+    #[test]
+    fn test_notify_polling_recovered_emits_working_progress_to_running_chat() {
+        let route = ModelRoute::openrouter("test-model");
+        let mut manager =
+            ChatSessionManager::new(route, "test-key".to_string(), RuntimeOptions::default());
+        let updates = Arc::new(Mutex::new(Vec::<ProgressUpdate>::new()));
+        let sink = updates.clone();
+        let progress_callback: topagent_core::ProgressCallback = Arc::new(move |update| {
+            sink.lock().unwrap().push(update);
+        });
+
+        manager.sessions.insert(
+            42,
+            SessionState::Running(RunningChatTask {
+                cancel_token: CancellationToken::new(),
+                progress_callback: Some(progress_callback),
+            }),
+        );
+
+        manager.notify_polling_recovered();
+
+        let updates = updates.lock().unwrap();
+        assert!(updates.iter().any(|update| {
+            update.kind == ProgressKind::Working
+                && update
+                    .message
+                    .contains("Telegram connection restored. Task still running")
+        }));
     }
 }

@@ -22,6 +22,8 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+const MAX_PLANNING_BLOCKS_BEFORE_FAILURE: usize = 2;
+
 pub struct Agent {
     session: Session,
     provider: Box<dyn Provider>,
@@ -38,6 +40,7 @@ pub struct Agent {
     external_tool_ran: RefCell<bool>,
     run_baseline: RefCell<Option<RunBaseline>>,
     progress_callback: Option<ProgressCallback>,
+    planning_block_count: usize,
 }
 
 struct RunBaseline {
@@ -114,6 +117,7 @@ impl Agent {
             external_tool_ran: RefCell::new(false),
             run_baseline: RefCell::new(None),
             progress_callback: None,
+            planning_block_count: 0,
         }
     }
 
@@ -210,6 +214,42 @@ impl Agent {
 
     fn stop_error() -> Error {
         Error::Stopped("user requested stop".to_string())
+    }
+
+    fn plan_exists(&self) -> bool {
+        self.plan
+            .lock()
+            .map(|plan| !plan.is_empty())
+            .unwrap_or(false)
+    }
+
+    fn planning_deadlock_error() -> Error {
+        Error::Session(
+            "planning is required for this task, but no plan could be created; task is blocked"
+                .to_string(),
+        )
+    }
+
+    fn note_planning_block(&mut self) -> Result<()> {
+        if !self.planning_gate_active || self.plan_exists() {
+            self.planning_block_count = 0;
+            return Ok(());
+        }
+
+        self.planning_block_count += 1;
+        if self.planning_block_count >= MAX_PLANNING_BLOCKS_BEFORE_FAILURE {
+            return Err(Self::planning_deadlock_error());
+        }
+
+        Ok(())
+    }
+
+    fn clear_planning_block_state(&mut self) {
+        self.planning_block_count = 0;
+    }
+
+    fn planning_still_blocked(&self) -> bool {
+        self.planning_gate_active && !self.plan_exists() && self.planning_block_count > 0
     }
 
     fn check_cancelled(&self, ctx: &ExecutionContext) -> Result<()> {
@@ -646,6 +686,7 @@ impl Agent {
 
         self.planning_gate_active =
             self.options.require_plan && should_require_research_plan_build(instruction);
+        self.planning_block_count = 0;
 
         self.execution_stage = ExecutionStage::Research;
         self.emit_progress(self.current_working_progress());
@@ -757,6 +798,9 @@ impl Agent {
                             ));
                             continue;
                         }
+                        if self.planning_still_blocked() {
+                            return Err(Self::planning_deadlock_error());
+                        }
                         self.session.add_message(msg);
                         let final_response = self.build_proof_of_work(&text, &ctx.workspace_root);
                         return Ok(final_response);
@@ -796,6 +840,7 @@ impl Agent {
                                 ));
                                 self.session
                                     .add_message(Message::tool_result(id, block_msg));
+                                self.note_planning_block()?;
                                 continue;
                             }
                             self.emit_progress(self.tool_progress(&name, &args));
@@ -882,6 +927,7 @@ impl Agent {
                         ));
                         self.session
                             .add_message(Message::tool_result(id, block_msg));
+                        self.note_planning_block()?;
                         continue;
                     }
 
@@ -951,10 +997,9 @@ impl Agent {
                     }
 
                     if Self::is_plan_tool(&name) {
-                        if let Ok(plan) = self.plan.lock() {
-                            if !plan.is_empty() {
-                                self.planning_gate_active = false;
-                            }
+                        if self.plan_exists() {
+                            self.planning_gate_active = false;
+                            self.clear_planning_block_state();
                         }
                     }
 
@@ -1005,6 +1050,7 @@ impl Agent {
                                     ));
                                     self.session
                                         .add_message(Message::tool_result(id, block_msg));
+                                    self.note_planning_block()?;
                                     continue;
                                 }
                                 self.emit_progress(self.tool_progress(&name, &args));
@@ -1077,6 +1123,7 @@ impl Agent {
                             ));
                             self.session
                                 .add_message(Message::tool_result(id, block_msg));
+                            self.note_planning_block()?;
                             continue;
                         }
 
@@ -1146,10 +1193,9 @@ impl Agent {
                         }
 
                         if Self::is_plan_tool(&name) {
-                            if let Ok(plan) = self.plan.lock() {
-                                if !plan.is_empty() {
-                                    self.planning_gate_active = false;
-                                }
+                            if self.plan_exists() {
+                                self.planning_gate_active = false;
+                                self.clear_planning_block_state();
                             }
                         }
 
