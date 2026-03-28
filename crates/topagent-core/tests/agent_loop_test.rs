@@ -1477,8 +1477,9 @@ fn test_unsafe_bash_allowed_after_plan_exists() {
 fn test_repeated_planning_blocks_auto_create_plan_and_recover() {
     let (ctx, _temp) = make_test_context();
     let options = RuntimeOptions::new().with_require_plan(true);
-    // Writes 1-5 are blocked (the 5th triggers auto-plan after being blocked).
-    // Write 6 succeeds because the gate is now open. Then the text response ends the run.
+    // Writes 1-5 are blocked (the 5th triggers generate_or_fallback_plan).
+    // That call consumes one response for the LLM plan-generation attempt.
+    // Write 7 succeeds because the gate is now open. Then the text response ends.
     let provider = BasicTestProvider::new(vec![
         ProviderResponse::ToolCall {
             id: "1".to_string(),
@@ -1505,8 +1506,12 @@ fn test_repeated_planning_blocks_auto_create_plan_and_recover() {
             name: "write".to_string(),
             args: serde_json::json!({"path": "blocked-5.txt", "content": "five"}),
         },
+        // Consumed by try_generate_plan LLM call inside generate_or_fallback_plan:
+        ProviderResponse::Message(Message::assistant(
+            "1. Execute the requested changes\n2. Verify".to_string(),
+        )),
         ProviderResponse::ToolCall {
-            id: "6".to_string(),
+            id: "7".to_string(),
             name: "write".to_string(),
             args: serde_json::json!({"path": "recovered.txt", "content": "recovered"}),
         },
@@ -1524,9 +1529,13 @@ fn test_repeated_planning_blocks_auto_create_plan_and_recover() {
 }
 
 #[test]
-fn test_blocked_write_then_text_response_still_completes() {
+fn test_blocked_write_then_text_response_redirected_to_plan() {
     let (ctx, _temp) = make_test_context();
     let options = RuntimeOptions::new().with_require_plan(true);
+    // Write is blocked (1 block). Text response is redirected (1 redirect).
+    // Second text hits MAX_PLANNING_REDIRECTS, triggers generate_or_fallback_plan
+    // which consumes one response for the LLM plan generation attempt.
+    // Next text response accepted as final answer with plan in place.
     let provider = BasicTestProvider::new(vec![
         ProviderResponse::ToolCall {
             id: "1".to_string(),
@@ -1536,6 +1545,10 @@ fn test_blocked_write_then_text_response_still_completes() {
         ProviderResponse::Message(Message::assistant(
             "I could not create a plan, but here is a summary.".to_string(),
         )),
+        ProviderResponse::Message(Message::assistant("Fine, I still won't plan.".to_string())),
+        // Consumed by try_generate_plan:
+        ProviderResponse::Message(Message::assistant("1. Make changes\n2. Test".to_string())),
+        ProviderResponse::Message(Message::assistant("Done with auto-plan.".to_string())),
     ]);
     let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
     let (updates, callback) = capture_progress_updates();
@@ -1543,8 +1556,8 @@ fn test_blocked_write_then_text_response_still_completes() {
 
     let result = agent.run(&ctx, "refactor the entire codebase and then test it");
 
-    // With auto-plan on deadlock, a single blocked write followed by a text
-    // response completes successfully — no planning failure.
+    // Text responses during planning phase are redirected, not accepted as final.
+    // After MAX_PLANNING_REDIRECTS, a plan is generated and the next response completes.
     assert!(result.is_ok());
     let updates = updates.lock().unwrap();
     assert!(updates.iter().any(|u| u.kind == ProgressKind::Blocked));
@@ -2393,5 +2406,246 @@ fn test_readonly_bash_stays_in_research() {
         agent.execution_stage(),
         ExecutionStage::Research,
         "read-only bash should stay in Research stage"
+    );
+}
+
+#[test]
+fn test_planning_phase_budget_triggers_auto_plan_after_research_loop() {
+    let (ctx, temp) = make_test_context();
+    std::fs::write(temp.path().join("file.txt"), "content").unwrap();
+    let options = RuntimeOptions::new()
+        .with_require_plan(true)
+        .with_max_steps(20);
+
+    // Simulate model doing pure research reads without ever calling update_plan.
+    // planning_phase_steps increments at the top of each iteration (before the
+    // provider call), so after 9 iterations consuming reads r0–r8 the counter
+    // reaches 10 on iteration 10. generate_or_fallback_plan fires and
+    // try_generate_plan consumes the next queued response (the plan message).
+    // The main loop's provider call then consumes the following response.
+    let mut responses: Vec<ProviderResponse> = (0..9)
+        .map(|i| ProviderResponse::ToolCall {
+            id: format!("r{}", i),
+            name: "read".to_string(),
+            args: serde_json::json!({"path": "file.txt"}),
+        })
+        .collect();
+    // Consumed by try_generate_plan when planning_phase_steps reaches 10:
+    responses.push(ProviderResponse::Message(Message::assistant(
+        "1. Read relevant files\n2. Make changes\n3. Test".to_string(),
+    )));
+    responses.push(ProviderResponse::ToolCall {
+        id: "w1".to_string(),
+        name: "write".to_string(),
+        args: serde_json::json!({"path": "output.txt", "content": "done"}),
+    });
+    responses.push(ProviderResponse::Message(Message::assistant(
+        "Completed.".to_string(),
+    )));
+
+    let provider = BasicTestProvider::new(responses);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+
+    let result = agent.run(&ctx, "refactor the entire codebase and then test it");
+
+    assert!(
+        result.is_ok(),
+        "task should complete after auto-plan from phase budget"
+    );
+    assert!(
+        temp.path().join("output.txt").exists(),
+        "write should succeed after auto-plan"
+    );
+}
+
+#[test]
+fn test_text_response_during_planning_phase_is_redirected() {
+    let (ctx, _temp) = make_test_context();
+    let options = RuntimeOptions::new().with_require_plan(true);
+
+    // Model immediately tries to return a text answer without planning.
+    // First text is redirected (redirect 1). Second text triggers
+    // generate_or_fallback_plan (redirect 2 = MAX_PLANNING_REDIRECTS),
+    // which consumes one response for LLM plan generation.
+    // Next text accepted as final.
+    let provider = BasicTestProvider::new(vec![
+        ProviderResponse::Message(Message::assistant(
+            "I'll just describe what to do.".to_string(),
+        )),
+        ProviderResponse::Message(Message::assistant("Still not planning.".to_string())),
+        // Consumed by try_generate_plan:
+        ProviderResponse::Message(Message::assistant(
+            "1. Investigate\n2. Implement\n3. Test".to_string(),
+        )),
+        ProviderResponse::Message(Message::assistant(
+            "Final answer after auto-plan.".to_string(),
+        )),
+    ]);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+    let (updates, callback) = capture_progress_updates();
+    agent.set_progress_callback(Some(callback));
+
+    let result = agent.run(&ctx, "refactor the entire codebase and then test it");
+
+    assert!(result.is_ok());
+    let text = result.unwrap();
+    assert!(text.contains("Final answer after auto-plan"));
+    // Planning gate should be deactivated after auto-plan
+    assert!(!agent.is_planning_gate_active());
+}
+
+#[test]
+fn test_text_response_after_plan_creation_accepted_normally() {
+    let (ctx, _temp) = make_test_context();
+    let options = RuntimeOptions::new().with_require_plan(true);
+
+    // Model creates a plan, then returns a text response — should be accepted
+    // as the final answer without redirect.
+    let provider = BasicTestProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".to_string(),
+            name: "update_plan".to_string(),
+            args: serde_json::json!({"items": [{"content": "Step 1", "status": "pending"}]}),
+        },
+        ProviderResponse::Message(Message::assistant("Plan created and ready.".to_string())),
+    ]);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+
+    let result = agent.run(&ctx, "refactor the entire codebase and then test it");
+
+    assert!(result.is_ok());
+    let text = result.unwrap();
+    assert!(text.contains("Plan created and ready"));
+}
+
+#[test]
+fn test_runtime_escalation_activates_planning_gate_after_multi_file_mutations() {
+    let (ctx, _temp) = make_test_context();
+    // require_plan is true but task is classified as direct (short instruction)
+    let options = RuntimeOptions::new().with_require_plan(true);
+
+    // Write 3 distinct files without a plan. The escalation threshold (3) should
+    // activate the planning gate, blocking the 4th write. The generate_or_fallback_plan
+    // call then consumes one response for LLM plan generation, and the agent recovers.
+    let provider = BasicTestProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "a.txt", "content": "a"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "2".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "b.txt", "content": "b"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "3".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "c.txt", "content": "c"}),
+        },
+        // This write is blocked because escalation activated the gate
+        ProviderResponse::ToolCall {
+            id: "4".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "d.txt", "content": "d"}),
+        },
+        // Model creates a plan after being blocked
+        ProviderResponse::ToolCall {
+            id: "5".to_string(),
+            name: "update_plan".to_string(),
+            args: serde_json::json!({"items": [
+                {"content": "Write files", "status": "in_progress"},
+                {"content": "Verify", "status": "pending"}
+            ]}),
+        },
+        // Now the write succeeds
+        ProviderResponse::ToolCall {
+            id: "6".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "d.txt", "content": "d"}),
+        },
+        ProviderResponse::Message(Message::assistant("Done.".to_string())),
+    ]);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+    let (updates, callback) = capture_progress_updates();
+    agent.set_progress_callback(Some(callback));
+
+    // Short instruction — classified as direct execution by heuristic
+    let result = agent.run(&ctx, "write four files");
+
+    assert!(result.is_ok());
+    // The gate should have been escalated and then resolved
+    assert!(!agent.is_planning_gate_active());
+    // All files should exist
+    assert!(ctx.workspace_root.join("a.txt").exists());
+    assert!(ctx.workspace_root.join("b.txt").exists());
+    assert!(ctx.workspace_root.join("c.txt").exists());
+    assert!(ctx.workspace_root.join("d.txt").exists());
+    // Should have seen a blocked progress update from escalation
+    let updates = updates.lock().unwrap();
+    assert!(updates.iter().any(|u| u.kind == ProgressKind::Blocked));
+}
+
+#[test]
+fn test_llm_plan_generation_produces_concrete_plan() {
+    let (ctx, _temp) = make_test_context();
+    let options = RuntimeOptions::new().with_require_plan(true);
+
+    // Model tries to write immediately (blocked), then tries again 4 more times
+    // (5 total blocks triggers generate_or_fallback_plan). The LLM plan-generation
+    // call returns a concrete numbered list which becomes the actual plan.
+    let provider = BasicTestProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "x.txt", "content": "x"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "2".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "x.txt", "content": "x"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "3".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "x.txt", "content": "x"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "4".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "x.txt", "content": "x"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "5".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "x.txt", "content": "x"}),
+        },
+        // Consumed by try_generate_plan — returns a real plan:
+        ProviderResponse::Message(Message::assistant(
+            "1. Read the config file\n2. Update the parser\n3. Add tests\n4. Run cargo test"
+                .to_string(),
+        )),
+        ProviderResponse::Message(Message::assistant("Done.".to_string())),
+    ]);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+
+    let result = agent.run(&ctx, "refactor the entire codebase and then test it");
+    assert!(result.is_ok());
+
+    // Verify the plan has the LLM-generated steps, not the generic fallback
+    let plan = agent.plan();
+    let plan = plan.lock().unwrap();
+    assert!(plan.has_items());
+    let items: Vec<&str> = plan
+        .items()
+        .iter()
+        .map(|i| i.description.as_str())
+        .collect();
+    assert!(
+        items
+            .iter()
+            .any(|d| d.contains("config") || d.contains("parser")),
+        "plan should contain LLM-generated steps, not generic fallback: {:?}",
+        items
     );
 }

@@ -22,7 +22,38 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+// ── Planning deadlock thresholds ──
+//
+// Two independent counters protect against distinct planning failures.
+// They are intentionally separate:
+//
+// 1. `planning_block_count` (vs MAX_PLANNING_BLOCKS_BEFORE_FAILURE):
+//    Counts consecutive mutation-tool calls blocked by the planning gate.
+//    Covers: model actively tries to mutate without creating a plan.
+//
+// 2. `planning_phase_steps` (vs MAX_PLANNING_PHASE_STEPS):
+//    Counts total loop iterations while gate is active and plan is empty.
+//    Covers: model loops in research tools without ever attempting mutation
+//    or planning.
+//
+// Both trigger the same fallback: try a dedicated LLM plan-generation call,
+// and if that fails, create a minimal emergency plan.
+//
+// `planning_redirects` (vs MAX_PLANNING_REDIRECTS):
+//    Counts text-response bail-outs during planning phase.
+//    Covers: model tries to return a final answer without planning.
+
 const MAX_PLANNING_BLOCKS_BEFORE_FAILURE: usize = 5;
+const MAX_PLANNING_PHASE_STEPS: usize = 10;
+const MAX_PLANNING_REDIRECTS: usize = 2;
+
+/// Number of distinct files changed without a plan before we consider
+/// escalating a non-plan-required task into plan-required.
+const UNPLANNED_MUTATION_ESCALATION_THRESHOLD: usize = 3;
+
+const PLANNING_REDIRECT_MSG: &str = "\
+This task requires a plan before proceeding. \
+Use the update_plan tool to create a plan with concrete steps, then execute it.";
 
 pub struct Agent {
     session: Session,
@@ -35,6 +66,9 @@ pub struct Agent {
     changed_files: RefCell<Vec<String>>,
     bash_history: RefCell<Vec<(String, String, i32)>>,
     planning_gate_active: bool,
+    /// Set to true if the planning gate was activated mid-run by runtime
+    /// escalation (risk #3). Prevents re-escalation after auto-plan.
+    planning_escalated: bool,
     resolved_route: ModelRoute,
     execution_stage: ExecutionStage,
     external_tool_ran: RefCell<bool>,
@@ -112,6 +146,7 @@ impl Agent {
             changed_files: RefCell::new(Vec::new()),
             bash_history: RefCell::new(Vec::new()),
             planning_gate_active: false,
+            planning_escalated: false,
             resolved_route,
             execution_stage: ExecutionStage::Research,
             external_tool_ran: RefCell::new(false),
@@ -254,9 +289,24 @@ impl Agent {
         }
     }
 
-    /// Auto-create a minimal plan to break a planning deadlock instead
-    /// of failing. This opens the mutation gate so the model can proceed.
-    fn auto_create_plan(&mut self) {
+    /// Break a planning deadlock by generating a real plan via the LLM.
+    /// Falls back to a minimal emergency plan if the LLM call fails.
+    /// Always deactivates the planning gate afterward.
+    fn generate_or_fallback_plan(&mut self, instruction: &str) {
+        if self.plan_exists() {
+            self.planning_gate_active = false;
+            self.clear_planning_block_state();
+            return;
+        }
+
+        // Try a dedicated LLM plan-generation call.
+        if self.try_generate_plan(instruction) {
+            self.planning_gate_active = false;
+            self.clear_planning_block_state();
+            return;
+        }
+
+        // LLM failed — create a minimal emergency plan so the agent can proceed.
         if let Ok(mut plan) = self.plan.lock() {
             plan.clear();
             plan.add_item("Execute the requested changes".to_string());
@@ -266,7 +316,34 @@ impl Agent {
         self.clear_planning_block_state();
     }
 
-    fn note_planning_block(&mut self) -> Result<()> {
+    /// Attempt to generate a concrete plan via a single LLM call.
+    /// Returns true if a non-empty plan was created.
+    fn try_generate_plan(&mut self, instruction: &str) -> bool {
+        let prompt = plan::build_plan_generation_prompt(instruction);
+        let messages = vec![Message::system(prompt.0), Message::user(prompt.1)];
+        let route = self.resolved_route.clone();
+
+        let text = match self.provider.complete(&messages, &route) {
+            Ok(ProviderResponse::Message(msg)) => msg.as_text().map(|s| s.to_string()),
+            _ => None,
+        };
+
+        let Some(text) = text else { return false };
+        let items = plan::parse_plan_generation_response(&text);
+        if items.is_empty() {
+            return false;
+        }
+
+        if let Ok(mut plan) = self.plan.lock() {
+            plan.clear();
+            for item in items {
+                plan.add_item(item);
+            }
+        }
+        true
+    }
+
+    fn note_planning_block(&mut self, instruction: &str) -> Result<()> {
         if !self.planning_gate_active || self.plan_exists() {
             self.planning_block_count = 0;
             return Ok(());
@@ -274,11 +351,30 @@ impl Agent {
 
         self.planning_block_count += 1;
         if self.planning_block_count >= MAX_PLANNING_BLOCKS_BEFORE_FAILURE {
-            // Instead of failing, auto-create a minimal plan to break the deadlock.
-            self.auto_create_plan();
+            self.generate_or_fallback_plan(instruction);
         }
 
         Ok(())
+    }
+
+    /// Check whether a task that was *not* initially classified as
+    /// plan-required should be escalated based on runtime mutation signals.
+    /// Activates the planning gate if multiple distinct files have been
+    /// changed without any plan in place.
+    fn maybe_escalate_to_planning(&mut self) {
+        // Only escalate once; don't re-escalate after auto-plan resolved it.
+        if self.planning_gate_active || self.planning_escalated || self.plan_exists() {
+            return;
+        }
+        if !self.options.require_plan {
+            return;
+        }
+        let distinct_files = self.changed_files.borrow().len();
+        if distinct_files >= UNPLANNED_MUTATION_ESCALATION_THRESHOLD {
+            self.planning_gate_active = true;
+            self.planning_escalated = true;
+            self.emit_progress(ProgressUpdate::planning());
+        }
     }
 
     fn clear_planning_block_state(&mut self) {
@@ -723,6 +819,7 @@ impl Agent {
         self.capture_run_baseline(&ctx.workspace_root);
 
         self.planning_gate_active = self.options.require_plan && self.classify_task(instruction);
+        self.planning_escalated = false;
         self.planning_block_count = 0;
 
         self.execution_stage = ExecutionStage::Research;
@@ -769,6 +866,8 @@ impl Agent {
 
         let mut steps = 0;
         let mut empty_response_retries = 0;
+        let mut planning_phase_steps = 0usize;
+        let mut planning_redirects = 0usize;
 
         loop {
             self.check_cancelled(ctx)?;
@@ -777,6 +876,16 @@ impl Agent {
                     "max steps ({}) reached without completing task",
                     self.options.max_steps
                 )));
+            }
+
+            // Planning phase budget: if the model spent too many steps
+            // researching without creating a plan, generate one.
+            if self.planning_gate_active && !self.plan_exists() {
+                planning_phase_steps += 1;
+                if planning_phase_steps >= MAX_PLANNING_PHASE_STEPS {
+                    self.generate_or_fallback_plan(instruction);
+                    self.emit_progress(self.current_working_progress());
+                }
             }
 
             self.emit_progress(ProgressUpdate::waiting_for_model(
@@ -835,6 +944,28 @@ impl Agent {
                             ));
                             continue;
                         }
+                        // If the planning gate is active and no plan exists, the model
+                        // is trying to return a text response without creating a plan.
+                        // Redirect it back to plan instead of accepting as final answer.
+                        if self.planning_gate_active && !self.plan_exists() {
+                            planning_redirects += 1;
+                            if planning_redirects >= MAX_PLANNING_REDIRECTS {
+                                // Model repeatedly refused to plan — generate one.
+                                self.generate_or_fallback_plan(instruction);
+                                self.emit_progress(self.current_working_progress());
+                            }
+                            // Pop previous redirect if present to avoid accumulation.
+                            self.session.pop_last_if(|m| {
+                                m.as_text()
+                                    .map(|t| t == PLANNING_REDIRECT_MSG)
+                                    .unwrap_or(false)
+                            });
+                            self.session.add_message(msg);
+                            self.session
+                                .add_message(Message::user(PLANNING_REDIRECT_MSG));
+                            continue;
+                        }
+
                         self.session.add_message(msg);
                         let final_response = self.build_proof_of_work(&text, &ctx.workspace_root);
                         return Ok(final_response);
@@ -874,7 +1005,7 @@ impl Agent {
                                 ));
                                 self.session
                                     .add_message(Message::tool_result(id, block_msg));
-                                self.note_planning_block()?;
+                                self.note_planning_block(instruction)?;
                                 continue;
                             }
                             self.emit_progress(self.tool_progress(&name, &args));
@@ -887,6 +1018,9 @@ impl Agent {
                             if found_new_change && self.execution_stage == ExecutionStage::Research
                             {
                                 self.execution_stage = ExecutionStage::Edit;
+                            }
+                            if found_new_change {
+                                self.maybe_escalate_to_planning();
                             }
                             self.session.add_message(Message::tool_request(
                                 id.clone(),
@@ -961,7 +1095,7 @@ impl Agent {
                         ));
                         self.session
                             .add_message(Message::tool_result(id, block_msg));
-                        self.note_planning_block()?;
+                        self.note_planning_block(instruction)?;
                         continue;
                     }
 
@@ -1028,6 +1162,9 @@ impl Agent {
                         if self.execution_stage == ExecutionStage::Research {
                             self.execution_stage = ExecutionStage::Edit;
                         }
+                        // Risk #3: escalate to planning if unplanned mutations
+                        // are spreading across many files.
+                        self.maybe_escalate_to_planning();
                     }
 
                     if Self::is_plan_tool(&name) {
@@ -1084,7 +1221,7 @@ impl Agent {
                                     ));
                                     self.session
                                         .add_message(Message::tool_result(id, block_msg));
-                                    self.note_planning_block()?;
+                                    self.note_planning_block(instruction)?;
                                     continue;
                                 }
                                 self.emit_progress(self.tool_progress(&name, &args));
@@ -1098,6 +1235,9 @@ impl Agent {
                                     && self.execution_stage == ExecutionStage::Research
                                 {
                                     self.execution_stage = ExecutionStage::Edit;
+                                }
+                                if found_new_change {
+                                    self.maybe_escalate_to_planning();
                                 }
                                 self.session.add_message(Message::tool_request(
                                     id.clone(),
@@ -1157,7 +1297,7 @@ impl Agent {
                             ));
                             self.session
                                 .add_message(Message::tool_result(id, block_msg));
-                            self.note_planning_block()?;
+                            self.note_planning_block(instruction)?;
                             continue;
                         }
 
@@ -1224,6 +1364,7 @@ impl Agent {
                             if self.execution_stage == ExecutionStage::Research {
                                 self.execution_stage = ExecutionStage::Edit;
                             }
+                            self.maybe_escalate_to_planning();
                         }
 
                         if Self::is_plan_tool(&name) {

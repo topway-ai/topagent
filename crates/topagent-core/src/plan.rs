@@ -227,6 +227,57 @@ pub fn should_require_research_plan_build(instruction: &str) -> bool {
     }
 }
 
+// ── Plan generation via LLM ──
+
+const PLAN_GENERATION_SYSTEM_PROMPT: &str = "\
+You are a planning assistant for a coding agent. Given a task, produce a short \
+execution plan as a numbered list. Each step should be a concrete action the \
+agent can take (read, edit, create, run, verify). Keep the plan short \
+(3-7 steps). Do not include preamble or commentary — just the numbered list.
+
+Example output:
+1. Read src/main.rs to understand entry point
+2. Add the new CLI flag in the argument parser
+3. Implement the handler for the new flag
+4. Update tests in tests/cli_test.rs
+5. Run cargo test to verify";
+
+/// Build messages for a dedicated plan-generation LLM call.
+pub fn build_plan_generation_prompt(instruction: &str) -> (String, String) {
+    (
+        PLAN_GENERATION_SYSTEM_PROMPT.to_string(),
+        format!("Create a plan for this task:\n\n{}", instruction),
+    )
+}
+
+/// Parse the LLM plan-generation response into a list of step descriptions.
+/// Extracts lines that look like numbered steps (e.g., "1. Do something").
+/// Returns an empty vec if no steps were found.
+pub fn parse_plan_generation_response(response: &str) -> Vec<String> {
+    response
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            // Match "1. ...", "2) ...", "- ..." style bullets
+            let content = if let Some(rest) = trimmed.strip_prefix(|c: char| c.is_ascii_digit()) {
+                // "1. text" or "1) text"
+                rest.trim_start_matches(|c: char| c.is_ascii_digit())
+                    .trim_start_matches(['.', ')', ':'])
+                    .trim()
+            } else if let Some(rest) = trimmed.strip_prefix('-') {
+                rest.trim()
+            } else {
+                return None;
+            };
+            if content.is_empty() {
+                return None;
+            }
+            Some(content.to_string())
+        })
+        .take(7) // Cap at 7 steps
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -553,5 +604,63 @@ mod tests {
         assert!(!should_use_plan(
             "Add a small new CLI subcommand status that prints the effective workspace, provider, and model. Update the Telegram /start message so it mentions the new status command where appropriate. Then verify the change and summarize the diff."
         ));
+    }
+
+    #[test]
+    fn test_parse_plan_generation_numbered_list() {
+        let response = "1. Read src/main.rs\n2. Add the feature\n3. Run tests";
+        let items = parse_plan_generation_response(response);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0], "Read src/main.rs");
+        assert_eq!(items[1], "Add the feature");
+        assert_eq!(items[2], "Run tests");
+    }
+
+    #[test]
+    fn test_parse_plan_generation_dash_bullets() {
+        let response = "- Investigate the code\n- Make changes\n- Verify";
+        let items = parse_plan_generation_response(response);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0], "Investigate the code");
+    }
+
+    #[test]
+    fn test_parse_plan_generation_with_preamble() {
+        let response = "Here is the plan:\n1. First step\n2. Second step\nGood luck!";
+        let items = parse_plan_generation_response(response);
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0], "First step");
+        assert_eq!(items[1], "Second step");
+    }
+
+    #[test]
+    fn test_parse_plan_generation_empty_response() {
+        let items = parse_plan_generation_response("I don't know what to do");
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn test_parse_plan_generation_capped_at_seven() {
+        let response = (1..=10)
+            .map(|i| format!("{}. Step {}", i, i))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let items = parse_plan_generation_response(&response);
+        assert_eq!(items.len(), 7);
+    }
+
+    #[test]
+    fn test_parse_plan_generation_parenthesis_format() {
+        let response = "1) Read files\n2) Edit code\n3) Test";
+        let items = parse_plan_generation_response(response);
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0], "Read files");
+    }
+
+    #[test]
+    fn test_build_plan_generation_prompt_includes_instruction() {
+        let (sys, user) = build_plan_generation_prompt("fix the bug");
+        assert!(sys.contains("planning assistant"));
+        assert!(user.contains("fix the bug"));
     }
 }

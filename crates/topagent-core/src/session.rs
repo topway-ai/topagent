@@ -36,6 +36,19 @@ impl Session {
         self.messages.clear();
     }
 
+    /// Remove the last message if it matches a predicate.
+    /// Used to replace ephemeral control messages (e.g., planning redirects)
+    /// without accumulating them in history.
+    pub fn pop_last_if(&mut self, predicate: impl FnOnce(&Message) -> bool) -> bool {
+        if let Some(last) = self.messages.last() {
+            if predicate(last) {
+                self.messages.pop();
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn truncate_history(&mut self, keep_recent: usize) {
         if self.messages.len() <= keep_recent {
             return;
@@ -116,6 +129,28 @@ mod tests {
         session.truncate_history(10);
 
         assert_eq!(session.message_count(), 2);
+    }
+
+    #[test]
+    fn test_session_pop_last_if_matches() {
+        let mut session = Session::new();
+        session.add_message(Message::user("keep"));
+        session.add_message(Message::user("remove me"));
+        assert_eq!(session.message_count(), 2);
+
+        let popped = session.pop_last_if(|m| m.as_text() == Some("remove me"));
+        assert!(popped);
+        assert_eq!(session.message_count(), 1);
+        assert_eq!(session.messages()[0].as_text(), Some("keep"));
+    }
+
+    #[test]
+    fn test_session_pop_last_if_no_match() {
+        let mut session = Session::new();
+        session.add_message(Message::user("keep"));
+        let popped = session.pop_last_if(|m| m.as_text() == Some("nope"));
+        assert!(!popped);
+        assert_eq!(session.message_count(), 1);
     }
 
     #[test]
