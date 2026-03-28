@@ -129,6 +129,11 @@ fn is_then_followed_by_report(lower: &str) -> bool {
         " then let me know",
         " then confirm ",
         " then output ",
+        " then run ",
+        " then verify ",
+        " then check ",
+        " then summarize ",
+        " then describe ",
     ];
     report_verbs.iter().any(|r| lower.contains(r))
 }
@@ -170,26 +175,46 @@ fn has_multiple_action_categories(lower: &str) -> bool {
     let modify_words = ["modify", "update", "change"];
 
     let mut categories_found = 0;
-    if refactor_words.iter().any(|w| lower.contains(*w)) {
+    if refactor_words.iter().any(|w| contains_unnegated(lower, w)) {
         categories_found += 1;
     }
-    if review_words.iter().any(|w| lower.contains(*w)) {
+    if review_words.iter().any(|w| contains_unnegated(lower, w)) {
         categories_found += 1;
     }
-    if create_words.iter().any(|w| lower.contains(*w)) {
+    if create_words.iter().any(|w| contains_unnegated(lower, w)) {
         categories_found += 1;
     }
-    if verify_words.iter().any(|w| lower.contains(*w)) {
+    if verify_words.iter().any(|w| contains_unnegated(lower, w)) {
         categories_found += 1;
     }
-    if fix_words.iter().any(|w| lower.contains(*w)) {
+    if fix_words.iter().any(|w| contains_unnegated(lower, w)) {
         categories_found += 1;
     }
-    if modify_words.iter().any(|w| lower.contains(*w)) {
+    if modify_words.iter().any(|w| contains_unnegated(lower, w)) {
         categories_found += 1;
     }
 
     categories_found >= 2
+}
+
+/// Returns true if `word` appears in `text` without being preceded by
+/// "do not ", "don't ", or "not " within the same clause.
+fn contains_unnegated(text: &str, word: &str) -> bool {
+    let negation_prefixes = ["do not ", "don't ", "not "];
+    for (idx, _) in text.match_indices(word) {
+        let prefix_region = if idx >= 10 {
+            &text[idx - 10..idx]
+        } else {
+            &text[..idx]
+        };
+        if !negation_prefixes
+            .iter()
+            .any(|neg| prefix_region.ends_with(neg))
+        {
+            return true;
+        }
+    }
+    false
 }
 
 fn token_looks_like_file_reference(token: &str) -> bool {
@@ -238,10 +263,28 @@ fn has_small_mutation_request(lower: &str) -> bool {
     mutation_words.iter().any(|w| lower.contains(*w))
 }
 
+fn has_self_declared_small_scope(lower: &str) -> bool {
+    let small_phrases = [
+        "tiny ",
+        "small ",
+        "one line",
+        "single line",
+        "one comment",
+        "a comment",
+        "single comment",
+        "exactly one",
+        "only one",
+        "one short",
+    ];
+    small_phrases.iter().any(|p| lower.contains(p))
+}
+
 fn is_small_scoped_mutation_task(instruction: &str, lower: &str) -> bool {
-    lower.len() <= 160
+    // Allow up to 300 chars — verbose constraints ("do not rewrite", "do not
+    // convert") make instructions longer without broadening scope.
+    lower.len() <= 300
         && has_small_mutation_request(lower)
-        && has_narrow_file_scope(instruction, lower)
+        && (has_narrow_file_scope(instruction, lower) || has_self_declared_small_scope(lower))
 }
 
 fn is_trivial_query(lower: &str) -> bool {
@@ -571,5 +614,65 @@ mod tests {
         assert!(!should_use_plan(
             "update the main file with a version number"
         ));
+    }
+
+    // ── Regression tests for the three exact real Telegram failures ──
+
+    #[test]
+    fn test_real_failure_1_constrained_single_line_comment() {
+        // Exact instruction that failed in Telegram with "planning is required
+        // but no plan could be created; task is blocked".
+        assert!(!should_use_plan(
+            "Add exactly one short single-line comment to the main CLI entry file explaining what it does. Do not rewrite existing comments, do not convert comments to rustdoc, and do not change anything else. Then tell me exactly which line changed."
+        ));
+    }
+
+    #[test]
+    fn test_real_failure_2_tiny_change_with_verification() {
+        // Exact instruction that failed: tiny edit + lightweight verification.
+        assert!(!should_use_plan(
+            "Make a tiny safe change, then run an appropriate lightweight verification command and tell me both the changed file and the verification result."
+        ));
+    }
+
+    #[test]
+    fn test_real_failure_3_small_multi_step_mutation() {
+        // Exact instruction that failed: small but genuinely multi-step.
+        // This bypasses planning because the user self-declared it as "small".
+        assert!(!should_use_plan(
+            "Add a small new CLI subcommand status that prints the effective workspace, provider, and model. Update the Telegram /start message so it mentions the new status command where appropriate. Then verify the change and summarize the diff."
+        ));
+    }
+
+    #[test]
+    fn test_negated_action_words_not_counted() {
+        // "do not change" should not trigger the modify category
+        assert!(!should_use_plan(
+            "Add a comment to the entry file. Do not change anything else."
+        ));
+        // But unnegated multi-category still works
+        assert!(should_use_plan(
+            "implement the feature and verify it works across the codebase"
+        ));
+    }
+
+    #[test]
+    fn test_self_declared_small_scope_bypasses_planning() {
+        assert!(!should_use_plan(
+            "Make a tiny change and then run cargo check"
+        ));
+        assert!(!should_use_plan("Add exactly one line to the config"));
+        assert!(!should_use_plan("Make a small fix and verify it compiles"));
+    }
+
+    #[test]
+    fn test_verification_in_then_clause_not_treated_as_sequence() {
+        assert!(!should_use_plan(
+            "Fix the typo in main.rs, then run cargo test"
+        ));
+        assert!(!should_use_plan(
+            "Add a comment to this file, then verify it compiles"
+        ));
+        assert!(!should_use_plan("Edit README.md then summarize the diff"));
     }
 }

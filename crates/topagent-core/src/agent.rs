@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-const MAX_PLANNING_BLOCKS_BEFORE_FAILURE: usize = 2;
+const MAX_PLANNING_BLOCKS_BEFORE_FAILURE: usize = 5;
 
 pub struct Agent {
     session: Session,
