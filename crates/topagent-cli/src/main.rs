@@ -489,7 +489,7 @@ fn run_telegram(
             }
             Err(e) => {
                 polling_retries += 1;
-                session_manager.notify_polling_retry(polling_retries);
+                session_manager.notify_polling_retry();
                 error!(
                     "failed to get Telegram updates: {}. Retrying in 5 seconds (attempt {}).",
                     e, polling_retries
@@ -584,11 +584,10 @@ impl ChatSessionManager {
         true
     }
 
-    fn notify_polling_retry(&self, attempt: usize) {
-        self.broadcast_progress(ProgressUpdate::retrying(format!(
-            "Telegram polling failed, retrying connection (attempt {})...",
-            attempt
-        )));
+    fn notify_polling_retry(&self) {
+        self.broadcast_progress(ProgressUpdate::retrying(
+            "Telegram polling failed, retrying connection...",
+        ));
     }
 
     fn notify_polling_recovered(&self) {
@@ -815,14 +814,14 @@ mod tests {
             }),
         );
 
-        manager.notify_polling_retry(2);
+        manager.notify_polling_retry();
 
         let updates = updates.lock().unwrap();
         assert!(updates.iter().any(|update| {
             update.kind == ProgressKind::Retrying
                 && update
                     .message
-                    .contains("Telegram polling failed, retrying connection (attempt 2)")
+                    .contains("Telegram polling failed, retrying connection")
         }));
     }
 

@@ -243,4 +243,24 @@ mod tests {
         assert!(rendered.iter().any(|line| line.contains("Stopping after")));
         assert!(rendered.iter().any(|line| line.contains("stopped after")));
     }
+
+    #[test]
+    fn test_live_progress_dedupes_identical_retry_updates() {
+        let (progress, rendered) = capture_progress(Duration::from_millis(100));
+        let retry = ProgressUpdate::retrying("Telegram polling failed, retrying connection...");
+
+        (progress.callback())(retry.clone());
+        (progress.callback())(retry.clone());
+        (progress.callback())(retry);
+        (progress.callback())(ProgressUpdate::completed());
+        progress.wait();
+
+        let rendered = rendered.lock().unwrap();
+        let retry_lines = rendered
+            .iter()
+            .filter(|line| line.contains("Telegram polling failed, retrying connection"))
+            .count();
+        assert_eq!(retry_lines, 1, "identical retry updates should not spam");
+        assert!(rendered.iter().any(|line| line.contains("completed")));
+    }
 }

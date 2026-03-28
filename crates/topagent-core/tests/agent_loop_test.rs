@@ -1271,6 +1271,79 @@ fn test_small_scoped_mutation_with_verification_request_is_not_forced_to_plan() 
 }
 
 #[test]
+fn test_non_trivial_task_can_plan_mutate_verify_and_complete() {
+    let (ctx, _temp) = make_test_context();
+    std::fs::write(ctx.resolve_path("README.md").unwrap(), "original").unwrap();
+    let options = RuntimeOptions::new().with_require_plan(true);
+    let provider = BasicTestProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".to_string(),
+            name: "read".to_string(),
+            args: serde_json::json!({"path": "README.md"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "2".to_string(),
+            name: "update_plan".to_string(),
+            args: serde_json::json!({
+                "items": [
+                    {"content": "Inspect README.md", "status": "done"},
+                    {"content": "Update README.md", "status": "in_progress"},
+                    {"content": "Verify the change", "status": "pending"}
+                ]
+            }),
+        },
+        ProviderResponse::ToolCall {
+            id: "3".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "README.md", "content": "updated"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "4".to_string(),
+            name: "bash".to_string(),
+            args: serde_json::json!({"command": "cargo test --help >/dev/null 2>&1"}),
+        },
+        ProviderResponse::Message(Message::assistant("Done".to_string())),
+    ]);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+    let (updates, callback) = capture_progress_updates();
+    agent.set_progress_callback(Some(callback));
+
+    let result = agent.run(&ctx, "refactor the entire codebase and then test it");
+
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    assert!(
+        output.contains("README.md"),
+        "proof-of-work should include the changed file: {}",
+        output
+    );
+    assert!(
+        output.contains("Verification"),
+        "proof-of-work should include verification evidence: {}",
+        output
+    );
+    assert!(
+        !agent.is_planning_gate_active(),
+        "planning gate should be cleared after a real plan is created"
+    );
+    let updates = updates.lock().unwrap();
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Running tool: read")));
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Planning next steps")));
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Running tool: write")));
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Running tool: bash (verification)")));
+    assert!(updates.iter().any(|u| u.kind == ProgressKind::Completed));
+    assert!(!updates.iter().any(|u| u.kind == ProgressKind::Failed));
+}
+
+#[test]
 fn test_safe_bash_allowed_before_plan() {
     use topagent_core::Agent;
     use topagent_core::BashCommandClass;
@@ -1456,6 +1529,62 @@ fn test_planning_failure_reports_failed_not_completed() {
     assert!(updates.iter().any(|u| u.kind == ProgressKind::Blocked));
     assert!(updates.iter().any(|u| u.kind == ProgressKind::Failed));
     assert!(!updates.iter().any(|u| u.kind == ProgressKind::Completed));
+}
+
+#[test]
+fn test_blocked_then_plan_then_complete_has_single_final_completed_state() {
+    let (ctx, _temp) = make_test_context();
+    let options = RuntimeOptions::new().with_require_plan(true);
+    let provider = BasicTestProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "blocked.txt", "content": "draft"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "2".to_string(),
+            name: "update_plan".to_string(),
+            args: serde_json::json!({
+                "items": [
+                    {"content": "Create blocked.txt", "status": "in_progress"},
+                    {"content": "Verify the result", "status": "pending"}
+                ]
+            }),
+        },
+        ProviderResponse::ToolCall {
+            id: "3".to_string(),
+            name: "write".to_string(),
+            args: serde_json::json!({"path": "blocked.txt", "content": "final"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "4".to_string(),
+            name: "bash".to_string(),
+            args: serde_json::json!({"command": "cargo test --help >/dev/null 2>&1"}),
+        },
+        ProviderResponse::Message(Message::assistant("Recovered and finished".to_string())),
+    ]);
+    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
+    let (updates, callback) = capture_progress_updates();
+    agent.set_progress_callback(Some(callback));
+
+    let result = agent.run(&ctx, "refactor the entire codebase and then test it");
+
+    assert!(result.is_ok());
+    let updates = updates.lock().unwrap();
+    assert!(updates.iter().any(|u| u.kind == ProgressKind::Blocked));
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Planning next steps")));
+    let terminal_updates: Vec<_> = updates.iter().filter(|u| u.is_terminal()).collect();
+    assert_eq!(
+        terminal_updates.len(),
+        1,
+        "expected one terminal status, got {:?}",
+        terminal_updates
+    );
+    assert_eq!(terminal_updates[0].kind, ProgressKind::Completed);
+    assert!(!updates.iter().any(|u| u.kind == ProgressKind::Failed));
+    assert!(!updates.iter().any(|u| u.kind == ProgressKind::Stopped));
 }
 
 #[test]
