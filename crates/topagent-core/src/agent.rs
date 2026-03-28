@@ -1397,7 +1397,8 @@ fn extract_exit_code(result: &str) -> i32 {
             .parse()
             .unwrap_or(-1)
     } else {
-        0
+        // Missing prefix means truncated or malformed output — do not assume success.
+        -1
     }
 }
 
@@ -1417,8 +1418,8 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_exit_code_no_prefix_defaults_to_zero() {
-        assert_eq!(extract_exit_code("some random output"), 0);
+    fn test_extract_exit_code_no_prefix_defaults_to_failure() {
+        assert_eq!(extract_exit_code("some random output"), -1);
     }
 
     #[test]
