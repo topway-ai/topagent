@@ -6,6 +6,8 @@ Install TopAgent on Xubuntu:
 curl -fsSL https://raw.githubusercontent.com/topway-ai/topagent/main/scripts/install.sh | bash
 ```
 
+The one-line installer downloads the latest Linux release binary. If it has access to your terminal, it will immediately launch the interactive `topagent install` setup flow from that installed binary.
+
 Telegram local setup:
 
 ```bash

@@ -175,6 +175,7 @@ fn test_readme_documents_product_setup_commands() {
     assert!(readme.contains("topagent service start"));
     assert!(readme.contains("topagent service stop"));
     assert!(readme.contains("topagent service restart"));
+    assert!(readme.contains("downloads the latest Linux release binary"));
 }
 
 #[test]
@@ -193,6 +194,31 @@ fn test_install_script_points_users_to_topagent_install() {
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
     let script = std::fs::read_to_string(repo_root.join("scripts/install.sh")).unwrap();
 
-    assert!(script.contains("topagent install"));
-    assert!(script.contains("topagent status"));
+    assert!(script.contains("$installed_bin install"));
+    assert!(script.contains("$installed_bin status"));
+    assert!(script.contains("Starting interactive TopAgent setup"));
+}
+
+#[test]
+fn test_install_script_prefers_release_assets() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let script = std::fs::read_to_string(repo_root.join("scripts/install.sh")).unwrap();
+
+    assert!(script.contains("TOPAGENT_INSTALL_RELEASE_BASE_URL"));
+    assert!(script.contains("latest/download"));
+    assert!(script.contains("x86_64-unknown-linux-gnu"));
+}
+
+#[test]
+fn test_release_workflow_exists_and_uses_tag_trigger() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let workflow =
+        std::fs::read_to_string(repo_root.join(".github/workflows/release.yml")).unwrap();
+
+    assert!(workflow.contains("tags:"));
+    assert!(workflow.contains("- \"v*\""));
+    assert!(workflow.contains("softprops/action-gh-release"));
+    assert!(workflow.contains("topagent-x86_64-unknown-linux-gnu"));
 }

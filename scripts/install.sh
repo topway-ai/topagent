@@ -5,6 +5,10 @@ TOPAGENT_GIT_URL="${TOPAGENT_INSTALL_GIT_URL:-https://github.com/topway-ai/topag
 TOPAGENT_GIT_BRANCH="${TOPAGENT_INSTALL_BRANCH:-main}"
 TOPAGENT_INSTALL_PATH="${TOPAGENT_INSTALL_PATH:-}"
 TOPAGENT_INSTALL_ROOT="${TOPAGENT_INSTALL_ROOT:-}"
+TOPAGENT_INSTALL_VERSION="${TOPAGENT_INSTALL_VERSION:-}"
+TOPAGENT_INSTALL_RELEASE_BASE_URL="${TOPAGENT_INSTALL_RELEASE_BASE_URL:-https://github.com/topway-ai/topagent/releases}"
+TOPAGENT_INSTALL_USE_CARGO="${TOPAGENT_INSTALL_USE_CARGO:-}"
+TOPAGENT_SKIP_SETUP="${TOPAGENT_SKIP_SETUP:-}"
 
 say() {
   printf '==> %s\n' "$*"
@@ -27,6 +31,10 @@ ensure_compiler() {
   fail "A C compiler is required. On Xubuntu run: sudo apt update && sudo apt install -y build-essential"
 }
 
+need_cmd() {
+  have "$1" || fail "$2"
+}
+
 ensure_cargo() {
   if have cargo; then
     return
@@ -43,7 +51,34 @@ ensure_cargo() {
   have cargo || fail "cargo is still unavailable. Run: source \"$HOME/.cargo/env\""
 }
 
-install_topagent() {
+resolve_install_dir() {
+  if [[ -n "$TOPAGENT_INSTALL_ROOT" ]]; then
+    printf '%s\n' "$TOPAGENT_INSTALL_ROOT/bin"
+  else
+    printf '%s\n' "$HOME/.cargo/bin"
+  fi
+}
+
+detect_release_target() {
+  case "$(uname -s):$(uname -m)" in
+    Linux:x86_64|Linux:amd64)
+      printf '%s\n' "x86_64-unknown-linux-gnu"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+release_download_prefix() {
+  if [[ -n "$TOPAGENT_INSTALL_VERSION" ]]; then
+    printf '%s/download/%s\n' "$TOPAGENT_INSTALL_RELEASE_BASE_URL" "$TOPAGENT_INSTALL_VERSION"
+  else
+    printf '%s/latest/download\n' "$TOPAGENT_INSTALL_RELEASE_BASE_URL"
+  fi
+}
+
+install_topagent_from_cargo() {
   local -a install_args
   install_args=(install --locked --force)
 
@@ -63,41 +98,103 @@ install_topagent() {
   cargo "${install_args[@]}"
 }
 
-main() {
-  ensure_compiler
-  ensure_cargo
+install_topagent_from_release() {
+  local install_dir installed_bin target asset_name checksum_name download_prefix temp_dir
+  install_dir="$(resolve_install_dir)"
+  installed_bin="$install_dir/topagent"
+  target="$(detect_release_target)" || fail "No precompiled TopAgent asset is published for $(uname -s) $(uname -m). Re-run with TOPAGENT_INSTALL_USE_CARGO=1 to fall back to cargo install."
+  asset_name="topagent-$target"
+  checksum_name="$asset_name.sha256"
+  download_prefix="$(release_download_prefix)"
+  temp_dir="$(mktemp -d)"
 
-  say "Installing TopAgent"
-  install_topagent
+  need_cmd curl "curl is required to download the TopAgent release asset."
+  need_cmd sha256sum "sha256sum is required to verify the TopAgent release asset."
+  need_cmd install "install is required to place the TopAgent binary."
 
-  local installed_bin
-  if [[ -n "$TOPAGENT_INSTALL_ROOT" ]]; then
-    installed_bin="$TOPAGENT_INSTALL_ROOT/bin/topagent"
-  else
-    installed_bin="$HOME/.cargo/bin/topagent"
+  mkdir -p "$install_dir"
+
+  curl -fsSL "$download_prefix/$asset_name" -o "$temp_dir/$asset_name" || fail "Failed to download TopAgent release asset from $download_prefix/$asset_name"
+  curl -fsSL "$download_prefix/$checksum_name" -o "$temp_dir/$checksum_name" || fail "Failed to download TopAgent release checksum from $download_prefix/$checksum_name"
+
+  (
+    cd "$temp_dir"
+    sha256sum -c "$checksum_name"
+  ) || fail "Checksum verification failed for TopAgent release asset."
+
+  install -m 0755 "$temp_dir/$asset_name" "$installed_bin"
+  rm -rf "$temp_dir"
+}
+
+run_post_install_setup() {
+  local installed_bin="$1"
+
+  if [[ -n "$TOPAGENT_SKIP_SETUP" ]]; then
+    return
   fi
+
+  if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+    return
+  fi
+
+  say "Starting interactive TopAgent setup"
+  if "$installed_bin" install </dev/tty >/dev/tty 2>/dev/tty; then
+    return
+  fi
+
+  say "TopAgent was installed, but interactive setup did not complete. Run:"
+  printf '  %s install\n' "$installed_bin"
+}
+
+main() {
+  say "Installing TopAgent"
+
+  local install_dir installed_bin
+  install_dir="$(resolve_install_dir)"
+  installed_bin="$install_dir/topagent"
+
+  if [[ -n "$TOPAGENT_INSTALL_PATH" || -n "$TOPAGENT_INSTALL_USE_CARGO" ]]; then
+    ensure_compiler
+    ensure_cargo
+    install_topagent_from_cargo
+  else
+    install_topagent_from_release
+  fi
+
+  run_post_install_setup "$installed_bin"
 
   cat <<EOF
 
 TopAgent installed.
 
 Set up the Telegram background service:
-  topagent install
+  $installed_bin install
 
 Check service health:
-  topagent status
+  $installed_bin status
 
 Foreground one-shot run:
   cd /path/to/your/repo
   export OPENROUTER_API_KEY="your_openrouter_key"
-  topagent "summarize this repository"
-
-If 'topagent' is not in your PATH yet, run:
-  source "$HOME/.cargo/env"
+  $installed_bin "summarize this repository"
 
 Installed binary:
   $installed_bin
 EOF
+
+  if [[ -z "$TOPAGENT_INSTALL_ROOT" ]]; then
+    cat <<EOF
+
+If 'topagent' is not in your PATH yet, run:
+  source "$HOME/.cargo/env"
+EOF
+  else
+    cat <<EOF
+
+If 'topagent' is not in your PATH yet, add this directory:
+  $install_dir
+EOF
+  fi
 }
 
 main "$@"

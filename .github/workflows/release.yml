@@ -1,0 +1,46 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-linux-x86_64:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --locked --release -p topagent-cli --bin topagent
+
+      - name: Package release assets
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          asset_name="topagent-x86_64-unknown-linux-gnu"
+          cp target/release/topagent "dist/$asset_name"
+          chmod 0755 "dist/$asset_name"
+          (
+            cd dist
+            sha256sum "$asset_name" > "$asset_name.sha256"
+          )
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/topagent-x86_64-unknown-linux-gnu
+            dist/topagent-x86_64-unknown-linux-gnu.sha256

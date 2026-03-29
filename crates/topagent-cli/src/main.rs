@@ -44,7 +44,7 @@ const TELEGRAM_HISTORY_VERSION: u32 = 1;
 #[command(
     author,
     version,
-    about = "topagent: minimal coding agent",
+    about = "TopAgent local coding agent",
     arg_required_else_help = true
 )]
 struct Cli {
@@ -74,7 +74,7 @@ struct Cli {
         long = "workspace",
         alias = "cwd",
         global = true,
-        help = "Workspace/repo directory override"
+        help = "Workspace directory override"
     )]
     workspace: Option<PathBuf>,
 
@@ -90,26 +90,27 @@ struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
 
-    #[arg(help = "Instruction for one-shot mode")]
+    #[arg(help = "Run a one-shot task")]
     instruction: Option<String>,
 }
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Interactive setup for the TopAgent Telegram background service.
+    /// Set up and start the TopAgent Telegram background service.
     Install,
-    /// Show setup and background service health.
+    /// Show TopAgent setup and service status.
     Status,
+    /// Run the Telegram bot in the foreground.
     Telegram {
         #[arg(long, help = "Telegram bot token (or TELEGRAM_BOT_TOKEN)")]
         token: Option<String>,
     },
-    /// Manage the Telegram background service directly.
+    /// Manage the installed Telegram background service.
     Service {
         #[command(subcommand)]
         command: ServiceCommands,
     },
-    /// Stop and remove the TopAgent Telegram background service and config, and remove the installed binary when run from that installed location.
+    /// Remove the installed TopAgent setup and, when applicable, the installed binary.
     Uninstall,
     #[command(hide = true)]
     Run { instruction: String },
@@ -117,14 +118,20 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum ServiceCommands {
+    /// Install and start the Telegram background service.
     Install {
         #[arg(long, help = "Telegram bot token (or TELEGRAM_BOT_TOKEN)")]
         token: Option<String>,
     },
+    /// Show Telegram service status.
     Status,
+    /// Start the installed Telegram background service.
     Start,
+    /// Stop the installed Telegram background service.
     Stop,
+    /// Restart the installed Telegram background service.
     Restart,
+    /// Remove the Telegram background service and managed env file.
     Uninstall,
 }
 
@@ -788,10 +795,10 @@ fn run_service_install(
     )?;
     let paths = service_paths()?;
     install_service_with_config(&config, &paths)?;
-    println!("TopAgent Telegram service installed and started.");
-    println!("Unit: {}", TELEGRAM_SERVICE_UNIT_NAME);
-    println!("Unit file: {}", paths.unit_path.display());
-    println!("Env file: {}", paths.env_path.display());
+    println!("TopAgent service installed.");
+    println!("Service: {}", TELEGRAM_SERVICE_UNIT_NAME);
+    println!("Started: yes");
+    println!("Config file: {}", paths.env_path.display());
     println!("Workspace: {}", config.workspace.display());
     println!("Inspect:");
     println!("  topagent status");
@@ -846,12 +853,14 @@ fn run_service_lifecycle(
     ensure_service_setup_present(&paths)?;
     run_systemctl_user_checked(args, &format!("{} the TopAgent Telegram service", action))?;
 
-    println!("TopAgent service {}", completed_state);
+    println!("TopAgent service {}.", completed_state);
     println!("Service: {}", TELEGRAM_SERVICE_UNIT_NAME);
     println!("Config file: {}", paths.env_path.display());
     println!("Next:");
     println!("  topagent status");
-    println!("  {}", next_command);
+    if next_command.trim() != "topagent status" {
+        println!("  {}", next_command);
+    }
     println!(
         "  journalctl --user -u {} -n 50 --no-pager",
         TELEGRAM_SERVICE_UNIT_NAME
@@ -1662,30 +1671,18 @@ fn run_telegram(
                     info!("received from chat {}: {}", chat_id, text);
 
                     if text == "/start" || text == "/help" {
-                        let reply = if text == "/start" {
-                            format!(
-                                "TopAgent\n\n\
-                                 Workspace: {}\n\
-                                 Provider: {} | Model: {}\n\
-                                 Mode: private text chats only\n\n\
-                                 Commands:\n\
-                                 /help - show this message\n\
-                                 /stop - stop the current task\n\
-                                 /reset - clear saved conversation history\n\n\
-                                 Try this first message:\n\
-                                 Summarize this repository and tell me the main entry points.",
-                                workspace_label, provider_label, model_label
-                            )
-                        } else {
-                            format!(
-                                "TopAgent\n\n\
-                                 Workspace: {}\n\
-                                 Send a plain text task about this workspace.\n\
-                                 /stop requests cancellation of the current task.\n\
-                                 /reset clears your saved conversation history.",
-                                workspace_label
-                            )
-                        };
+                        let reply = format!(
+                            "TopAgent\n\n\
+                             Workspace: {}\n\
+                             Provider: {} | Model: {}\n\
+                             Mode: private text chats only\n\n\
+                             Commands:\n\
+                             /help - show this message\n\
+                             /stop - stop the current task\n\
+                             /reset - clear conversation history\n\n\
+                             Send a plain text message to start a task.",
+                            workspace_label, provider_label, model_label
+                        );
                         let outgoing = OutgoingMessage {
                             chat_id,
                             text: reply,
@@ -1712,7 +1709,7 @@ fn run_telegram(
                                 .to_string()
                         } else {
                             session_manager.reset_chat(chat_id);
-                            "Saved conversation history cleared.".to_string()
+                            "Conversation history cleared.".to_string()
                         };
                         send_telegram_chunks(&adapter, chat_id, vec![reply]);
                         continue;

@@ -441,6 +441,7 @@ fn test_service_start_stop_and_restart_control_the_installed_service() {
     let restart_stdout = String::from_utf8_lossy(&restart.stdout);
     assert!(restart_stdout.contains("TopAgent service restarted"));
     assert!(restart_stdout.contains("topagent status"));
+    assert_eq!(restart_stdout.matches("  topagent status").count(), 1);
 
     let calls = harness.calls_log();
     assert!(calls.contains("stop topagent-telegram.service"));
