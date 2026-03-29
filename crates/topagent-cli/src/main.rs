@@ -437,6 +437,8 @@ fn run_telegram(
         bot_info.id,
     );
 
+    let provider_label = route.provider_id.clone();
+    let model_label = route.model_id.clone();
     let mut session_manager = ChatSessionManager::new(route, api_key, options);
     let mut offset = 0i64;
     let mut polling_retries = 0usize;
@@ -497,6 +499,7 @@ fn run_telegram(
                             format!(
                                 "TopAgent\n\n\
                                  Workspace: {}\n\
+                                 Provider: {} | Model: {}\n\
                                  Mode: private text chats only\n\n\
                                  Commands:\n\
                                  /help - show this message\n\
@@ -504,7 +507,7 @@ fn run_telegram(
                                  /reset - clear conversation history\n\n\
                                  Try this first message:\n\
                                  Summarize this repository and tell me the main entry points.",
-                                workspace_label
+                                workspace_label, provider_label, model_label
                             )
                         } else {
                             format!(
