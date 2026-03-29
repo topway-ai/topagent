@@ -22,11 +22,15 @@ It will then:
 - create a default `workspace/` directory next to the installed binary, or in the repo root when running from source
 - write a managed config/env file under `~/.config/topagent/`
 - install and start the `topagent-telegram.service` user service
+- persist Telegram chat history under `workspace/.topagent/telegram-history/`
 
-Check health or remove the setup:
+Check health, manage the service, or remove the setup:
 
 ```bash
 topagent status
+topagent service start
+topagent service stop
+topagent service restart
 topagent uninstall
 ```
 
@@ -36,6 +40,7 @@ Then:
 2. Send `/start` and confirm the workspace path is correct.
 3. Send: `Summarize this repository and tell me the main entry points.`
 4. Send `/stop` if you want to cancel the current task.
+5. Send `/reset` if you want to clear the saved conversation history for that chat.
 
 First local one-shot run:
 
@@ -54,6 +59,13 @@ export OPENROUTER_API_KEY="your_openrouter_key"
 export TELEGRAM_BOT_TOKEN="123456:ABCdefYourBotToken"
 topagent telegram --workspace /path/to/your/repo
 ```
+
+Service notes:
+
+- `topagent install` enables and starts the background Telegram service immediately.
+- `topagent service restart` reloads the installed bot process without changing config.
+- Chat history survives service restarts because it is stored in the configured workspace.
+- `/reset` clears the persisted history for the current Telegram chat.
 
 If this fails:
 
@@ -83,4 +95,3 @@ Current limits:
 - private chats only
 - text messages only
 - one workspace per process
-- Telegram chat history resets on restart

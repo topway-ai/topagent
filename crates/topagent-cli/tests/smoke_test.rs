@@ -134,6 +134,26 @@ fn test_cli_status_appears_in_help() {
 }
 
 #[test]
+fn test_cli_service_appears_in_help() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("service"));
+}
+
+#[test]
+fn test_cli_service_help_mentions_lifecycle_commands() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.args(["service", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("start"))
+        .stdout(predicates::str::contains("stop"))
+        .stdout(predicates::str::contains("restart"));
+}
+
+#[test]
 fn test_readme_documents_uninstall() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
@@ -151,6 +171,9 @@ fn test_readme_documents_product_setup_commands() {
     assert!(readme.contains("topagent install"));
     assert!(readme.contains("topagent status"));
     assert!(readme.contains("topagent uninstall"));
+    assert!(readme.contains("topagent service start"));
+    assert!(readme.contains("topagent service stop"));
+    assert!(readme.contains("topagent service restart"));
 }
 
 #[test]
@@ -161,4 +184,14 @@ fn test_install_script_output_no_longer_teaches_workspace_env() {
 
     assert!(script.contains("cd /path/to/your/repo"));
     assert!(!script.contains("TOPAGENT_WORKSPACE"));
+}
+
+#[test]
+fn test_install_script_points_users_to_topagent_install() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let script = std::fs::read_to_string(repo_root.join("scripts/install.sh")).unwrap();
+
+    assert!(script.contains("topagent install"));
+    assert!(script.contains("topagent status"));
 }

@@ -4,6 +4,7 @@ mod progress;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
@@ -37,6 +38,7 @@ const TOPAGENT_PROVIDER_KEY: &str = "TOPAGENT_PROVIDER";
 const TOPAGENT_MODEL_KEY: &str = "TOPAGENT_MODEL";
 const OPENROUTER_API_KEY_KEY: &str = "OPENROUTER_API_KEY";
 const TELEGRAM_BOT_TOKEN_KEY: &str = "TELEGRAM_BOT_TOKEN";
+const TELEGRAM_HISTORY_VERSION: u32 = 1;
 
 #[derive(Parser)]
 #[command(
@@ -102,7 +104,7 @@ enum Commands {
         #[arg(long, help = "Telegram bot token (or TELEGRAM_BOT_TOKEN)")]
         token: Option<String>,
     },
-    #[command(hide = true)]
+    /// Manage the Telegram background service directly.
     Service {
         #[command(subcommand)]
         command: ServiceCommands,
@@ -120,6 +122,9 @@ enum ServiceCommands {
         token: Option<String>,
     },
     Status,
+    Start,
+    Stop,
+    Restart,
     Uninstall,
 }
 
@@ -138,6 +143,74 @@ struct ServicePaths {
     unit_path: PathBuf,
     env_dir: PathBuf,
     env_path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+struct ChatHistoryStore {
+    history_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedChatHistory {
+    version: u32,
+    messages: Vec<topagent_core::Message>,
+}
+
+impl ChatHistoryStore {
+    fn new(workspace_root: PathBuf) -> Self {
+        Self {
+            history_dir: workspace_root.join(".topagent").join("telegram-history"),
+        }
+    }
+
+    fn path_for_chat(&self, chat_id: i64) -> PathBuf {
+        self.history_dir.join(format!("chat-{chat_id}.json"))
+    }
+
+    fn load(&self, chat_id: i64) -> Result<Vec<topagent_core::Message>> {
+        let path = self.path_for_chat(chat_id);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let contents = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let history: PersistedChatHistory = serde_json::from_str(&contents)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        if history.version != TELEGRAM_HISTORY_VERSION {
+            return Err(anyhow::anyhow!(
+                "unsupported Telegram history version {} in {}",
+                history.version,
+                path.display()
+            ));
+        }
+
+        Ok(history.messages)
+    }
+
+    fn save(&self, chat_id: i64, messages: &[topagent_core::Message]) -> Result<PathBuf> {
+        std::fs::create_dir_all(&self.history_dir)
+            .with_context(|| format!("failed to create {}", self.history_dir.display()))?;
+        let path = self.path_for_chat(chat_id);
+        let history = PersistedChatHistory {
+            version: TELEGRAM_HISTORY_VERSION,
+            messages: messages.to_vec(),
+        };
+        let contents = serde_json::to_string_pretty(&history)
+            .with_context(|| format!("failed to encode {}", path.display()))?;
+        write_private_file(&path, &contents)?;
+        Ok(path)
+    }
+
+    fn clear(&self, chat_id: i64) -> Result<bool> {
+        let path = self.path_for_chat(chat_id);
+        if !path.exists() {
+            return Ok(false);
+        }
+        std::fs::remove_file(&path)
+            .with_context(|| format!("failed to remove {}", path.display()))?;
+        Ok(true)
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -511,6 +584,9 @@ fn run_service_command(
             timeout_secs,
         ),
         ServiceCommands::Status => run_service_status(),
+        ServiceCommands::Start => run_service_start(),
+        ServiceCommands::Stop => run_service_stop(),
+        ServiceCommands::Restart => run_service_restart(),
         ServiceCommands::Uninstall => run_service_uninstall(),
     }
 }
@@ -722,8 +798,60 @@ fn run_service_status() -> Result<()> {
     render_status()
 }
 
+fn run_service_start() -> Result<()> {
+    run_service_lifecycle(
+        &["start", TELEGRAM_SERVICE_UNIT_NAME],
+        "start",
+        "started",
+        "topagent service stop",
+    )
+}
+
+fn run_service_stop() -> Result<()> {
+    run_service_lifecycle(
+        &["stop", TELEGRAM_SERVICE_UNIT_NAME],
+        "stop",
+        "stopped",
+        "topagent service start",
+    )
+}
+
+fn run_service_restart() -> Result<()> {
+    run_service_lifecycle(
+        &["restart", TELEGRAM_SERVICE_UNIT_NAME],
+        "restart",
+        "restarted",
+        "topagent status",
+    )
+}
+
 fn run_service_uninstall() -> Result<()> {
     uninstall_service_setup()
+}
+
+fn run_service_lifecycle(
+    args: &[&str],
+    action: &str,
+    completed_state: &str,
+    next_command: &str,
+) -> Result<()> {
+    ensure_systemd_user_available()?;
+    let paths = service_paths()?;
+    ensure_service_setup_present(&paths)?;
+    run_systemctl_user_checked(args, &format!("{} the TopAgent Telegram service", action))?;
+
+    println!("TopAgent service {}", completed_state);
+    println!("Service: {}", TELEGRAM_SERVICE_UNIT_NAME);
+    println!("Config file: {}", paths.env_path.display());
+    println!("Next:");
+    println!("  topagent status");
+    println!("  {}", next_command);
+    println!(
+        "  journalctl --user -u {} -n 50 --no-pager",
+        TELEGRAM_SERVICE_UNIT_NAME
+    );
+
+    Ok(())
 }
 
 fn install_service_with_config(config: &TelegramModeConfig, paths: &ServicePaths) -> Result<()> {
@@ -1153,6 +1281,16 @@ fn assert_managed_or_absent(path: &Path, label: &str) -> Result<()> {
     ))
 }
 
+fn ensure_service_setup_present(paths: &ServicePaths) -> Result<()> {
+    if paths.unit_path.exists() || paths.env_path.exists() {
+        return Ok(());
+    }
+
+    Err(anyhow::anyhow!(
+        "TopAgent is not installed yet. Run `topagent install` first."
+    ))
+}
+
 fn is_topagent_managed_file(path: &Path) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
@@ -1174,6 +1312,18 @@ fn write_managed_file(path: &Path, contents: &str, private: bool) -> Result<()> 
         use std::os::unix::fs::PermissionsExt;
         let mode = if private { 0o600 } else { 0o644 };
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+            .with_context(|| format!("failed to set permissions on {}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn write_private_file(path: &Path, contents: &str) -> Result<()> {
+    std::fs::write(path, contents)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
             .with_context(|| format!("failed to set permissions on {}", path.display()))?;
     }
     Ok(())
@@ -1386,7 +1536,8 @@ fn run_telegram(
 
     let provider_label = route.provider_id.clone();
     let model_label = route.model_id.clone();
-    let mut session_manager = ChatSessionManager::new(route, api_key, options);
+    let mut session_manager =
+        ChatSessionManager::new(route, api_key, options, ctx.workspace_root.clone());
     let mut offset = 0i64;
     let mut polling_retries = 0usize;
 
@@ -1451,7 +1602,7 @@ fn run_telegram(
                                  Commands:\n\
                                  /help - show this message\n\
                                  /stop - stop the current task\n\
-                                 /reset - clear conversation history\n\n\
+                                 /reset - clear saved conversation history\n\n\
                                  Try this first message:\n\
                                  Summarize this repository and tell me the main entry points.",
                                 workspace_label, provider_label, model_label
@@ -1462,7 +1613,7 @@ fn run_telegram(
                                  Workspace: {}\n\
                                  Send a plain text task about this workspace.\n\
                                  /stop requests cancellation of the current task.\n\
-                                 /reset clears your conversation history.",
+                                 /reset clears your saved conversation history.",
                                 workspace_label
                             )
                         };
@@ -1492,7 +1643,7 @@ fn run_telegram(
                                 .to_string()
                         } else {
                             session_manager.reset_chat(chat_id);
-                            "Conversation history cleared.".to_string()
+                            "Saved conversation history cleared.".to_string()
                         };
                         send_telegram_chunks(&adapter, chat_id, vec![reply]);
                         continue;
@@ -1540,6 +1691,7 @@ struct ChatSessionManager {
     route: ModelRoute,
     api_key: String,
     options: RuntimeOptions,
+    history_store: ChatHistoryStore,
     sessions: HashMap<i64, SessionState>,
     completed_tx: mpsc::Sender<CompletedChatTask>,
     completed_rx: mpsc::Receiver<CompletedChatTask>,
@@ -1561,12 +1713,18 @@ struct CompletedChatTask {
 }
 
 impl ChatSessionManager {
-    fn new(route: ModelRoute, api_key: String, options: RuntimeOptions) -> Self {
+    fn new(
+        route: ModelRoute,
+        api_key: String,
+        options: RuntimeOptions,
+        workspace_root: PathBuf,
+    ) -> Self {
         let (completed_tx, completed_rx) = mpsc::channel();
         Self {
             route,
             api_key,
             options,
+            history_store: ChatHistoryStore::new(workspace_root),
             sessions: HashMap::new(),
             completed_tx,
             completed_rx,
@@ -1585,8 +1743,69 @@ impl ChatSessionManager {
         Agent::with_options(provider, tools.into_inner(), self.options.clone())
     }
 
+    fn create_restored_agent(&self, chat_id: i64) -> Agent {
+        let mut agent = self.create_agent();
+        match self.history_store.load(chat_id) {
+            Ok(messages) if !messages.is_empty() => {
+                let restored_count = messages.len();
+                agent.restore_conversation_messages(messages);
+                info!(
+                    "restored {} Telegram history messages for chat {} from {}",
+                    restored_count,
+                    chat_id,
+                    self.history_store.path_for_chat(chat_id).display()
+                );
+            }
+            Ok(_) => {}
+            Err(err) => {
+                warn!(
+                    "failed to restore Telegram history for chat {} from {}: {}",
+                    chat_id,
+                    self.history_store.path_for_chat(chat_id).display(),
+                    err
+                );
+            }
+        }
+        agent
+    }
+
+    fn persist_agent_history(&self, chat_id: i64, agent: &Agent) {
+        let messages = agent.conversation_messages();
+        if messages.is_empty() {
+            if let Err(err) = self.history_store.clear(chat_id) {
+                warn!(
+                    "failed to clear empty Telegram history for chat {} from {}: {}",
+                    chat_id,
+                    self.history_store.path_for_chat(chat_id).display(),
+                    err
+                );
+            }
+            return;
+        }
+
+        match self.history_store.save(chat_id, &messages) {
+            Ok(path) => {
+                info!(
+                    "saved {} Telegram history messages for chat {} to {}",
+                    messages.len(),
+                    chat_id,
+                    path.display()
+                );
+            }
+            Err(err) => {
+                warn!(
+                    "failed to save Telegram history for chat {} to {}: {}",
+                    chat_id,
+                    self.history_store.path_for_chat(chat_id).display(),
+                    err
+                );
+            }
+        }
+    }
+
     fn collect_finished_tasks(&mut self) {
         while let Ok(task) = self.completed_rx.try_recv() {
+            self.persist_agent_history(task.chat_id, &task.agent);
             self.sessions
                 .insert(task.chat_id, SessionState::Idle(task.agent));
         }
@@ -1634,6 +1853,24 @@ impl ChatSessionManager {
 
     fn reset_chat(&mut self, chat_id: i64) {
         self.sessions.remove(&chat_id);
+        match self.history_store.clear(chat_id) {
+            Ok(true) => {
+                info!(
+                    "cleared Telegram history for chat {} from {}",
+                    chat_id,
+                    self.history_store.path_for_chat(chat_id).display()
+                );
+            }
+            Ok(false) => {}
+            Err(err) => {
+                warn!(
+                    "failed to clear Telegram history for chat {} from {}: {}",
+                    chat_id,
+                    self.history_store.path_for_chat(chat_id).display(),
+                    err
+                );
+            }
+        }
     }
 
     fn start_message(
@@ -1661,7 +1898,7 @@ impl ChatSessionManager {
                         .to_string(),
                 ];
             }
-            None => self.create_agent(),
+            None => self.create_restored_agent(chat_id),
         };
 
         let cancel_token = CancellationToken::new();
@@ -1737,8 +1974,17 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
     use topagent_core::{
-        CancellationToken, ModelRoute, ProgressKind, ProgressUpdate, RuntimeOptions,
+        CancellationToken, Message, ModelRoute, ProgressKind, ProgressUpdate, RuntimeOptions,
     };
+
+    fn test_manager(workspace_root: PathBuf) -> ChatSessionManager {
+        ChatSessionManager::new(
+            ModelRoute::openrouter("test-model"),
+            "test-key".to_string(),
+            RuntimeOptions::default(),
+            workspace_root,
+        )
+    }
 
     #[test]
     fn test_workspace_defaults_to_current_directory_for_one_shot_and_telegram() {
@@ -1846,9 +2092,8 @@ mod tests {
 
     #[test]
     fn test_stop_chat_cancels_running_task_and_emits_stopping_progress() {
-        let route = ModelRoute::openrouter("test-model");
-        let mut manager =
-            ChatSessionManager::new(route, "test-key".to_string(), RuntimeOptions::default());
+        let workspace = TempDir::new().unwrap();
+        let mut manager = test_manager(workspace.path().to_path_buf());
         let cancel_token = CancellationToken::new();
         let updates = Arc::new(Mutex::new(Vec::<ProgressUpdate>::new()));
         let sink = updates.clone();
@@ -1875,17 +2120,15 @@ mod tests {
 
     #[test]
     fn test_stop_chat_returns_false_when_idle() {
-        let route = ModelRoute::openrouter("test-model");
-        let mut manager =
-            ChatSessionManager::new(route, "test-key".to_string(), RuntimeOptions::default());
+        let workspace = TempDir::new().unwrap();
+        let mut manager = test_manager(workspace.path().to_path_buf());
         assert!(!manager.stop_chat(42));
     }
 
     #[test]
     fn test_notify_polling_retry_emits_retrying_progress_to_running_chat() {
-        let route = ModelRoute::openrouter("test-model");
-        let mut manager =
-            ChatSessionManager::new(route, "test-key".to_string(), RuntimeOptions::default());
+        let workspace = TempDir::new().unwrap();
+        let mut manager = test_manager(workspace.path().to_path_buf());
         let updates = Arc::new(Mutex::new(Vec::<ProgressUpdate>::new()));
         let sink = updates.clone();
         let progress_callback: topagent_core::ProgressCallback = Arc::new(move |update| {
@@ -1913,9 +2156,8 @@ mod tests {
 
     #[test]
     fn test_notify_polling_recovered_emits_working_progress_to_running_chat() {
-        let route = ModelRoute::openrouter("test-model");
-        let mut manager =
-            ChatSessionManager::new(route, "test-key".to_string(), RuntimeOptions::default());
+        let workspace = TempDir::new().unwrap();
+        let mut manager = test_manager(workspace.path().to_path_buf());
         let updates = Arc::new(Mutex::new(Vec::<ProgressUpdate>::new()));
         let sink = updates.clone();
         let progress_callback: topagent_core::ProgressCallback = Arc::new(move |update| {
@@ -1939,5 +2181,80 @@ mod tests {
                     .message
                     .contains("Telegram connection restored. Task still running")
         }));
+    }
+
+    #[test]
+    fn test_restart_restores_persisted_chat_history_for_new_manager() {
+        let workspace = TempDir::new().unwrap();
+        let chat_id = 4242;
+        let original_manager = test_manager(workspace.path().to_path_buf());
+        let mut original_agent = original_manager.create_agent();
+        original_agent.restore_conversation_messages(vec![
+            Message::user("Remember this exact phrase: maple comet."),
+            Message::assistant("Stored. I will remember maple comet."),
+        ]);
+        original_manager.persist_agent_history(chat_id, &original_agent);
+
+        let restarted_manager = test_manager(workspace.path().to_path_buf());
+        let restored_agent = restarted_manager.create_restored_agent(chat_id);
+        let restored_messages = restored_agent.conversation_messages();
+
+        assert_eq!(restored_messages.len(), 2);
+        assert_eq!(
+            restored_messages[0].as_text(),
+            Some("Remember this exact phrase: maple comet.")
+        );
+        assert_eq!(
+            restored_messages[1].as_text(),
+            Some("Stored. I will remember maple comet.")
+        );
+        assert!(workspace
+            .path()
+            .join(".topagent")
+            .join("telegram-history")
+            .join("chat-4242.json")
+            .is_file());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(
+                workspace
+                    .path()
+                    .join(".topagent")
+                    .join("telegram-history")
+                    .join("chat-4242.json"),
+            )
+            .unwrap()
+            .permissions()
+            .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+    }
+
+    #[test]
+    fn test_reset_chat_clears_persisted_history_file() {
+        let workspace = TempDir::new().unwrap();
+        let chat_id = 9001;
+        let mut manager = test_manager(workspace.path().to_path_buf());
+        let mut agent = manager.create_agent();
+        agent.restore_conversation_messages(vec![
+            Message::user("Remember the answer is 17."),
+            Message::assistant("Stored."),
+        ]);
+        manager.persist_agent_history(chat_id, &agent);
+        let history_path = workspace
+            .path()
+            .join(".topagent")
+            .join("telegram-history")
+            .join("chat-9001.json");
+        assert!(history_path.is_file());
+
+        manager.sessions.insert(chat_id, SessionState::Idle(agent));
+        manager.reset_chat(chat_id);
+
+        assert!(!history_path.exists());
+        assert!(!manager.sessions.contains_key(&chat_id));
     }
 }

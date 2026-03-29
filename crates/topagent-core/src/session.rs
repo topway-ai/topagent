@@ -28,6 +28,14 @@ impl Session {
         msgs
     }
 
+    pub fn raw_messages(&self) -> Vec<Message> {
+        self.messages.clone()
+    }
+
+    pub fn replace_messages(&mut self, messages: Vec<Message>) {
+        self.messages = messages;
+    }
+
     pub fn message_count(&self) -> usize {
         self.messages.len()
     }
@@ -175,5 +183,36 @@ mod tests {
         assert!(msgs[2].contains("msg7"));
         assert!(msgs[3].contains("msg8"));
         assert!(msgs[4].contains("msg9"));
+    }
+
+    #[test]
+    fn test_session_raw_messages_excludes_system_prompt() {
+        let mut session = Session::new();
+        session.set_system_prompt("base prompt");
+        session.add_message(Message::user("hello"));
+        session.add_message(Message::assistant("hi"));
+
+        let raw = session.raw_messages();
+
+        assert_eq!(raw.len(), 2);
+        assert_eq!(raw[0].as_text(), Some("hello"));
+        assert_eq!(raw[1].as_text(), Some("hi"));
+    }
+
+    #[test]
+    fn test_session_replace_messages_restores_history_without_system_prompt() {
+        let mut session = Session::new();
+        session.set_system_prompt("base prompt");
+        session.replace_messages(vec![
+            Message::user("remember"),
+            Message::assistant("stored"),
+        ]);
+
+        let messages = session.messages();
+
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].as_text(), Some("base prompt"));
+        assert_eq!(messages[1].as_text(), Some("remember"));
+        assert_eq!(messages[2].as_text(), Some("stored"));
     }
 }

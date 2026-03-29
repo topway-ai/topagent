@@ -130,9 +130,21 @@ case "$cmd" in
     echo "success" > "$result_file"
     echo "0" > "$exec_file"
     ;;
+  start)
+    echo "start $*" >> "$calls"
+    echo "active" > "$active_file"
+    echo "success" > "$result_file"
+    echo "0" > "$exec_file"
+    ;;
   stop)
     echo "stop $*" >> "$calls"
     echo "inactive" > "$active_file"
+    ;;
+  restart)
+    echo "restart $*" >> "$calls"
+    echo "active" > "$active_file"
+    echo "success" > "$result_file"
+    echo "0" > "$exec_file"
     ;;
   disable)
     echo "disable $*" >> "$calls"
@@ -374,4 +386,62 @@ fn test_uninstall_stops_service_removes_managed_files_and_preserves_workspace() 
     let calls = harness.calls_log();
     assert!(calls.contains("stop topagent-telegram.service"));
     assert!(calls.contains("disable topagent-telegram.service"));
+}
+
+#[test]
+fn test_service_start_stop_and_restart_control_the_installed_service() {
+    let harness = ServiceHarness::new();
+    harness
+        .command()
+        .arg("install")
+        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .assert()
+        .success();
+
+    let stop = harness
+        .command()
+        .args(["service", "stop"])
+        .output()
+        .unwrap();
+    assert!(
+        stop.status.success(),
+        "service stop should succeed: {}",
+        String::from_utf8_lossy(&stop.stderr)
+    );
+    let stop_stdout = String::from_utf8_lossy(&stop.stdout);
+    assert!(stop_stdout.contains("TopAgent service stopped"));
+    assert!(stop_stdout.contains("topagent service start"));
+
+    let start = harness
+        .command()
+        .args(["service", "start"])
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "service start should succeed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+    let start_stdout = String::from_utf8_lossy(&start.stdout);
+    assert!(start_stdout.contains("TopAgent service started"));
+    assert!(start_stdout.contains("topagent service stop"));
+
+    let restart = harness
+        .command()
+        .args(["service", "restart"])
+        .output()
+        .unwrap();
+    assert!(
+        restart.status.success(),
+        "service restart should succeed: {}",
+        String::from_utf8_lossy(&restart.stderr)
+    );
+    let restart_stdout = String::from_utf8_lossy(&restart.stdout);
+    assert!(restart_stdout.contains("TopAgent service restarted"));
+    assert!(restart_stdout.contains("topagent status"));
+
+    let calls = harness.calls_log();
+    assert!(calls.contains("stop topagent-telegram.service"));
+    assert!(calls.contains("start topagent-telegram.service"));
+    assert!(calls.contains("restart topagent-telegram.service"));
 }

@@ -191,6 +191,14 @@ impl Agent {
         self.changed_files.borrow().clone()
     }
 
+    pub fn conversation_messages(&self) -> Vec<Message> {
+        self.session.raw_messages()
+    }
+
+    pub fn restore_conversation_messages(&mut self, messages: Vec<Message>) {
+        self.session.replace_messages(messages);
+    }
+
     pub fn set_progress_callback(&mut self, callback: Option<ProgressCallback>) {
         self.progress_callback = callback;
     }

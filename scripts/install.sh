@@ -81,15 +81,16 @@ main() {
 
 TopAgent installed.
 
-Next:
-  export OPENROUTER_API_KEY="your_openrouter_key"
-  cd /path/to/your/repo
-  topagent "summarize this repository"
+Set up the Telegram background service:
+  topagent install
 
-Telegram test:
+Check service health:
+  topagent status
+
+Foreground one-shot run:
   cd /path/to/your/repo
-  export TELEGRAM_BOT_TOKEN="123456:ABCdefYourBotToken"
-  topagent telegram
+  export OPENROUTER_API_KEY="your_openrouter_key"
+  topagent "summarize this repository"
 
 If 'topagent' is not in your PATH yet, run:
   source "$HOME/.cargo/env"

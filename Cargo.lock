@@ -1401,6 +1401,8 @@ dependencies = [
  "clap",
  "ctrlc",
  "predicates",
+ "serde",
+ "serde_json",
  "tempfile",
  "topagent-core",
  "tracing",
