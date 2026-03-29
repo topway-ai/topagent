@@ -5,6 +5,7 @@ mod progress;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::collections::HashMap;
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::{
@@ -29,11 +30,13 @@ use crate::progress::LiveProgress;
 
 const TELEGRAM_SERVICE_UNIT_NAME: &str = "topagent-telegram.service";
 const TOPAGENT_MANAGED_HEADER: &str =
-    "# Managed by TopAgent. Safe to remove with `topagent service uninstall`.";
+    "# Managed by TopAgent. Safe to remove with `topagent uninstall`.";
 const TOPAGENT_SERVICE_MANAGED_KEY: &str = "TOPAGENT_SERVICE_MANAGED";
 const TOPAGENT_WORKSPACE_KEY: &str = "TOPAGENT_WORKSPACE";
 const TOPAGENT_PROVIDER_KEY: &str = "TOPAGENT_PROVIDER";
 const TOPAGENT_MODEL_KEY: &str = "TOPAGENT_MODEL";
+const OPENROUTER_API_KEY_KEY: &str = "OPENROUTER_API_KEY";
+const TELEGRAM_BOT_TOKEN_KEY: &str = "TELEGRAM_BOT_TOKEN";
 
 #[derive(Parser)]
 #[command(
@@ -91,15 +94,20 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Interactive setup for the TopAgent Telegram background service.
+    Install,
+    /// Show setup and background service health.
+    Status,
     Telegram {
         #[arg(long, help = "Telegram bot token (or TELEGRAM_BOT_TOKEN)")]
         token: Option<String>,
     },
+    #[command(hide = true)]
     Service {
         #[command(subcommand)]
         command: ServiceCommands,
     },
-    /// Remove the installed TopAgent binary and stop running processes.
+    /// Stop and remove the TopAgent Telegram background service and config.
     Uninstall,
     #[command(hide = true)]
     Run { instruction: String },
@@ -143,6 +151,19 @@ struct ServiceStatusSnapshot {
     exec_main_status: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallRootKind {
+    SourceCheckout,
+    InstalledBinary,
+}
+
+#[derive(Debug, Clone)]
+struct InstallRoot {
+    #[allow(dead_code)]
+    kind: InstallRootKind,
+    root: PathBuf,
+}
+
 fn main() -> Result<()> {
     init_tracing();
 
@@ -161,6 +182,18 @@ fn main() -> Result<()> {
     } = cli;
 
     match command {
+        Some(Commands::Install) => {
+            return run_install(
+                api_key,
+                provider,
+                model,
+                workspace,
+                max_steps,
+                max_retries,
+                timeout_secs,
+            )
+        }
+        Some(Commands::Status) => return run_status(),
         Some(Commands::Uninstall) => return run_uninstall(),
         Some(Commands::Service { command }) => {
             return run_service_command(
@@ -217,63 +250,72 @@ fn init_tracing() {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
-fn run_uninstall() -> Result<()> {
-    let my_pid = std::process::id();
+fn run_install(
+    api_key: Option<String>,
+    provider: String,
+    model: Option<String>,
+    workspace: Option<PathBuf>,
+    max_steps: Option<usize>,
+    max_retries: Option<usize>,
+    timeout_secs: Option<u64>,
+) -> Result<()> {
+    ensure_systemd_user_available()?;
+    let paths = service_paths()?;
+    assert_managed_or_absent(&paths.unit_path, "service unit")?;
+    assert_managed_or_absent(&paths.env_path, "service env file")?;
+    let existing_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
+    let workspace = resolve_install_workspace_path(workspace, &existing_values)?;
 
-    // Stop running topagent processes (excluding ourselves).
-    let stopped = match std::process::Command::new("pgrep")
-        .args(["-f", "topagent telegram"])
-        .output()
-    {
-        Ok(output) if output.status.success() => {
-            let pids: Vec<u32> = String::from_utf8_lossy(&output.stdout)
-                .split_whitespace()
-                .filter_map(|s| s.parse::<u32>().ok())
-                .filter(|&pid| pid != my_pid)
-                .collect();
-            let mut killed = 0;
-            for pid in &pids {
-                let status = std::process::Command::new("kill")
-                    .arg(pid.to_string())
-                    .status();
-                if status.is_ok_and(|s| s.success()) {
-                    killed += 1;
-                }
-            }
-            killed
-        }
-        _ => 0,
+    println!("TopAgent setup");
+    println!("This will configure and start your Telegram background service.");
+    println!();
+
+    let api_key = prompt_for_install_value(
+        "OpenRouter API key",
+        api_key.as_deref().or_else(|| {
+            existing_values
+                .get(OPENROUTER_API_KEY_KEY)
+                .map(String::as_str)
+        }),
+        require_openrouter_api_key,
+    )?;
+    let token = prompt_for_install_value(
+        "Telegram bot token",
+        existing_values
+            .get(TELEGRAM_BOT_TOKEN_KEY)
+            .map(String::as_str),
+        require_telegram_token,
+    )?;
+
+    let config = TelegramModeConfig {
+        token,
+        api_key,
+        route: build_route(provider, model)?,
+        workspace,
+        options: build_runtime_options(max_steps, max_retries, timeout_secs),
     };
-
-    if stopped > 0 {
-        println!(
-            "Stopped {} running TopAgent process{}.",
-            stopped,
-            if stopped == 1 { "" } else { "es" }
-        );
-    }
-
-    // Remove the installed binary.
-    let exe = std::env::current_exe().context("cannot determine binary path")?;
-    let exe = exe.canonicalize().context("cannot resolve binary path")?;
-
-    if exe.exists() {
-        std::fs::remove_file(&exe)
-            .with_context(|| format!("failed to remove {}", exe.display()))?;
-        println!("Removed {}.", exe.display());
-    } else {
-        println!("Binary already absent: {}", exe.display());
-    }
+    install_service_with_config(&config, &paths)?;
 
     println!();
-    println!("TopAgent uninstalled.");
-    println!();
-    println!("Not removed (manual cleanup if needed):");
-    println!("  - Source repo / workspace directories");
-    println!("  - OPENROUTER_API_KEY / TELEGRAM_BOT_TOKEN in your shell profile");
-    println!("  - Rotate any exposed API keys or bot tokens if needed");
+    println!("TopAgent installed.");
+    println!("Service: {}", TELEGRAM_SERVICE_UNIT_NAME);
+    println!("Started: yes");
+    println!("Config file: {}", paths.env_path.display());
+    println!("Workspace: {}", config.workspace.display());
+    println!("Inspect:");
+    println!("  topagent status");
+    println!("  systemctl --user status {}", TELEGRAM_SERVICE_UNIT_NAME);
+    println!("  journalctl --user -u {} -f", TELEGRAM_SERVICE_UNIT_NAME);
 
     Ok(())
+}
+
+fn run_status() -> Result<()> {
+    render_status()
+}
+
+fn run_uninstall() -> Result<()> {
+    uninstall_service_setup()
 }
 
 fn build_runtime_options(
@@ -492,6 +534,121 @@ fn resolve_telegram_mode_config(
     })
 }
 
+fn resolve_install_workspace_path(
+    workspace: Option<PathBuf>,
+    existing_values: &HashMap<String, String>,
+) -> Result<PathBuf> {
+    let target = if let Some(workspace) = workspace {
+        workspace
+    } else if let Some(existing_workspace) = existing_values.get(TOPAGENT_WORKSPACE_KEY) {
+        PathBuf::from(existing_workspace)
+    } else {
+        detect_install_root()?.root.join("workspace")
+    };
+    ensure_directory(target)
+}
+
+fn detect_install_root() -> Result<InstallRoot> {
+    let current_exe = std::env::current_exe()
+        .context("cannot determine the TopAgent binary path")?
+        .canonicalize()
+        .context("cannot resolve the TopAgent binary path")?;
+    detect_install_root_from_exe(&current_exe)
+}
+
+fn detect_install_root_from_exe(exe: &Path) -> Result<InstallRoot> {
+    if let Some(target_dir) = exe
+        .ancestors()
+        .find(|ancestor| ancestor.file_name().is_some_and(|name| name == "target"))
+    {
+        let repo_root = target_dir.parent().ok_or_else(|| {
+            anyhow::anyhow!(
+                "TopAgent is running from a target directory, but the repo root could not be determined."
+            )
+        })?;
+        if looks_like_source_checkout(repo_root) {
+            return Ok(InstallRoot {
+                kind: InstallRootKind::SourceCheckout,
+                root: repo_root.to_path_buf(),
+            });
+        }
+        return Err(anyhow::anyhow!(
+            "TopAgent is running from a target directory, but this does not look like a TopAgent source checkout. Re-run from the repo root or install the binary into a stable directory before `topagent install`."
+        ));
+    }
+
+    let install_dir = exe.parent().ok_or_else(|| {
+        anyhow::anyhow!("Could not determine the directory that contains the TopAgent binary.")
+    })?;
+    Ok(InstallRoot {
+        kind: InstallRootKind::InstalledBinary,
+        root: install_dir.to_path_buf(),
+    })
+}
+
+fn looks_like_source_checkout(root: &Path) -> bool {
+    root.join("Cargo.toml").is_file()
+        && root
+            .join("crates")
+            .join("topagent-cli")
+            .join("Cargo.toml")
+            .is_file()
+        && root
+            .join("crates")
+            .join("topagent-core")
+            .join("Cargo.toml")
+            .is_file()
+}
+
+fn ensure_directory(path: PathBuf) -> Result<PathBuf> {
+    std::fs::create_dir_all(&path)
+        .with_context(|| format!("failed to create {}", path.display()))?;
+    path.canonicalize()
+        .with_context(|| format!("failed to access {}", path.display()))
+}
+
+fn prompt_for_install_value(
+    label: &str,
+    existing_value: Option<&str>,
+    validator: fn(Option<String>) -> Result<String>,
+) -> Result<String> {
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+
+    loop {
+        if existing_value.is_some() {
+            print!("{label} [press Enter to keep the current value]: ");
+        } else {
+            print!("{label}: ");
+        }
+        io::stdout().flush().context("failed to flush stdout")?;
+
+        let mut line = String::new();
+        let read = input
+            .read_line(&mut line)
+            .context("failed to read installer input")?;
+        if read == 0 {
+            return Err(anyhow::anyhow!(
+                "Installer input ended unexpectedly. Re-run `topagent install` in an interactive shell."
+            ));
+        }
+
+        let candidate = line.trim();
+        let value = if candidate.is_empty() {
+            existing_value.map(str::to_string)
+        } else {
+            Some(candidate.to_string())
+        };
+
+        match validator(value) {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                println!("{}", err);
+            }
+        }
+    }
+}
+
 fn resolve_config_home() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
         let path = PathBuf::from(path);
@@ -547,8 +704,30 @@ fn run_service_install(
         max_retries,
         timeout_secs,
     )?;
-    ensure_systemd_user_available()?;
     let paths = service_paths()?;
+    install_service_with_config(&config, &paths)?;
+    println!("TopAgent Telegram service installed and started.");
+    println!("Unit: {}", TELEGRAM_SERVICE_UNIT_NAME);
+    println!("Unit file: {}", paths.unit_path.display());
+    println!("Env file: {}", paths.env_path.display());
+    println!("Workspace: {}", config.workspace.display());
+    println!("Inspect:");
+    println!("  topagent status");
+    println!("  systemctl --user status {}", TELEGRAM_SERVICE_UNIT_NAME);
+    println!("  journalctl --user -u {} -f", TELEGRAM_SERVICE_UNIT_NAME);
+    Ok(())
+}
+
+fn run_service_status() -> Result<()> {
+    render_status()
+}
+
+fn run_service_uninstall() -> Result<()> {
+    uninstall_service_setup()
+}
+
+fn install_service_with_config(config: &TelegramModeConfig, paths: &ServicePaths) -> Result<()> {
+    ensure_systemd_user_available()?;
     assert_managed_or_absent(&paths.unit_path, "service unit")?;
     assert_managed_or_absent(&paths.env_path, "service env file")?;
 
@@ -562,8 +741,8 @@ fn run_service_install(
         .canonicalize()
         .context("cannot resolve binary path for service install")?;
 
-    let env_contents = render_service_env_file(&config)?;
-    let unit_contents = render_service_unit_file(&current_exe, &config, &paths)?;
+    let env_contents = render_service_env_file(config)?;
+    let unit_contents = render_service_unit_file(&current_exe, config, paths)?;
     write_managed_file(&paths.env_path, &env_contents, true)?;
     write_managed_file(&paths.unit_path, &unit_contents, false)?;
 
@@ -573,24 +752,15 @@ fn run_service_install(
         "enable and start the TopAgent Telegram service",
     )?;
 
-    println!("TopAgent Telegram service installed and started.");
-    println!("Unit: {}", TELEGRAM_SERVICE_UNIT_NAME);
-    println!("Unit file: {}", paths.unit_path.display());
-    println!("Env file: {}", paths.env_path.display());
-    println!("Workspace: {}", config.workspace.display());
-    println!("Inspect:");
-    println!("  topagent service status");
-    println!("  systemctl --user status {}", TELEGRAM_SERVICE_UNIT_NAME);
-    println!("  journalctl --user -u {} -f", TELEGRAM_SERVICE_UNIT_NAME);
-
     Ok(())
 }
 
-fn run_service_status() -> Result<()> {
+fn render_status() -> Result<()> {
     let paths = service_paths()?;
     let env_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
-    let systemd_probe = ensure_systemd_user_available();
-    let snapshot_result = if systemd_probe.is_ok() {
+    let config_installed = paths.env_path.exists() && is_topagent_managed_file(&paths.env_path)?;
+    let systemd_available = ensure_systemd_user_available().map_err(|e| e.to_string());
+    let snapshot_result = if systemd_available.is_ok() {
         Some(load_service_status_snapshot())
     } else {
         None
@@ -598,12 +768,12 @@ fn run_service_status() -> Result<()> {
     let snapshot = snapshot_result
         .as_ref()
         .and_then(|result| result.as_ref().ok());
-
-    let installed = snapshot
+    let service_installed = snapshot
         .as_ref()
         .and_then(|status| status.load_state.as_deref())
         .map(|state| state != "not-found")
         .unwrap_or(paths.unit_path.exists());
+    let setup_installed = config_installed || service_installed;
     let enabled = snapshot
         .as_ref()
         .map(|status| is_enabled_state(status.unit_file_state.as_deref()));
@@ -616,8 +786,9 @@ fn run_service_status() -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| paths.unit_path.clone());
 
-    println!("TopAgent Telegram service");
-    println!("Installed: {}", yes_no(installed));
+    println!("TopAgent status");
+    println!("Setup installed: {}", yes_no(setup_installed));
+    println!("Service installed: {}", yes_no(service_installed));
     if let (Some(enabled), Some(active)) = (enabled, active) {
         println!("Enabled: {}", yes_no(enabled));
         println!("Running: {}", yes_no(active));
@@ -625,9 +796,9 @@ fn run_service_status() -> Result<()> {
         println!("Enabled: unknown");
         println!("Running: unknown");
     }
-    println!("Unit: {}", TELEGRAM_SERVICE_UNIT_NAME);
+    println!("Service: {}", TELEGRAM_SERVICE_UNIT_NAME);
+    println!("Config file: {}", paths.env_path.display());
     println!("Unit file: {}", unit_path.display());
-    println!("Env file: {}", paths.env_path.display());
 
     if let Some(workspace) = env_values.get(TOPAGENT_WORKSPACE_KEY) {
         println!("Workspace: {}", workspace);
@@ -640,47 +811,58 @@ fn run_service_status() -> Result<()> {
         println!("Route: {} | {}", provider, model);
     }
 
-    if let Some(status) = &snapshot {
-        if let Some(active_state) = &status.active_state {
-            let sub_state = status.sub_state.as_deref().unwrap_or("unknown");
-            println!("Last state: {} ({})", active_state, sub_state);
-        }
-        if active != Some(true) {
-            if let Some(result) = &status.result {
-                if result != "success" {
-                    println!("Last result: {}", result);
-                }
+    if service_installed {
+        if let Some(status) = &snapshot {
+            if let Some(active_state) = &status.active_state {
+                let sub_state = status.sub_state.as_deref().unwrap_or("unknown");
+                println!("Last state: {} ({})", active_state, sub_state);
             }
-            if let Some(exit_status) = &status.exec_main_status {
-                if exit_status != "0" {
-                    println!("Exit status: {}", exit_status);
+            if active != Some(true) {
+                if let Some(result) = &status.result {
+                    if result != "success" {
+                        println!("Hint: service last result was {}", result);
+                    }
                 }
-            }
-            if installed {
+                if let Some(exit_status) = &status.exec_main_status {
+                    if exit_status != "0" {
+                        println!("Exit status: {}", exit_status);
+                    }
+                }
                 println!(
                     "Inspect logs: journalctl --user -u {} -n 50 --no-pager",
                     TELEGRAM_SERVICE_UNIT_NAME
                 );
             }
         }
+    } else if !setup_installed {
+        println!("Hint: run `topagent install` to configure the Telegram background service.");
+    } else if let Some(status) = &snapshot {
+        if let Some(active_state) = &status.active_state {
+            let sub_state = status.sub_state.as_deref().unwrap_or("unknown");
+            println!("Last state: {} ({})", active_state, sub_state);
+        }
     } else if let Some(Err(err)) = snapshot_result {
-        println!("Service state: unable to inspect");
         println!("Hint: {}", err);
-    } else if let Err(err) = systemd_probe {
-        println!("Systemd user mode: unavailable");
+    } else if let Err(err) = systemd_available {
         println!("Hint: {}", err);
+    } else {
+        println!("Hint: run `topagent install` to configure the Telegram background service.");
     }
 
     Ok(())
 }
 
-fn run_service_uninstall() -> Result<()> {
+fn uninstall_service_setup() -> Result<()> {
     let paths = service_paths()?;
+    let env_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
+    let managed_unit = paths.unit_path.exists() && is_topagent_managed_file(&paths.unit_path)?;
+    let managed_env = paths.env_path.exists() && is_topagent_managed_file(&paths.env_path)?;
+    let should_manage_service = managed_unit || managed_env;
     let systemd_available = ensure_systemd_user_available().map_err(|e| e.to_string());
     let mut stopped = String::from("not attempted");
     let mut disabled = String::from("not attempted");
 
-    if systemd_available.is_ok() {
+    if should_manage_service && systemd_available.is_ok() {
         stopped = run_systemctl_user(&["stop", TELEGRAM_SERVICE_UNIT_NAME])
             .map(|output| {
                 if output.status.success() {
@@ -699,10 +881,19 @@ fn run_service_uninstall() -> Result<()> {
                 }
             })
             .unwrap_or_else(|err| format!("no ({})", err));
+    } else if should_manage_service {
+        if let Err(err) = &systemd_available {
+            let note = format!("not attempted ({})", err);
+            stopped = note.clone();
+            disabled = note;
+        }
     } else if let Err(err) = &systemd_available {
-        let note = format!("not attempted ({})", err);
+        let note = format!("no managed service found ({})", err);
         stopped = note.clone();
         disabled = note;
+    } else {
+        stopped = "no managed service found".to_string();
+        disabled = "no managed service found".to_string();
     }
 
     let mut removed = Vec::new();
@@ -732,8 +923,12 @@ fn run_service_uninstall() -> Result<()> {
         }
     }
 
+    if let Some(workspace) = env_values.get(TOPAGENT_WORKSPACE_KEY) {
+        preserved.push(format!("workspace directory preserved: {}", workspace));
+    }
+
     let mut daemon_reload = String::from("not needed");
-    if systemd_available.is_ok() {
+    if should_manage_service && systemd_available.is_ok() {
         daemon_reload = run_systemctl_user(&["daemon-reload"])
             .map(|output| {
                 if output.status.success() {
@@ -745,7 +940,7 @@ fn run_service_uninstall() -> Result<()> {
             .unwrap_or_else(|err| format!("no ({})", err));
     }
 
-    println!("TopAgent Telegram service uninstall");
+    println!("TopAgent uninstall");
     println!("Stopped: {}", stopped);
     println!("Disabled: {}", disabled);
     println!("Daemon reload: {}", daemon_reload);
@@ -849,8 +1044,8 @@ fn render_service_env_file(config: &TelegramModeConfig) -> Result<String> {
     Ok(format!(
         "{header}
 {managed_key}=1
-TELEGRAM_BOT_TOKEN={token}
-OPENROUTER_API_KEY={api_key}
+{token_key}={token}
+{api_key_key}={api_key}
 {workspace_key}={workspace}
 {provider_key}={provider}
 {model_key}={model}
@@ -865,6 +1060,8 @@ OPENROUTER_API_KEY={api_key}
         provider = quote_env_value(config.route.provider_id.as_str()),
         model_key = TOPAGENT_MODEL_KEY,
         model = quote_env_value(&config.route.model_id),
+        api_key_key = OPENROUTER_API_KEY_KEY,
+        token_key = TELEGRAM_BOT_TOKEN_KEY,
     ))
 }
 
@@ -950,7 +1147,7 @@ fn assert_managed_or_absent(path: &Path, label: &str) -> Result<()> {
     }
 
     Err(anyhow::anyhow!(
-        "Refusing to overwrite existing {} at {} because it was not created by TopAgent. Move it aside or remove it, then run `topagent service install` again.",
+        "Refusing to overwrite existing {} at {} because it was not created by TopAgent. Move it aside or remove it, then run `topagent install` again.",
         label,
         path.display()
     ))
@@ -1025,7 +1222,7 @@ fn run_systemctl_user(args: &[&str]) -> Result<Output> {
 fn ensure_systemd_user_available() -> Result<()> {
     let output = run_systemctl_user(&["show-environment"]).map_err(|err| {
         anyhow::anyhow!(
-            "systemd user services are unavailable. `topagent service` currently supports Linux systemd user services only. {}",
+            "systemd user services are unavailable. `topagent install` currently supports Linux systemd user services only. {}",
             err
         )
     })?;
@@ -1533,7 +1730,8 @@ impl ChatSessionManager {
 #[cfg(test)]
 mod tests {
     use super::{
-        resolve_workspace_path_with_current_dir, ChatSessionManager, RunningChatTask, SessionState,
+        detect_install_root_from_exe, resolve_workspace_path_with_current_dir, ChatSessionManager,
+        InstallRootKind, RunningChatTask, SessionState,
     };
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -1588,6 +1786,62 @@ mod tests {
         )
         .unwrap();
         assert_eq!(resolved, override_dir.path().canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_detect_install_root_uses_repo_root_for_source_checkout_binary() {
+        let repo = TempDir::new().unwrap();
+        std::fs::create_dir_all(repo.path().join("crates").join("topagent-cli")).unwrap();
+        std::fs::create_dir_all(repo.path().join("crates").join("topagent-core")).unwrap();
+        std::fs::create_dir_all(repo.path().join("target").join("debug")).unwrap();
+        std::fs::write(repo.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(
+            repo.path()
+                .join("crates")
+                .join("topagent-cli")
+                .join("Cargo.toml"),
+            "[package]\nname = \"topagent-cli\"\n",
+        )
+        .unwrap();
+        std::fs::write(
+            repo.path()
+                .join("crates")
+                .join("topagent-core")
+                .join("Cargo.toml"),
+            "[package]\nname = \"topagent-core\"\n",
+        )
+        .unwrap();
+        let exe = repo.path().join("target").join("debug").join("topagent");
+        std::fs::write(&exe, "").unwrap();
+
+        let detected = detect_install_root_from_exe(&exe).unwrap();
+
+        assert_eq!(detected.kind, InstallRootKind::SourceCheckout);
+        assert_eq!(detected.root, repo.path());
+    }
+
+    #[test]
+    fn test_detect_install_root_uses_binary_directory_for_installed_binary() {
+        let install_dir = TempDir::new().unwrap();
+        let exe = install_dir.path().join("topagent");
+        std::fs::write(&exe, "").unwrap();
+
+        let detected = detect_install_root_from_exe(&exe).unwrap();
+
+        assert_eq!(detected.kind, InstallRootKind::InstalledBinary);
+        assert_eq!(detected.root, install_dir.path());
+    }
+
+    #[test]
+    fn test_detect_install_root_rejects_ambiguous_target_layout() {
+        let temp = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join("target").join("debug")).unwrap();
+        let exe = temp.path().join("target").join("debug").join("topagent");
+        std::fs::write(&exe, "").unwrap();
+
+        let err = detect_install_root_from_exe(&exe).unwrap_err().to_string();
+
+        assert!(err.contains("does not look like a TopAgent source checkout"));
     }
 
     #[test]

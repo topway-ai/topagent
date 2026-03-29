@@ -5,9 +5,10 @@ use tempfile::TempDir;
 
 struct ServiceHarness {
     _root: TempDir,
+    install_dir: PathBuf,
+    binary_path: PathBuf,
     config_home: PathBuf,
     home: PathBuf,
-    workspace: PathBuf,
     bin_dir: PathBuf,
     systemctl_root: PathBuf,
 }
@@ -15,17 +16,26 @@ struct ServiceHarness {
 impl ServiceHarness {
     fn new() -> Self {
         let root = TempDir::new().unwrap();
+        let install_dir = root.path().join("install");
         let home = root.path().join("home");
         let config_home = root.path().join("config");
-        let workspace = root.path().join("workspace");
         let bin_dir = root.path().join("bin");
         let systemctl_root = root.path().join("fake-systemctl");
 
+        fs::create_dir_all(&install_dir).unwrap();
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&config_home).unwrap();
-        fs::create_dir_all(&workspace).unwrap();
         fs::create_dir_all(&bin_dir).unwrap();
         fs::create_dir_all(&systemctl_root).unwrap();
+
+        let compiled_bin = Command::cargo_bin("topagent")
+            .unwrap()
+            .get_program()
+            .to_owned();
+        let binary_path = install_dir.join("topagent");
+        let binary_contents = fs::read(compiled_bin).unwrap();
+        fs::write(&binary_path, binary_contents).unwrap();
+        make_executable(&binary_path);
 
         let systemctl_path = bin_dir.join("systemctl");
         fs::write(&systemctl_path, fake_systemctl_script()).unwrap();
@@ -33,9 +43,10 @@ impl ServiceHarness {
 
         Self {
             _root: root,
+            install_dir,
+            binary_path,
             config_home,
             home,
-            workspace,
             bin_dir,
             systemctl_root,
         }
@@ -55,13 +66,15 @@ impl ServiceHarness {
             .join("topagent-telegram.env")
     }
 
-    fn workspace_str(&self) -> String {
-        self.workspace.display().to_string()
+    fn workspace_path(&self) -> PathBuf {
+        self.install_dir.join("workspace")
     }
 
     fn command(&self) -> Command {
-        let mut cmd = Command::cargo_bin("topagent").unwrap();
-        cmd.current_dir(&self.workspace)
+        let mut cmd = Command::new(&self.binary_path);
+        cmd.current_dir(&self.home)
+            .env_remove("OPENROUTER_API_KEY")
+            .env_remove("TELEGRAM_BOT_TOKEN")
             .env("HOME", &self.home)
             .env("XDG_CONFIG_HOME", &self.config_home)
             .env("FAKE_SYSTEMCTL_ROOT", &self.systemctl_root)
@@ -78,28 +91,6 @@ impl ServiceHarness {
 
     fn calls_log(&self) -> String {
         fs::read_to_string(self.systemctl_root.join("calls.log")).unwrap_or_default()
-    }
-
-    fn install(&self) -> String {
-        let output = self
-            .command()
-            .env("OPENROUTER_API_KEY", "test-openrouter-key")
-            .args([
-                "--workspace",
-                &self.workspace_str(),
-                "service",
-                "install",
-                "--token",
-                "123456:abcdef",
-            ])
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "install should succeed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        String::from_utf8_lossy(&output.stdout).to_string()
     }
 }
 
@@ -207,24 +198,45 @@ fn make_executable(path: &Path) {
 fn make_executable(_path: &Path) {}
 
 #[test]
-fn test_service_install_writes_unit_and_env_and_starts_service() {
+fn test_install_prompts_creates_install_adjacent_workspace_and_starts_service() {
     let harness = ServiceHarness::new();
-    let stdout = harness.install();
+    let assert = harness
+        .command()
+        .arg("install")
+        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
 
-    assert!(stdout.contains("TopAgent Telegram service installed and started."));
-    assert!(stdout.contains(&harness.unit_path().display().to_string()));
+    assert!(stdout.contains("OpenRouter API key:"));
+    assert!(stdout.contains("Telegram bot token:"));
+    assert!(stdout.contains("TopAgent installed."));
+    assert!(stdout.contains("Started: yes"));
     assert!(stdout.contains(&harness.env_path().display().to_string()));
-    assert!(stdout.contains("topagent service status"));
+    assert!(stdout.contains(&harness.workspace_path().display().to_string()));
+    assert!(stdout.contains("topagent status"));
+
+    assert!(harness.workspace_path().is_dir());
+    assert_eq!(
+        harness.workspace_path().canonicalize().unwrap(),
+        harness
+            .install_dir
+            .join("workspace")
+            .canonicalize()
+            .unwrap()
+    );
 
     let unit = fs::read_to_string(harness.unit_path()).unwrap();
     assert!(unit.contains("EnvironmentFile="));
     assert!(unit.contains("ExecStart="));
     assert!(unit.contains("telegram"));
+    assert!(unit.contains(&harness.workspace_path().display().to_string()));
 
     let env = fs::read_to_string(harness.env_path()).unwrap();
     assert!(env.contains("TELEGRAM_BOT_TOKEN="));
     assert!(env.contains("OPENROUTER_API_KEY="));
     assert!(env.contains("TOPAGENT_SERVICE_MANAGED=1"));
+    assert!(env.contains(&harness.workspace_path().display().to_string()));
 
     #[cfg(unix)]
     {
@@ -243,15 +255,50 @@ fn test_service_install_writes_unit_and_env_and_starts_service() {
 }
 
 #[test]
-fn test_service_status_reports_installed_enabled_and_running() {
+fn test_install_reuses_existing_config_when_prompt_is_left_blank() {
     let harness = ServiceHarness::new();
-    harness.install();
-
-    let output = harness
+    harness
         .command()
-        .args(["service", "status"])
-        .output()
-        .unwrap();
+        .arg("install")
+        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .assert()
+        .success();
+
+    let assert = harness
+        .command()
+        .arg("install")
+        .write_stdin("\n\n")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+
+    assert!(stdout.contains("press Enter to keep the current value"));
+
+    let env = fs::read_to_string(harness.env_path()).unwrap();
+    assert!(env.contains("test-openrouter-key"));
+    assert!(env.contains("123456:abcdef"));
+
+    let calls = harness.calls_log();
+    assert_eq!(calls.matches("daemon-reload").count(), 2);
+    assert_eq!(
+        calls
+            .matches("enable --now topagent-telegram.service")
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn test_status_reports_setup_and_service_health_after_install() {
+    let harness = ServiceHarness::new();
+    harness
+        .command()
+        .arg("install")
+        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .assert()
+        .success();
+
+    let output = harness.command().arg("status").output().unwrap();
     assert!(
         output.status.success(),
         "status should succeed: {}",
@@ -259,28 +306,30 @@ fn test_service_status_reports_installed_enabled_and_running() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Installed: yes"));
+    assert!(stdout.contains("Setup installed: yes"));
+    assert!(stdout.contains("Service installed: yes"));
     assert!(stdout.contains("Enabled: yes"));
     assert!(stdout.contains("Running: yes"));
-    assert!(stdout.contains(&harness.unit_path().display().to_string()));
-    assert!(stdout.contains(&harness.workspace.display().to_string()));
-    assert!(stdout.contains("Route: openrouter | minimax/minimax-m2.7"));
+    assert!(stdout.contains("Service: topagent-telegram.service"));
+    assert!(stdout.contains(&harness.env_path().display().to_string()));
+    assert!(stdout.contains(&harness.workspace_path().display().to_string()));
 }
 
 #[test]
-fn test_service_status_reports_failure_hints_when_service_is_unhealthy() {
+fn test_status_reports_unhealthy_hint_when_service_is_installed_but_failed() {
     let harness = ServiceHarness::new();
-    harness.install();
+    harness
+        .command()
+        .arg("install")
+        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .assert()
+        .success();
 
     fs::write(harness.systemctl_root.join("active"), "failed").unwrap();
     fs::write(harness.systemctl_root.join("result"), "exit-code").unwrap();
     fs::write(harness.systemctl_root.join("exec_main_status"), "1").unwrap();
 
-    let output = harness
-        .command()
-        .args(["service", "status"])
-        .output()
-        .unwrap();
+    let output = harness.command().arg("status").output().unwrap();
     assert!(
         output.status.success(),
         "status should succeed: {}",
@@ -289,21 +338,22 @@ fn test_service_status_reports_failure_hints_when_service_is_unhealthy() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Running: no"));
-    assert!(stdout.contains("Last result: exit-code"));
+    assert!(stdout.contains("Hint: service last result was exit-code"));
     assert!(stdout.contains("Exit status: 1"));
     assert!(stdout.contains("Inspect logs: journalctl --user -u topagent-telegram.service"));
 }
 
 #[test]
-fn test_service_uninstall_stops_disables_and_removes_managed_files() {
+fn test_uninstall_stops_service_removes_managed_files_and_preserves_workspace() {
     let harness = ServiceHarness::new();
-    harness.install();
-
-    let output = harness
+    harness
         .command()
-        .args(["service", "uninstall"])
-        .output()
-        .unwrap();
+        .arg("install")
+        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .assert()
+        .success();
+
+    let output = harness.command().arg("uninstall").output().unwrap();
     assert!(
         output.status.success(),
         "uninstall should succeed: {}",
@@ -315,28 +365,13 @@ fn test_service_uninstall_stops_disables_and_removes_managed_files() {
     assert!(stdout.contains("Disabled: yes"));
     assert!(stdout.contains("unit file"));
     assert!(stdout.contains("env file"));
+    assert!(stdout.contains("workspace directory preserved"));
 
     assert!(!harness.unit_path().exists());
     assert!(!harness.env_path().exists());
+    assert!(harness.workspace_path().exists());
 
     let calls = harness.calls_log();
     assert!(calls.contains("stop topagent-telegram.service"));
     assert!(calls.contains("disable topagent-telegram.service"));
-}
-
-#[test]
-fn test_service_install_is_idempotent_for_managed_files() {
-    let harness = ServiceHarness::new();
-    harness.install();
-    let stdout = harness.install();
-
-    assert!(stdout.contains("installed and started"));
-    let calls = harness.calls_log();
-    assert_eq!(calls.matches("daemon-reload").count(), 2);
-    assert_eq!(
-        calls
-            .matches("enable --now topagent-telegram.service")
-            .count(),
-        2
-    );
 }
