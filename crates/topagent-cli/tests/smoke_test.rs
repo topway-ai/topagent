@@ -17,6 +17,15 @@ fn test_cli_help_mentions_workspace() {
 }
 
 #[test]
+fn test_cli_help_mentions_service_command() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("service"));
+}
+
+#[test]
 fn test_cli_bare_instruction_requires_api_key() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
     cmd.env_remove("OPENROUTER_API_KEY")
@@ -195,6 +204,17 @@ fn test_readme_documents_uninstall() {
     let readme = std::fs::read_to_string(repo_root.join("README.md")).unwrap();
 
     assert!(readme.contains("topagent uninstall"));
+}
+
+#[test]
+fn test_readme_documents_service_commands() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let readme = std::fs::read_to_string(repo_root.join("README.md")).unwrap();
+
+    assert!(readme.contains("topagent service install"));
+    assert!(readme.contains("topagent service status"));
+    assert!(readme.contains("topagent service uninstall"));
 }
 
 #[test]

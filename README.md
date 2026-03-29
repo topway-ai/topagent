@@ -21,12 +21,12 @@ topagent "summarize this repository"
 
 Press `Ctrl-C` once to request a stop. Press it again to force exit.
 
-Telegram first test:
+Telegram background service:
 
 ```bash
 cd /path/to/your/repo
 export TELEGRAM_BOT_TOKEN="123456:ABCdefYourBotToken"
-topagent telegram
+topagent service install
 ```
 
 Then:
@@ -35,6 +35,21 @@ Then:
 2. Send `/start` and confirm the workspace path is correct.
 3. Send: `Summarize this repository and tell me the main entry points.`
 4. Send `/stop` if you want to cancel the current task.
+
+Inspect or remove the service:
+
+```bash
+topagent service status
+topagent service uninstall
+```
+
+Foreground debugging:
+
+```bash
+cd /path/to/your/repo
+export TELEGRAM_BOT_TOKEN="123456:ABCdefYourBotToken"
+topagent telegram
+```
 
 If this fails:
 
@@ -55,6 +70,9 @@ If this fails:
 
 - `Telegram webhook is configured`
   Remove the webhook, then run `topagent telegram` again
+
+- `systemd user services are unavailable`
+  Log into a normal Linux desktop session where `systemctl --user` works, then run `topagent service install` again
 
 Uninstall:
 
