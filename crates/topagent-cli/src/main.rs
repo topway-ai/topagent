@@ -1756,6 +1756,40 @@ fn send_telegram_chunks(adapter: &TelegramAdapter, chat_id: i64, chunks: Vec<Str
     }
 }
 
+fn persist_agent_history_to_store(history_store: &ChatHistoryStore, chat_id: i64, agent: &Agent) {
+    let messages = agent.conversation_messages();
+    if messages.is_empty() {
+        if let Err(err) = history_store.clear(chat_id) {
+            warn!(
+                "failed to clear empty Telegram history for chat {} from {}: {}",
+                chat_id,
+                history_store.path_for_chat(chat_id).display(),
+                err
+            );
+        }
+        return;
+    }
+
+    match history_store.save(chat_id, &messages) {
+        Ok(path) => {
+            info!(
+                "saved {} Telegram history messages for chat {} to {}",
+                messages.len(),
+                chat_id,
+                path.display()
+            );
+        }
+        Err(err) => {
+            warn!(
+                "failed to save Telegram history for chat {} to {}: {}",
+                chat_id,
+                history_store.path_for_chat(chat_id).display(),
+                err
+            );
+        }
+    }
+}
+
 struct ChatSessionManager {
     route: ModelRoute,
     api_key: String,
@@ -1839,37 +1873,7 @@ impl ChatSessionManager {
     }
 
     fn persist_agent_history(&self, chat_id: i64, agent: &Agent) {
-        let messages = agent.conversation_messages();
-        if messages.is_empty() {
-            if let Err(err) = self.history_store.clear(chat_id) {
-                warn!(
-                    "failed to clear empty Telegram history for chat {} from {}: {}",
-                    chat_id,
-                    self.history_store.path_for_chat(chat_id).display(),
-                    err
-                );
-            }
-            return;
-        }
-
-        match self.history_store.save(chat_id, &messages) {
-            Ok(path) => {
-                info!(
-                    "saved {} Telegram history messages for chat {} to {}",
-                    messages.len(),
-                    chat_id,
-                    path.display()
-                );
-            }
-            Err(err) => {
-                warn!(
-                    "failed to save Telegram history for chat {} to {}: {}",
-                    chat_id,
-                    self.history_store.path_for_chat(chat_id).display(),
-                    err
-                );
-            }
-        }
+        persist_agent_history_to_store(&self.history_store, chat_id, agent);
     }
 
     fn collect_finished_tasks(&mut self) {
@@ -1983,6 +1987,7 @@ impl ChatSessionManager {
         let progress_callback = progress.as_ref().map(|progress| progress.callback());
         let worker_progress_callback = progress_callback.clone();
         let completed_tx = self.completed_tx.clone();
+        let history_store = self.history_store.clone();
         let adapter = adapter.clone();
         let instruction = text.to_string();
 
@@ -1994,6 +1999,7 @@ impl ChatSessionManager {
 
             let result = agent.run(&run_ctx, &instruction);
             agent.set_progress_callback(None);
+            persist_agent_history_to_store(&history_store, chat_id, &agent);
 
             if let Some(progress) = progress {
                 progress.wait();
@@ -2037,8 +2043,8 @@ impl ChatSessionManager {
 mod tests {
     use super::{
         cleanup_binary_for_uninstall_at_path, detect_install_root_from_exe,
-        resolve_workspace_path_with_current_dir, BinaryCleanupOutcome, ChatSessionManager,
-        InstallRootKind, RunningChatTask, SessionState,
+        persist_agent_history_to_store, resolve_workspace_path_with_current_dir,
+        BinaryCleanupOutcome, ChatSessionManager, InstallRootKind, RunningChatTask, SessionState,
     };
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -2317,7 +2323,7 @@ mod tests {
             Message::user("Remember this exact phrase: maple comet."),
             Message::assistant("Stored. I will remember maple comet."),
         ]);
-        original_manager.persist_agent_history(chat_id, &original_agent);
+        persist_agent_history_to_store(&original_manager.history_store, chat_id, &original_agent);
 
         let restarted_manager = test_manager(workspace.path().to_path_buf());
         let restored_agent = restarted_manager.create_restored_agent(chat_id);
@@ -2355,6 +2361,72 @@ mod tests {
                 & 0o777;
             assert_eq!(mode, 0o600);
         }
+    }
+
+    #[test]
+    fn test_history_is_saved_to_disk_before_collect_finished_tasks() {
+        let workspace = TempDir::new().unwrap();
+        let chat_id = 777;
+        let manager = test_manager(workspace.path().to_path_buf());
+        let mut agent = manager.create_agent();
+        agent.restore_conversation_messages(vec![
+            Message::user("Remember this exact phrase: cedar echo."),
+            Message::assistant("Stored. I will remember cedar echo."),
+        ]);
+
+        persist_agent_history_to_store(&manager.history_store, chat_id, &agent);
+
+        let persisted = manager.history_store.load(chat_id).unwrap();
+        assert_eq!(persisted.len(), 2);
+        assert_eq!(
+            persisted[0].as_text(),
+            Some("Remember this exact phrase: cedar echo.")
+        );
+        assert_eq!(
+            persisted[1].as_text(),
+            Some("Stored. I will remember cedar echo.")
+        );
+    }
+
+    #[test]
+    fn test_post_restart_persist_keeps_pre_restart_exchange_in_file() {
+        let workspace = TempDir::new().unwrap();
+        let chat_id = 5150;
+        let original_manager = test_manager(workspace.path().to_path_buf());
+        let mut original_agent = original_manager.create_agent();
+        original_agent.restore_conversation_messages(vec![
+            Message::user("Remember this exact phrase: lunar pine."),
+            Message::assistant("Stored. I will remember lunar pine."),
+        ]);
+        persist_agent_history_to_store(&original_manager.history_store, chat_id, &original_agent);
+
+        let restarted_manager = test_manager(workspace.path().to_path_buf());
+        let mut restored_agent = restarted_manager.create_restored_agent(chat_id);
+        let mut restored_messages = restored_agent.conversation_messages();
+        assert_eq!(restored_messages.len(), 2);
+        restored_messages.push(Message::user(
+            "What exact phrase did I ask you to remember before the restart?",
+        ));
+        restored_messages.push(Message::assistant("lunar pine"));
+        restored_agent.restore_conversation_messages(restored_messages);
+
+        persist_agent_history_to_store(&restarted_manager.history_store, chat_id, &restored_agent);
+
+        let persisted = restarted_manager.history_store.load(chat_id).unwrap();
+        assert_eq!(persisted.len(), 4);
+        assert_eq!(
+            persisted[0].as_text(),
+            Some("Remember this exact phrase: lunar pine.")
+        );
+        assert_eq!(
+            persisted[1].as_text(),
+            Some("Stored. I will remember lunar pine.")
+        );
+        assert_eq!(
+            persisted[2].as_text(),
+            Some("What exact phrase did I ask you to remember before the restart?")
+        );
+        assert_eq!(persisted[3].as_text(), Some("lunar pine"));
     }
 
     #[test]
