@@ -112,27 +112,11 @@ fn test_bash_env_vars_stripped_from_child_process() {
     let ctx = ToolContext::new(&exec, &runtime);
     let tool = BashTool::new();
 
-    // Temporarily set env vars for this test.
     std::env::set_var("OPENROUTER_API_KEY", "test-secret-key-value-12345");
     std::env::set_var("TELEGRAM_BOT_TOKEN", "123456789:ABCdefGHI_test");
 
-    // The check_bash_secret_access will block `echo $OPENROUTER_API_KEY`,
-    // so use a command that tries to access it indirectly. But since we
-    // also strip the env var, even if the check were bypassed, the value
-    // would be empty. Test this via printenv for a specific var (which
-    // is NOT blocked by the command checker since it's a different form).
-    // Actually, check_bash_secret_access blocks echo $VAR forms, and
-    // env_remove strips the var from child. Let's verify by running a
-    // command that prints all env vars and checking our secret is not there.
-    //
-    // But `env` is blocked! So let's test the env_remove by checking that
-    // a non-blocked command that reads the var returns empty.
-    //
-    // The simplest: try `sh -c 'echo $OPENROUTER_API_KEY'` - but that's blocked.
-    // Instead, test that the bash tool command output for a safe command
-    // does NOT leak the env var values, even though they are set in parent.
-    // We write a file with the env var value and cat it (testing the read path).
-    // Actually, just verify at the env_remove level:
+    // The command checker blocks $VAR references before execution, so even
+    // with the env var set in the parent, the secret never appears in output.
     let result = tool.execute(
         serde_json::json!({"command": "echo $OPENROUTER_API_KEY"}),
         &ctx,

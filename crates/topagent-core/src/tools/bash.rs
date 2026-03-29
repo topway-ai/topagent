@@ -2,65 +2,67 @@ use crate::context::ToolContext;
 use crate::secrets;
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::OnceLock;
 use std::thread;
 use std::time::Duration;
 use tracing::warn;
 
-/// Cached bwrap availability: 0 = unknown, 1 = available, 2 = unavailable.
-static BWRAP_STATE: AtomicU8 = AtomicU8::new(0);
-
 /// Paths the sandbox allows read-only access to.
-static BWRAP_RO_BINDS: Lazy<Vec<&str>> = Lazy::new(|| {
-    vec![
-        "/usr",
-        "/bin",
-        "/lib",
-        "/lib64",
-        "/etc",
-        "/nix",                // NixOS
-        "/run/current-system", // NixOS
-    ]
-});
+const BWRAP_RO_BIND_CANDIDATES: &[&str] = &[
+    "/usr",
+    "/bin",
+    "/lib",
+    "/lib64",
+    "/etc",
+    "/nix",
+    "/run/current-system",
+];
 
-/// Check whether bwrap is installed and functional (user namespaces enabled).
-fn bwrap_available() -> bool {
-    let state = BWRAP_STATE.load(Ordering::Relaxed);
-    if state == 1 {
-        return true;
-    }
-    if state == 2 {
-        return false;
-    }
-    // Probe: run a trivial bwrap command.
-    let ok = Command::new("bwrap")
-        .args([
-            "--ro-bind",
-            "/usr",
-            "/usr",
-            "--dev",
-            "/dev",
-            "--proc",
-            "/proc",
-            "true",
-        ])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
-    BWRAP_STATE.store(if ok { 1 } else { 2 }, Ordering::Relaxed);
-    if !ok {
-        warn!(
-            "bwrap unavailable (not installed or user namespaces restricted); \
-             bash commands will run without filesystem sandboxing"
-        );
-    }
-    ok
+/// Cached bwrap probe result: availability flag + which bind paths exist.
+struct BwrapProbe {
+    available: bool,
+    ro_binds: Vec<&'static str>,
+}
+
+static BWRAP_PROBE: OnceLock<BwrapProbe> = OnceLock::new();
+
+fn bwrap_probe() -> &'static BwrapProbe {
+    BWRAP_PROBE.get_or_init(|| {
+        let available = Command::new("bwrap")
+            .args([
+                "--ro-bind",
+                "/usr",
+                "/usr",
+                "--dev",
+                "/dev",
+                "--proc",
+                "/proc",
+                "true",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !available {
+            warn!(
+                "bwrap unavailable (not installed or user namespaces restricted); \
+                 bash commands will run without filesystem sandboxing"
+            );
+        }
+        let ro_binds = BWRAP_RO_BIND_CANDIDATES
+            .iter()
+            .copied()
+            .filter(|p| std::path::Path::new(p).exists())
+            .collect();
+        BwrapProbe {
+            available,
+            ro_binds,
+        }
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,15 +103,12 @@ impl crate::tools::Tool for BashTool {
         }
 
         let workspace = ctx.exec.workspace_root.to_string_lossy();
-        let use_bwrap = bwrap_available();
+        let probe = bwrap_probe();
 
-        let mut cmd = if use_bwrap {
+        let mut cmd = if probe.available {
             let mut c = Command::new("bwrap");
-            // Read-only bind standard system paths.
-            for path in BWRAP_RO_BINDS.iter() {
-                if std::path::Path::new(path).exists() {
-                    c.args(["--ro-bind", path, path]);
-                }
+            for path in &probe.ro_binds {
+                c.args(["--ro-bind", path, path]);
             }
             // Writable workspace.
             c.args(["--bind", &workspace, &workspace]);

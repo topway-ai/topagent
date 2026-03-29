@@ -8,6 +8,7 @@
 /// as a last-mile filter before sending replies to Telegram.
 use once_cell::sync::Lazy;
 use regex::Regex;
+use std::borrow::Cow;
 use tracing::warn;
 
 const REDACTED: &str = "[REDACTED_SECRET]";
@@ -78,30 +79,68 @@ impl SecretRegistry {
             return String::new();
         }
 
-        let mut result = text.to_string();
+        let mut result = Cow::Borrowed(text);
 
         // Layer 1: exact value replacement (highest priority)
         for secret in &self.values {
             if result.contains(secret.as_str()) {
-                result = result.replace(secret.as_str(), REDACTED);
+                result = Cow::Owned(result.replace(secret.as_str(), REDACTED));
             }
         }
 
-        // Layer 2: pattern-based redaction
-        result = TELEGRAM_TOKEN_RE
-            .replace_all(&result, REDACTED)
-            .into_owned();
-        result = SK_KEY_RE.replace_all(&result, REDACTED).into_owned();
-        result = KEY_VALUE_RE
-            .replace_all(&result, |caps: &regex::Captures| {
-                let prefix = &caps[1];
-                format!("{}{}", prefix, REDACTED)
-            })
-            .into_owned();
+        // Layer 2: pattern-based redaction (only allocates when a pattern matches)
+        match TELEGRAM_TOKEN_RE.replace_all(&result, REDACTED) {
+            Cow::Owned(s) => result = Cow::Owned(s),
+            Cow::Borrowed(_) => {}
+        }
+        match SK_KEY_RE.replace_all(&result, REDACTED) {
+            Cow::Owned(s) => result = Cow::Owned(s),
+            Cow::Borrowed(_) => {}
+        }
+        match KEY_VALUE_RE.replace_all(&result, |caps: &regex::Captures| {
+            format!("{}{}", &caps[1], REDACTED)
+        }) {
+            Cow::Owned(s) => result = Cow::Owned(s),
+            Cow::Borrowed(_) => {}
+        }
 
-        result
+        result.into_owned()
     }
 }
+
+/// Check whether `needle` appears as a standalone command in `haystack`,
+/// i.e. at the start or after a shell separator (|, ;, &&).
+fn contains_shell_command(haystack: &str, needle: &str) -> bool {
+    haystack == needle
+        || haystack.starts_with(needle)
+            && haystack
+                .as_bytes()
+                .get(needle.len())
+                .map_or(false, |&b| b == b' ' || b == b'\n')
+        || haystack.contains(&["| ", needle].concat())
+        || haystack.contains(&["|", needle].concat())
+        || haystack.contains(&["; ", needle].concat())
+        || haystack.contains(&[";", needle].concat())
+        || haystack.contains(&["&& ", needle].concat())
+}
+
+/// Precomputed patterns for secret variable references ($VAR and ${VAR}).
+struct SecretVarPatterns {
+    dollar: String,
+    braced: String,
+    name: &'static str,
+}
+
+static SECRET_VAR_PATTERNS: Lazy<Vec<SecretVarPatterns>> = Lazy::new(|| {
+    SECRET_ENV_VARS
+        .iter()
+        .map(|&name| SecretVarPatterns {
+            dollar: format!("${name}"),
+            braced: format!("${{{name}}}"),
+            name,
+        })
+        .collect()
+});
 
 /// Check if a bash command is attempting to access secrets.
 /// Returns an error message if blocked, None if allowed.
@@ -110,16 +149,7 @@ pub fn check_bash_secret_access(command: &str) -> Option<String> {
 
     // Block env-dump commands
     for cmd in ENV_DUMP_COMMANDS {
-        // Match the command at the start of the line or after a pipe/semicolon
-        if trimmed == *cmd
-            || trimmed.starts_with(&format!("{cmd} "))
-            || trimmed.starts_with(&format!("{cmd}\n"))
-            || trimmed.contains(&format!("| {cmd}"))
-            || trimmed.contains(&format!("|{cmd}"))
-            || trimmed.contains(&format!("; {cmd}"))
-            || trimmed.contains(&format!(";{cmd}"))
-            || trimmed.contains(&format!("&& {cmd}"))
-        {
+        if contains_shell_command(trimmed, cmd) {
             let msg = format!(
                 "Blocked: `{cmd}` dumps environment variables which may contain secrets. \
                  Use specific, non-secret environment variables directly instead."
@@ -147,16 +177,15 @@ pub fn check_bash_secret_access(command: &str) -> Option<String> {
         return Some("Blocked: /proc/*/environ contains raw environment secrets.".to_string());
     }
 
-    // Block echo/printf of known secret variable names
-    for var_name in SECRET_ENV_VARS {
-        let dollar_var = format!("${var_name}");
-        let braced_var = format!("${{{var_name}}}");
-        if trimmed.contains(&dollar_var) || trimmed.contains(&braced_var) {
+    // Block references to known secret variable names
+    for pat in SECRET_VAR_PATTERNS.iter() {
+        if trimmed.contains(&pat.dollar) || trimmed.contains(&pat.braced) {
+            let name = pat.name;
             let msg = format!(
-                "Blocked: command references secret variable {var_name}. \
+                "Blocked: command references secret variable {name}. \
                  Credentials are configured but cannot be read from chat."
             );
-            warn!("secret access blocked: secret var ${var_name} in: {trimmed}");
+            warn!("secret access blocked: secret var ${name} in: {trimmed}");
             return Some(msg);
         }
     }
