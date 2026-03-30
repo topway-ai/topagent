@@ -63,9 +63,8 @@ impl Session {
         }
 
         let dropped_count = self.messages.len() - keep_recent;
-        let messages_clone = self.messages.clone();
-        let recent: Vec<Message> = messages_clone.into_iter().rev().take(keep_recent).collect();
-        let recent: Vec<Message> = recent.into_iter().rev().collect();
+        let start = self.messages.len() - keep_recent;
+        let recent: Vec<Message> = self.messages.drain(start..).collect();
 
         self.messages.clear();
         self.messages.push(Message::system(format!(

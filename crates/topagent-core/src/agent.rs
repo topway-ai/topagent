@@ -54,10 +54,6 @@ const UNPLANNED_MUTATION_ESCALATION_THRESHOLD: usize = 3;
 const PLANNING_REDIRECT_MSG: &str = "\
 This task requires a plan before proceeding. \
 Use the update_plan tool to create a plan with concrete steps, then execute it.";
-const PRE_EXECUTION_REDIRECT_MSG: &str = "\
-This task already has a plan, but execution has not started yet. \
-Execute at least one concrete plan step before running verification or returning a final answer.";
-
 pub struct Agent {
     session: Session,
     provider: Box<dyn Provider>,
@@ -273,6 +269,27 @@ impl Agent {
             .unwrap_or(false)
     }
 
+    fn deactivate_planning_gate(&mut self) {
+        self.planning_gate_active = false;
+        self.clear_planning_block_state();
+    }
+
+    fn maybe_truncate_history(&mut self) {
+        if self.session.message_count() > self.options.max_messages_before_truncation {
+            let keep_recent = self.options.max_messages_before_truncation / 2;
+            self.session.truncate_history(keep_recent);
+        }
+    }
+
+    /// Pop a previous redirect message (if present) and replace it with the
+    /// model's response followed by a fresh redirect nudge.
+    fn redirect_to_planning(&mut self, msg: Message, redirect_msg: &str) {
+        self.session
+            .pop_last_if(|m| m.as_text().map(|t| t == redirect_msg).unwrap_or(false));
+        self.session.add_message(msg);
+        self.session.add_message(Message::user(redirect_msg));
+    }
+
     /// Classify whether the task requires upfront planning.
     ///
     /// Uses a two-tier system:
@@ -330,15 +347,13 @@ impl Agent {
     /// Always deactivates the planning gate afterward.
     fn generate_or_fallback_plan(&mut self, instruction: &str) {
         if self.plan_exists() {
-            self.planning_gate_active = false;
-            self.clear_planning_block_state();
+            self.deactivate_planning_gate();
             return;
         }
 
         // Try a dedicated LLM plan-generation call.
         if self.try_generate_plan(instruction) {
-            self.planning_gate_active = false;
-            self.clear_planning_block_state();
+            self.deactivate_planning_gate();
             return;
         }
 
@@ -348,8 +363,7 @@ impl Agent {
             plan.add_item("Execute the requested changes".to_string());
             plan.add_item("Verify the result".to_string());
         }
-        self.planning_gate_active = false;
-        self.clear_planning_block_state();
+        self.deactivate_planning_gate();
     }
 
     /// Attempt to generate a concrete plan via a single LLM call.
@@ -430,21 +444,272 @@ impl Agent {
         Ok(())
     }
 
+    /// Execute a single tool call (internal or external), updating session,
+    /// planning gates, execution stage, and changed-file tracking.
+    ///
+    /// All early-exit paths (blocked, error, external-tool) return `Ok(())`
+    /// after recording the appropriate tool_request / tool_result messages.
+    /// Real errors (cancellation, planning-block escalation) propagate via `Err`.
+    fn execute_single_tool_call(
+        &mut self,
+        ctx: &ExecutionContext,
+        instruction: &str,
+        id: String,
+        name: String,
+        args: serde_json::Value,
+    ) -> Result<()> {
+        let is_external = self.external_tools.get(&name).is_some();
+
+        // ── Resolve tool (internal, external, or unknown) ──
+        let tool = match self.tools.get(&name) {
+            Some(t) => t,
+            None if is_external => {
+                return self.execute_external_tool_call(ctx, instruction, id, name, args);
+            }
+            None => {
+                self.session.add_message(Message::tool_request(
+                    id.clone(),
+                    name.clone(),
+                    args.clone(),
+                ));
+                self.session.add_message(Message::tool_result(
+                    id,
+                    format!("error: unknown tool '{}'", name),
+                ));
+                return Ok(());
+            }
+        };
+
+        let tool_ctx = ToolContext::new(ctx, &self.options);
+
+        // ── Pre-hooks ──
+        if let Some(hooks) = self.hooks.get(&name) {
+            if !hooks.run_pre_hooks(&name, &args, &tool_ctx) {
+                self.session.add_message(Message::tool_request(
+                    id.clone(),
+                    name.clone(),
+                    args.clone(),
+                ));
+                self.session.add_message(Message::tool_result(
+                    id,
+                    format!("error: tool '{}' blocked by pre-hook", name),
+                ));
+                return Ok(());
+            }
+        }
+
+        // ── Planning / pre-execution gates ──
+        let bash_args = if name == "bash" { Some(&args) } else { None };
+        if let Some(block_msg) = self.check_planning_gate(&name, bash_args, None) {
+            self.emit_progress(Self::blocked_progress(&block_msg));
+            self.session.add_message(Message::tool_request(
+                id.clone(),
+                name.clone(),
+                args.clone(),
+            ));
+            self.session
+                .add_message(Message::tool_result(id, block_msg));
+            self.note_planning_block(instruction)?;
+            return Ok(());
+        }
+        if let Some(block_msg) =
+            self.check_pre_execution_verification_gate(&name, bash_args, None)
+        {
+            self.emit_progress(Self::blocked_progress(&block_msg));
+            self.session.add_message(Message::tool_request(
+                id.clone(),
+                name.clone(),
+                args.clone(),
+            ));
+            self.session
+                .add_message(Message::tool_result(id, block_msg));
+            return Ok(());
+        }
+
+        // ── Execute ──
+        let bash_cmd = if name == "bash" {
+            Some(Self::extract_bash_command(&args))
+        } else {
+            None
+        };
+        self.emit_progress(self.tool_progress(&name, &args));
+        self.check_cancelled(ctx)?;
+        let mut result = match tool.execute(args.clone(), &tool_ctx) {
+            Ok(r) => r,
+            Err(e) => {
+                self.session.add_message(Message::tool_request(
+                    id.clone(),
+                    name.clone(),
+                    args.clone(),
+                ));
+                self.session.add_message(Message::tool_result(
+                    id,
+                    format!("error: tool execution failed: {}", e),
+                ));
+                return Ok(());
+            }
+        };
+        self.check_cancelled(ctx)?;
+
+        // ── Bash post-processing ──
+        let mut execution_started_by_bash = false;
+        if name == "bash" {
+            let class = if let Some(cmd_str) = &bash_cmd {
+                Self::classify_bash_command(cmd_str)
+            } else {
+                BashCommandClass::MutationRisk
+            };
+            if let Some(cmd) = bash_cmd {
+                let exit_code = extract_exit_code(&result);
+                self.bash_history
+                    .borrow_mut()
+                    .push((cmd, result.clone(), exit_code));
+            }
+            if matches!(
+                class,
+                BashCommandClass::MutationRisk | BashCommandClass::Verification
+            ) {
+                let found_new_change = self.reconcile_changed_files(&ctx.workspace_root);
+                if found_new_change {
+                    execution_started_by_bash = true;
+                }
+            }
+            if class == BashCommandClass::MutationRisk {
+                execution_started_by_bash = true;
+            }
+        }
+
+        // ── Post-hooks ──
+        if let Some(hooks) = self.hooks.get(&name) {
+            result = hooks.run_post_hooks(&name, &args, &result, &tool_ctx);
+        }
+
+        if execution_started_by_bash {
+            self.mark_execution_started();
+        }
+
+        // ── Track mutations ──
+        self.track_changed_file(&name, &args);
+
+        if Self::is_mutation_tool(&name) {
+            self.reconcile_changed_files(&ctx.workspace_root);
+            self.mark_execution_started();
+            self.maybe_escalate_to_planning();
+        }
+
+        if Self::is_plan_tool(&name) && self.plan_exists() {
+            self.deactivate_planning_gate();
+        }
+
+        // Redact secrets from tool output before it enters the
+        // model context — defense-in-depth against exfiltration.
+        let result = ctx.secrets().redact(&result);
+
+        self.session
+            .add_message(Message::tool_request(id.clone(), name, args));
+        self.session.add_message(Message::tool_result(id, result));
+        Ok(())
+    }
+
+    /// Handle an external tool call (pre-hooks, gates, execute, redact).
+    fn execute_external_tool_call(
+        &mut self,
+        ctx: &ExecutionContext,
+        instruction: &str,
+        id: String,
+        name: String,
+        args: serde_json::Value,
+    ) -> Result<()> {
+        let tool_ctx = ToolContext::new(ctx, &self.options);
+        let external_tool = self.external_tools.get(&name).unwrap();
+        let external_effect = external_tool.effect();
+
+        if let Some(hooks) = self.hooks.get(&name) {
+            if !hooks.run_pre_hooks(&name, &args, &tool_ctx) {
+                self.session.add_message(Message::tool_request(
+                    id.clone(),
+                    name.clone(),
+                    args.clone(),
+                ));
+                self.session.add_message(Message::tool_result(
+                    id,
+                    format!("error: external tool '{}' blocked by pre-hook", name),
+                ));
+                return Ok(());
+            }
+        }
+
+        if let Some(block_msg) = self.check_planning_gate(&name, None, Some(external_effect)) {
+            self.emit_progress(Self::blocked_progress(&block_msg));
+            self.session.add_message(Message::tool_request(
+                id.clone(),
+                name.clone(),
+                args.clone(),
+            ));
+            self.session
+                .add_message(Message::tool_result(id, block_msg));
+            self.note_planning_block(instruction)?;
+            return Ok(());
+        }
+        if let Some(block_msg) =
+            self.check_pre_execution_verification_gate(&name, None, Some(external_effect))
+        {
+            self.emit_progress(Self::blocked_progress(&block_msg));
+            self.session.add_message(Message::tool_request(
+                id.clone(),
+                name.clone(),
+                args.clone(),
+            ));
+            self.session
+                .add_message(Message::tool_result(id, block_msg));
+            return Ok(());
+        }
+
+        self.emit_progress(self.tool_progress(&name, &args));
+        self.check_cancelled(ctx)?;
+        let result = external_tool.execute(&args, &tool_ctx);
+        self.check_cancelled(ctx)?;
+        *self.external_tool_ran.borrow_mut() = true;
+
+        let found_new_change = self.reconcile_changed_files(&ctx.workspace_root);
+        if found_new_change && self.execution_stage == ExecutionStage::Research {
+            self.execution_stage = ExecutionStage::Edit;
+        }
+        if found_new_change {
+            self.maybe_escalate_to_planning();
+        }
+
+        self.session.add_message(Message::tool_request(
+            id.clone(),
+            name.clone(),
+            args.clone(),
+        ));
+        let result_str = match result {
+            Ok(r) => {
+                if matches!(r.effect, ExternalToolEffect::ExecutionStarted) {
+                    self.mark_execution_started();
+                }
+                r.output
+            }
+            Err(e) => {
+                self.session.add_message(Message::tool_result(
+                    id,
+                    format!("error: external tool execution failed: {}", e),
+                ));
+                return Ok(());
+            }
+        };
+        let result_str = ctx.secrets().redact(&result_str);
+        self.session
+            .add_message(Message::tool_result(id, result_str));
+        Ok(())
+    }
+
     fn track_changed_file(&self, tool_name: &str, args: &serde_json::Value) {
         if tool_name == "write" || tool_name == "edit" {
             if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
                 self.record_changed_file(path.to_string());
             }
-        }
-    }
-
-    fn extract_changed_path(&self, tool_name: &str, args: &serde_json::Value) -> Option<String> {
-        if tool_name == "write" || tool_name == "edit" {
-            args.get("path")
-                .and_then(|p| p.as_str())
-                .map(|s| s.to_string())
-        } else {
-            None
         }
     }
 
@@ -1063,27 +1328,7 @@ impl Agent {
                                 self.generate_or_fallback_plan(instruction);
                                 self.emit_progress(self.current_working_progress());
                             }
-                            // Pop previous redirect if present to avoid accumulation.
-                            self.session.pop_last_if(|m| {
-                                m.as_text()
-                                    .map(|t| t == PLANNING_REDIRECT_MSG)
-                                    .unwrap_or(false)
-                            });
-                            self.session.add_message(msg);
-                            self.session
-                                .add_message(Message::user(PLANNING_REDIRECT_MSG));
-                            continue;
-                        }
-
-                        if self.should_block_pre_execution_actions() {
-                            self.session.pop_last_if(|m| {
-                                m.as_text()
-                                    .map(|t| t == PRE_EXECUTION_REDIRECT_MSG)
-                                    .unwrap_or(false)
-                            });
-                            self.session.add_message(msg);
-                            self.session
-                                .add_message(Message::user(PRE_EXECUTION_REDIRECT_MSG));
+                            self.redirect_to_planning(msg, PLANNING_REDIRECT_MSG);
                             continue;
                         }
 
@@ -1094,503 +1339,22 @@ impl Agent {
                     self.session.add_message(msg);
                 }
                 ProviderResponse::ToolCall { id, name, args } => {
-                    let tool_ctx = ToolContext::new(ctx, &self.options);
-                    let is_external = self.external_tools.get(&name).is_some();
-                    let tool = match self.tools.get(&name) {
-                        Some(t) => t,
-                        None if is_external => {
-                            let external_tool = self.external_tools.get(&name).unwrap();
-                            let external_effect = external_tool.effect();
-                            if let Some(hooks) = self.hooks.get(&name) {
-                                if !hooks.run_pre_hooks(&name, &args, &tool_ctx) {
-                                    self.session.add_message(Message::tool_request(
-                                        id.clone(),
-                                        name.clone(),
-                                        args,
-                                    ));
-                                    self.session.add_message(Message::tool_result(
-                                        id,
-                                        format!(
-                                            "error: external tool '{}' blocked by pre-hook",
-                                            name
-                                        ),
-                                    ));
-                                    continue;
-                                }
-                            }
-                            if let Some(block_msg) =
-                                self.check_planning_gate(&name, None, Some(external_effect))
-                            {
-                                self.emit_progress(Self::blocked_progress(&block_msg));
-                                self.session.add_message(Message::tool_request(
-                                    id.clone(),
-                                    name.clone(),
-                                    args,
-                                ));
-                                self.session
-                                    .add_message(Message::tool_result(id, block_msg));
-                                self.note_planning_block(instruction)?;
-                                continue;
-                            }
-                            if let Some(block_msg) = self.check_pre_execution_verification_gate(
-                                &name,
-                                None,
-                                Some(external_effect),
-                            ) {
-                                self.emit_progress(Self::blocked_progress(&block_msg));
-                                self.session.add_message(Message::tool_request(
-                                    id.clone(),
-                                    name.clone(),
-                                    args,
-                                ));
-                                self.session
-                                    .add_message(Message::tool_result(id, block_msg));
-                                continue;
-                            }
-                            self.emit_progress(self.tool_progress(&name, &args));
-                            self.check_cancelled(ctx)?;
-                            let result = external_tool.execute(&args, &tool_ctx);
-                            self.check_cancelled(ctx)?;
-                            *self.external_tool_ran.borrow_mut() = true;
-                            let found_new_change =
-                                self.reconcile_changed_files(&ctx.workspace_root);
-                            if found_new_change && self.execution_stage == ExecutionStage::Research
-                            {
-                                self.execution_stage = ExecutionStage::Edit;
-                            }
-                            if found_new_change {
-                                self.maybe_escalate_to_planning();
-                            }
-                            self.session.add_message(Message::tool_request(
-                                id.clone(),
-                                name.clone(),
-                                args,
-                            ));
-                            let result_str = match result {
-                                Ok(r) => {
-                                    if matches!(r.effect, ExternalToolEffect::ExecutionStarted) {
-                                        self.mark_execution_started();
-                                    }
-                                    r.output
-                                }
-                                Err(e) => {
-                                    self.session.add_message(Message::tool_result(
-                                        id,
-                                        format!("error: external tool execution failed: {}", e),
-                                    ));
-                                    empty_response_retries = 0;
-                                    if self.session.message_count()
-                                        > self.options.max_messages_before_truncation
-                                    {
-                                        let keep_recent =
-                                            self.options.max_messages_before_truncation / 2;
-                                        self.session.truncate_history(keep_recent);
-                                    }
-                                    continue;
-                                }
-                            };
-                            let result_str = ctx.secrets().redact(&result_str);
-                            self.session
-                                .add_message(Message::tool_result(id, result_str));
-                            empty_response_retries = 0;
-                            if self.session.message_count()
-                                > self.options.max_messages_before_truncation
-                            {
-                                let keep_recent = self.options.max_messages_before_truncation / 2;
-                                self.session.truncate_history(keep_recent);
-                            }
-                            continue;
-                        }
-                        None => {
-                            self.session.add_message(Message::tool_request(
-                                id.clone(),
-                                name.clone(),
-                                args,
-                            ));
-                            self.session.add_message(Message::tool_result(
-                                id,
-                                format!("error: unknown tool '{}'", name),
-                            ));
-                            continue;
-                        }
-                    };
-
-                    if let Some(hooks) = self.hooks.get(&name) {
-                        if !hooks.run_pre_hooks(&name, &args, &tool_ctx) {
-                            self.session.add_message(Message::tool_request(
-                                id.clone(),
-                                name.clone(),
-                                args,
-                            ));
-                            self.session.add_message(Message::tool_result(
-                                id,
-                                format!("error: tool '{}' blocked by pre-hook", name),
-                            ));
-                            continue;
-                        }
-                    }
-
-                    let bash_args = if name == "bash" { Some(&args) } else { None };
-                    if let Some(block_msg) = self.check_planning_gate(&name, bash_args, None) {
-                        self.emit_progress(Self::blocked_progress(&block_msg));
-                        self.session.add_message(Message::tool_request(
-                            id.clone(),
-                            name.clone(),
-                            args,
-                        ));
-                        self.session
-                            .add_message(Message::tool_result(id, block_msg));
-                        self.note_planning_block(instruction)?;
-                        continue;
-                    }
-                    if let Some(block_msg) =
-                        self.check_pre_execution_verification_gate(&name, bash_args, None)
-                    {
-                        self.emit_progress(Self::blocked_progress(&block_msg));
-                        self.session.add_message(Message::tool_request(
-                            id.clone(),
-                            name.clone(),
-                            args,
-                        ));
-                        self.session
-                            .add_message(Message::tool_result(id, block_msg));
-                        continue;
-                    }
-
-                    let changed_path = self.extract_changed_path(&name, &args);
-                    let bash_cmd = if name == "bash" {
-                        Some(Self::extract_bash_command(&args))
-                    } else {
-                        None
-                    };
-                    self.emit_progress(self.tool_progress(&name, &args));
-                    self.check_cancelled(ctx)?;
-                    let mut result = match tool.execute(args.clone(), &tool_ctx) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            self.session.add_message(Message::tool_request(
-                                id.clone(),
-                                name.clone(),
-                                args,
-                            ));
-                            self.session.add_message(Message::tool_result(
-                                id,
-                                format!("error: tool execution failed: {}", e),
-                            ));
-                            continue;
-                        }
-                    };
-                    self.check_cancelled(ctx)?;
-
-                    let mut execution_started_by_bash = false;
-                    if name == "bash" {
-                        let class = if let Some(cmd_str) = &bash_cmd {
-                            Self::classify_bash_command(cmd_str)
-                        } else {
-                            BashCommandClass::MutationRisk
-                        };
-                        if let Some(cmd) = bash_cmd {
-                            let exit_code = extract_exit_code(&result);
-                            self.bash_history
-                                .borrow_mut()
-                                .push((cmd, result.clone(), exit_code));
-                        }
-                        if matches!(
-                            class,
-                            BashCommandClass::MutationRisk | BashCommandClass::Verification
-                        ) {
-                            let found_new_change =
-                                self.reconcile_changed_files(&ctx.workspace_root);
-                            if found_new_change {
-                                execution_started_by_bash = true;
-                            }
-                        }
-                        if class == BashCommandClass::MutationRisk {
-                            execution_started_by_bash = true;
-                        }
-                    }
-
-                    if let Some(hooks) = self.hooks.get(&name) {
-                        result = hooks.run_post_hooks(&name, &args, &result, &tool_ctx);
-                    }
-
-                    if execution_started_by_bash {
-                        self.mark_execution_started();
-                    }
-
-                    if let Some(path) = changed_path {
-                        self.record_changed_file(path);
-                    }
-
-                    if Self::is_mutation_tool(&name) {
-                        self.reconcile_changed_files(&ctx.workspace_root);
-                        self.mark_execution_started();
-                        // Risk #3: escalate to planning if unplanned mutations
-                        // are spreading across many files.
-                        self.maybe_escalate_to_planning();
-                    }
-
-                    if Self::is_plan_tool(&name) {
-                        if self.plan_exists() {
-                            self.planning_gate_active = false;
-                            self.clear_planning_block_state();
-                        }
-                    }
-
-                    // Redact secrets from tool output before it enters the
-                    // model context — defense-in-depth against exfiltration.
-                    let result = ctx.secrets().redact(&result);
-
-                    self.session
-                        .add_message(Message::tool_request(id.clone(), name, args));
-                    self.session.add_message(Message::tool_result(id, result));
+                    self.execute_single_tool_call(ctx, instruction, id, name, args)?;
                     empty_response_retries = 0;
-
-                    if self.session.message_count() > self.options.max_messages_before_truncation {
-                        let keep_recent = self.options.max_messages_before_truncation / 2;
-                        self.session.truncate_history(keep_recent);
-                    }
+                    self.maybe_truncate_history();
                 }
                 ProviderResponse::ToolCalls(calls) => {
                     for call in calls {
-                        let tool_ctx = ToolContext::new(ctx, &self.options);
-                        let id = call.id;
-                        let name = call.name;
-                        let args = call.args;
-                        let is_external = self.external_tools.get(&name).is_some();
-                        let tool = match self.tools.get(&name) {
-                            Some(t) => t,
-                            None if is_external => {
-                                let external_tool = self.external_tools.get(&name).unwrap();
-                                let external_effect = external_tool.effect();
-                                if let Some(hooks) = self.hooks.get(&name) {
-                                    if !hooks.run_pre_hooks(&name, &args, &tool_ctx) {
-                                        self.session.add_message(Message::tool_request(
-                                            id.clone(),
-                                            name.clone(),
-                                            args.clone(),
-                                        ));
-                                        self.session.add_message(Message::tool_result(
-                                            id,
-                                            format!(
-                                                "error: external tool '{}' blocked by pre-hook",
-                                                name
-                                            ),
-                                        ));
-                                        continue;
-                                    }
-                                }
-                                if let Some(block_msg) =
-                                    self.check_planning_gate(&name, None, Some(external_effect))
-                                {
-                                    self.emit_progress(Self::blocked_progress(&block_msg));
-                                    self.session.add_message(Message::tool_request(
-                                        id.clone(),
-                                        name.clone(),
-                                        args.clone(),
-                                    ));
-                                    self.session
-                                        .add_message(Message::tool_result(id, block_msg));
-                                    self.note_planning_block(instruction)?;
-                                    continue;
-                                }
-                                if let Some(block_msg) = self.check_pre_execution_verification_gate(
-                                    &name,
-                                    None,
-                                    Some(external_effect),
-                                ) {
-                                    self.emit_progress(Self::blocked_progress(&block_msg));
-                                    self.session.add_message(Message::tool_request(
-                                        id.clone(),
-                                        name.clone(),
-                                        args.clone(),
-                                    ));
-                                    self.session
-                                        .add_message(Message::tool_result(id, block_msg));
-                                    continue;
-                                }
-                                self.emit_progress(self.tool_progress(&name, &args));
-                                self.check_cancelled(ctx)?;
-                                let result = external_tool.execute(&args, &tool_ctx);
-                                self.check_cancelled(ctx)?;
-                                *self.external_tool_ran.borrow_mut() = true;
-                                let found_new_change =
-                                    self.reconcile_changed_files(&ctx.workspace_root);
-                                if found_new_change
-                                    && self.execution_stage == ExecutionStage::Research
-                                {
-                                    self.execution_stage = ExecutionStage::Edit;
-                                }
-                                if found_new_change {
-                                    self.maybe_escalate_to_planning();
-                                }
-                                self.session.add_message(Message::tool_request(
-                                    id.clone(),
-                                    name.clone(),
-                                    args.clone(),
-                                ));
-                                let result_str = match result {
-                                    Ok(r) => {
-                                        if matches!(r.effect, ExternalToolEffect::ExecutionStarted)
-                                        {
-                                            self.mark_execution_started();
-                                        }
-                                        r.output
-                                    }
-                                    Err(e) => {
-                                        self.session.add_message(Message::tool_result(
-                                            id,
-                                            format!("error: external tool execution failed: {}", e),
-                                        ));
-                                        continue;
-                                    }
-                                };
-                                self.session
-                                    .add_message(Message::tool_result(id, result_str));
-                                continue;
-                            }
-                            None => {
-                                self.session.add_message(Message::tool_request(
-                                    id.clone(),
-                                    name.clone(),
-                                    args.clone(),
-                                ));
-                                self.session.add_message(Message::tool_result(
-                                    id,
-                                    format!("error: unknown tool '{}'", name),
-                                ));
-                                continue;
-                            }
-                        };
-
-                        if let Some(hooks) = self.hooks.get(&name) {
-                            if !hooks.run_pre_hooks(&name, &args, &tool_ctx) {
-                                self.session.add_message(Message::tool_request(
-                                    id.clone(),
-                                    name.clone(),
-                                    args.clone(),
-                                ));
-                                self.session.add_message(Message::tool_result(
-                                    id,
-                                    format!("error: tool '{}' blocked by pre-hook", name),
-                                ));
-                                continue;
-                            }
-                        }
-
-                        let bash_args = if name == "bash" { Some(&args) } else { None };
-                        if let Some(block_msg) = self.check_planning_gate(&name, bash_args, None) {
-                            self.emit_progress(Self::blocked_progress(&block_msg));
-                            self.session.add_message(Message::tool_request(
-                                id.clone(),
-                                name.clone(),
-                                args.clone(),
-                            ));
-                            self.session
-                                .add_message(Message::tool_result(id, block_msg));
-                            self.note_planning_block(instruction)?;
-                            continue;
-                        }
-                        if let Some(block_msg) =
-                            self.check_pre_execution_verification_gate(&name, bash_args, None)
-                        {
-                            self.emit_progress(Self::blocked_progress(&block_msg));
-                            self.session.add_message(Message::tool_request(
-                                id.clone(),
-                                name.clone(),
-                                args.clone(),
-                            ));
-                            self.session
-                                .add_message(Message::tool_result(id, block_msg));
-                            continue;
-                        }
-
-                        let bash_cmd = if name == "bash" {
-                            Some(Self::extract_bash_command(&args))
-                        } else {
-                            None
-                        };
-                        self.emit_progress(self.tool_progress(&name, &args));
-                        self.check_cancelled(ctx)?;
-                        let mut result = match tool.execute(args.clone(), &tool_ctx) {
-                            Ok(r) => r,
-                            Err(e) => {
-                                self.session.add_message(Message::tool_request(
-                                    id.clone(),
-                                    name.clone(),
-                                    args.clone(),
-                                ));
-                                self.session.add_message(Message::tool_result(
-                                    id,
-                                    format!("error: tool execution failed: {}", e),
-                                ));
-                                continue;
-                            }
-                        };
-                        self.check_cancelled(ctx)?;
-
-                        let mut execution_started_by_bash = false;
-                        if name == "bash" {
-                            let class = if let Some(cmd_str) = &bash_cmd {
-                                Self::classify_bash_command(cmd_str)
-                            } else {
-                                BashCommandClass::MutationRisk
-                            };
-                            if let Some(cmd) = bash_cmd {
-                                let exit_code = extract_exit_code(&result);
-                                self.bash_history.borrow_mut().push((
-                                    cmd,
-                                    result.clone(),
-                                    exit_code,
-                                ));
-                            }
-                            if matches!(
-                                class,
-                                BashCommandClass::MutationRisk | BashCommandClass::Verification
-                            ) {
-                                let found_new_change =
-                                    self.reconcile_changed_files(&ctx.workspace_root);
-                                if found_new_change {
-                                    execution_started_by_bash = true;
-                                }
-                            }
-                            if class == BashCommandClass::MutationRisk {
-                                execution_started_by_bash = true;
-                            }
-                        }
-
-                        if let Some(hooks) = self.hooks.get(&name) {
-                            result = hooks.run_post_hooks(&name, &args, &result, &tool_ctx);
-                        }
-
-                        if execution_started_by_bash {
-                            self.mark_execution_started();
-                        }
-
-                        self.track_changed_file(&name, &args);
-
-                        if Self::is_mutation_tool(&name) {
-                            self.reconcile_changed_files(&ctx.workspace_root);
-                            self.mark_execution_started();
-                            self.maybe_escalate_to_planning();
-                        }
-
-                        if Self::is_plan_tool(&name) {
-                            if self.plan_exists() {
-                                self.planning_gate_active = false;
-                                self.clear_planning_block_state();
-                            }
-                        }
-
-                        self.session
-                            .add_message(Message::tool_request(id.clone(), name, args));
-                        self.session.add_message(Message::tool_result(id, result));
+                        self.execute_single_tool_call(
+                            ctx,
+                            instruction,
+                            call.id,
+                            call.name,
+                            call.args,
+                        )?;
                     }
                     empty_response_retries = 0;
-                    if self.session.message_count() > self.options.max_messages_before_truncation {
-                        let keep_recent = self.options.max_messages_before_truncation / 2;
-                        self.session.truncate_history(keep_recent);
-                    }
+                    self.maybe_truncate_history();
                 }
                 ProviderResponse::RequiresInput => {
                     return Err(Error::Session(
@@ -1981,14 +1745,12 @@ path = "src/lib.rs"
     }
 
     #[test]
-    fn test_final_text_response_is_rejected_until_execution_started() {
+    fn test_text_response_accepted_after_plan_creation() {
         let (_temp, ctx) = create_temp_crate();
         let mut agent = make_plan_required_agent(vec![
             assistant_message("done before plan"),
             update_plan_call("plan"),
-            assistant_message("done before execution"),
-            write_lib_call("write", "pub fn answer() -> u32 {\n    46\n}\n"),
-            assistant_message("done after execution"),
+            assistant_message("done after plan"),
         ]);
 
         let result = agent
@@ -1998,9 +1760,9 @@ path = "src/lib.rs"
             )
             .unwrap();
 
-        assert!(result.starts_with("done after execution"));
-        assert!(result.contains("- src/lib.rs"));
-        assert!(!result.contains("done before execution"));
+        // Text response before plan should be redirected; text after plan is accepted.
+        assert!(result.starts_with("done after plan"));
+        assert!(!result.contains("done before plan"));
     }
 
     #[test]

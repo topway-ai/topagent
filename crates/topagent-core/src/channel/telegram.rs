@@ -47,18 +47,11 @@ impl TelegramAdapter {
     }
 
     pub fn get_me(&self) -> Result<TelegramUser, ChannelError> {
-        let response = self
-            .send_client
+        self.send_client
             .get(self.api_url("getMe"))
             .send()?
-            .json::<TelegramResponse<TelegramUser>>()?;
-
-        if !response.ok {
-            return Err(ChannelError::Telegram(
-                response.description.unwrap_or_default(),
-            ));
-        }
-        Ok(response.result)
+            .json::<TelegramResponse<TelegramUser>>()?
+            .into_result()
     }
 
     pub fn get_updates(
@@ -81,20 +74,12 @@ impl TelegramAdapter {
             allowed_updates: allowed_updates.map(|u| u.iter().map(|s| s.to_string()).collect()),
         };
 
-        let response = self
-            .poll_client
+        self.poll_client
             .get(self.api_url("getUpdates"))
             .json(&params)
             .send()?
-            .json::<TelegramResponse<Vec<TelegramUpdate>>>()?;
-
-        if !response.ok {
-            return Err(ChannelError::Telegram(
-                response.description.unwrap_or_default(),
-            ));
-        }
-
-        Ok(response.result)
+            .json::<TelegramResponse<Vec<TelegramUpdate>>>()?
+            .into_result()
     }
 
     pub fn send_message_to_chat(
@@ -114,20 +99,12 @@ impl TelegramAdapter {
         };
 
         self.send_with_retry(|| {
-            let response = self
-                .send_client
+            self.send_client
                 .post(self.api_url("sendMessage"))
                 .json(&params)
                 .send()?
-                .json::<TelegramResponse<TelegramMessage>>()?;
-
-            if !response.ok {
-                return Err(ChannelError::Telegram(
-                    response.description.unwrap_or_default(),
-                ));
-            }
-
-            Ok(response.result)
+                .json::<TelegramResponse<TelegramMessage>>()?
+                .into_result()
         })
     }
 
@@ -151,20 +128,12 @@ impl TelegramAdapter {
         };
 
         self.send_with_retry(|| {
-            let response = self
-                .send_client
+            self.send_client
                 .post(self.api_url("editMessageText"))
                 .json(&params)
                 .send()?
-                .json::<TelegramResponse<TelegramMessage>>()?;
-
-            if !response.ok {
-                return Err(ChannelError::Telegram(
-                    response.description.unwrap_or_default(),
-                ));
-            }
-
-            Ok(response.result)
+                .json::<TelegramResponse<TelegramMessage>>()?
+                .into_result()
         })
     }
 
@@ -174,19 +143,14 @@ impl TelegramAdapter {
             url: Option<String>,
         }
 
-        let response = self
+        let info: WebhookInfo = self
             .send_client
             .get(self.api_url("getWebhookInfo"))
             .send()?
-            .json::<TelegramResponse<WebhookInfo>>()?;
+            .json::<TelegramResponse<WebhookInfo>>()?
+            .into_result()?;
 
-        if !response.ok {
-            return Err(ChannelError::Telegram(
-                response.description.unwrap_or_default(),
-            ));
-        }
-
-        Ok(response.result.url.is_some_and(|url| !url.is_empty()))
+        Ok(info.url.is_some_and(|url| !url.is_empty()))
     }
 
     /// Retries a send/edit closure on transient HTTP errors with exponential backoff.
@@ -253,6 +217,16 @@ pub struct TelegramResponse<T> {
     result: T,
     #[serde(rename = "description")]
     description: Option<String>,
+}
+
+impl<T> TelegramResponse<T> {
+    fn into_result(self) -> Result<T, ChannelError> {
+        if self.ok {
+            Ok(self.result)
+        } else {
+            Err(ChannelError::Telegram(self.description.unwrap_or_default()))
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

@@ -29,11 +29,13 @@ It will then:
 Check health, manage the service, or remove the setup:
 
 ```bash
-topagent status
-topagent service start
-topagent service stop
-topagent service restart
-topagent uninstall
+topagent status                  # show setup and service status
+topagent service start           # start the background service
+topagent service stop            # stop the background service
+topagent service restart         # restart the background service
+topagent service install         # install service (alternative to topagent install)
+topagent service uninstall       # remove service and config only
+topagent uninstall               # remove everything including the binary
 ```
 
 Then:
@@ -43,6 +45,7 @@ Then:
 3. Send: `Summarize this repository and tell me the main entry points.`
 4. Send `/stop` if you want to cancel the current task.
 5. Send `/reset` if you want to clear the saved conversation history for that chat.
+6. Send `/help` at any time to see the bot commands and configuration.
 
 First local one-shot run:
 
@@ -64,11 +67,12 @@ topagent telegram --workspace /path/to/your/repo
 
 Service notes:
 
-- `topagent install` enables and starts the background Telegram service immediately.
+- `topagent install` enables and starts the background Telegram service immediately. Re-running it updates the config and restarts the service.
 - `topagent service restart` reloads the installed bot process without changing config.
 - Chat history survives service restarts because it is stored in the configured workspace.
 - `/reset` clears the persisted history for the current Telegram chat.
-- `topagent uninstall` removes the managed service/config and also removes the installed `topagent` binary when you run it from that installed location. If you run it from a source checkout, the checkout binary is preserved.
+- `topagent uninstall` removes the managed service, config, and removes the installed `topagent` binary. From a source checkout, the binary is preserved.
+- `topagent service uninstall` removes only the service and config, leaving the binary intact.
 
 If this fails:
 
