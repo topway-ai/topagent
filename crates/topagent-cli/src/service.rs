@@ -126,20 +126,16 @@ pub(crate) fn run_uninstall() -> Result<()> {
 
 pub(crate) fn print_service_installed(
     headline: &str,
-    env_path: &Path,
+    _env_path: &Path,
     workspace: Option<&PathBuf>,
 ) {
     println!("{}", headline);
-    println!("Service: {}", TELEGRAM_SERVICE_UNIT_NAME);
-    println!("Started: yes");
-    println!("Config file: {}", env_path.display());
     if let Some(ws) = workspace {
         println!("Workspace: {}", ws.display());
     }
-    println!("Inspect:");
-    println!("  topagent status");
-    println!("  systemctl --user status {}", TELEGRAM_SERVICE_UNIT_NAME);
-    println!("  journalctl --user -u {} -f", TELEGRAM_SERVICE_UNIT_NAME);
+    println!();
+    println!("Open a private chat with your bot and send a message to start.");
+    println!("Run `topagent status` to check service health.");
 }
 
 // ── Install helpers ──

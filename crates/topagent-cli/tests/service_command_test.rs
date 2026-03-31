@@ -223,9 +223,8 @@ fn test_install_prompts_creates_install_adjacent_workspace_and_starts_service() 
     assert!(stdout.contains("OpenRouter API key:"));
     assert!(stdout.contains("Telegram bot token:"));
     assert!(stdout.contains("TopAgent installed."));
-    assert!(stdout.contains("Started: yes"));
-    assert!(stdout.contains(&harness.env_path().display().to_string()));
     assert!(stdout.contains(&harness.workspace_path().display().to_string()));
+    assert!(stdout.contains("Open a private chat with your bot"));
     assert!(stdout.contains("topagent status"));
 
     assert!(harness.workspace_path().is_dir());
