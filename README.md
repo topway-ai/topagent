@@ -1,53 +1,26 @@
 # TopAgent
 
-Install TopAgent on Xubuntu:
+A local coding agent that reads your repository, plans changes, and executes them using shell commands and file tools. Runs as a CLI for one-shot tasks or as a Telegram bot for ongoing interaction.
+
+Uses [OpenRouter](https://openrouter.ai/) for LLM access. Default model: `minimax/minimax-m2.7`.
+
+## Install
+
+Download the latest release binary (Linux x86_64):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/topway-ai/topagent/main/scripts/install.sh | bash
 ```
 
-The one-line installer downloads the latest Linux release binary. If it has access to your terminal, it will immediately launch the interactive `topagent install` setup flow from that installed binary.
+The installer places `topagent` in `~/.cargo/bin/` and optionally launches the interactive setup.
 
-Telegram local setup:
-
-```bash
-topagent install
-```
-
-TopAgent will prompt for:
-
-- your OpenRouter API key
-- your Telegram bot token
-
-It will then:
-
-- create a default `workspace/` directory next to the installed binary, or in the repo root when running from source
-- write a managed config/env file under `~/.config/topagent/`
-- install and start the `topagent-telegram.service` user service
-- persist Telegram chat history under `workspace/.topagent/telegram-history/`
-
-Check health, manage the service, or remove the setup:
+To build from source instead:
 
 ```bash
-topagent status                  # show setup and service status
-topagent service start           # start the background service
-topagent service stop            # stop the background service
-topagent service restart         # restart the background service
-topagent service install         # install service (alternative to topagent install)
-topagent service uninstall       # remove service and config only
-topagent uninstall               # remove everything including the binary
+TOPAGENT_INSTALL_USE_CARGO=1 curl -fsSL https://raw.githubusercontent.com/topway-ai/topagent/main/scripts/install.sh | bash
 ```
 
-Then:
-
-1. Open a private chat with your bot.
-2. Send `/start` and confirm the workspace path is correct.
-3. Send: `Summarize this repository and tell me the main entry points.`
-4. Send `/stop` if you want to cancel the current task.
-5. Send `/reset` if you want to clear the saved conversation history for that chat.
-6. Send `/help` at any time to see the bot commands and configuration.
-
-First local one-shot run:
+## Quick start: one-shot
 
 ```bash
 export OPENROUTER_API_KEY="your_openrouter_key"
@@ -55,50 +28,82 @@ cd /path/to/your/repo
 topagent "summarize this repository"
 ```
 
-Press `Ctrl-C` once to request a stop. Press it again to force exit.
+Press Ctrl-C once to request a graceful stop. Press again to force exit.
 
-Foreground debugging:
+## Quick start: Telegram bot
 
 ```bash
-export OPENROUTER_API_KEY="your_openrouter_key"
-export TELEGRAM_BOT_TOKEN="123456:ABCdefYourBotToken"
-topagent telegram --workspace /path/to/your/repo
+topagent install
 ```
 
-Service notes:
+This prompts for your OpenRouter API key and Telegram bot token (from [BotFather](https://t.me/BotFather)), then:
 
-- `topagent install` enables and starts the background Telegram service immediately. Re-running it updates the config and restarts the service.
-- `topagent service restart` reloads the installed bot process without changing config.
-- Chat history survives service restarts because it is stored in the configured workspace.
-- `/reset` clears the persisted history for the current Telegram chat.
-- `topagent uninstall` removes the managed service, config, and removes the installed `topagent` binary. From a source checkout, the binary is preserved.
-- `topagent service uninstall` removes only the service and config, leaving the binary intact.
+- creates a workspace directory for the agent to operate in
+- writes a managed config file under `~/.config/topagent/`
+- installs and starts a `topagent-telegram.service` systemd user service
 
-If this fails:
+Then open a private chat with your bot and send a message.
 
-- `topagent: command not found`
-  Run `source "$HOME/.cargo/env"`
+### Bot commands
 
-- `A C compiler is required`
-  Run `sudo apt update && sudo apt install -y build-essential`
+| Command  | Action                             |
+|----------|------------------------------------|
+| `/start` | Show configuration and help        |
+| `/help`  | Same as /start                     |
+| `/stop`  | Cancel the currently running task  |
+| `/reset` | Clear saved conversation history   |
 
-- `OpenRouter API key required`
-  Run `topagent install`, or export `OPENROUTER_API_KEY` for one-shot / foreground debugging
+### Service management
 
-- `Workspace path does not exist`
-  Run TopAgent from the repo you want to use, pass `--workspace /path/to/repo`, or let `topagent install` create the default workspace
+```bash
+topagent status              # show setup and service health
+topagent service start       # start the background service
+topagent service stop        # stop the background service
+topagent service restart     # restart the background service
+topagent uninstall           # remove service, config, and installed binary
+```
 
-- `Telegram bot token required` or `Telegram bot token looks invalid`
-  Run `topagent install` and enter a real `TELEGRAM_BOT_TOKEN` from BotFather
+Re-running `topagent install` updates the config and restarts the service.
 
-- `Telegram webhook is configured`
-  Remove the webhook, then run `topagent telegram` again
+See [docs/operations.md](docs/operations.md) for full operational details.
 
-- `systemd user services are unavailable`
-  Log into a normal Linux desktop session where `systemctl --user` works, then run `topagent install` again
+## Global flags
 
-Current limits:
+| Flag                  | Default        | Description                        |
+|-----------------------|----------------|------------------------------------|
+| `--api-key`           | `$OPENROUTER_API_KEY` | OpenRouter API key            |
+| `--provider`          | `openrouter`   | LLM provider                       |
+| `--model`             | `minimax/minimax-m2.7` | Model identifier (OpenRouter format) |
+| `--workspace`         | current directory (one-shot) or auto-created (install) | Workspace path |
+| `--max-steps`         | `50`           | Maximum agent loop iterations      |
+| `--max-retries`       | `3`            | Maximum provider retry attempts    |
+| `--timeout-secs`      | `120`          | Provider request timeout           |
 
-- private chats only
-- text messages only
-- one workspace per process
+## Project instructions
+
+Place a `TOPAGENT.md` file in your workspace root to give the agent project-specific guidance. The agent reads it automatically at the start of each task.
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| `topagent: command not found` | `source "$HOME/.cargo/env"` |
+| `A C compiler is required` | `sudo apt install -y build-essential` |
+| `OpenRouter API key required` | Set `--api-key` or `OPENROUTER_API_KEY` |
+| `Workspace path does not exist` | Run from a repo, pass `--workspace`, or run `topagent install` |
+| `Telegram bot token looks invalid` | Get a valid token from BotFather |
+| `Telegram webhook is configured` | Remove the webhook, then retry |
+| `systemd user services are unavailable` | Log into a desktop session where `systemctl --user` works |
+
+## Current limitations
+
+- Telegram: private chats only, text messages only
+- One workspace per process
+- OpenRouter is the only supported provider
+- Linux only (systemd required for background service)
+
+## Documentation
+
+- [Overview](docs/overview.md) -- what TopAgent is, design goals, capabilities, limitations
+- [Architecture](docs/architecture.md) -- crate structure, modules, runtime flows
+- [Operations](docs/operations.md) -- install, service lifecycle, persistence, troubleshooting
