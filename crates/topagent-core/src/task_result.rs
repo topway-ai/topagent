@@ -126,7 +126,7 @@ impl TaskResult {
         }
         let total = commands.len();
         let failed = commands.iter().filter(|c| c.exit_code != 0).count();
-        let last_passed = commands.last().map_or(false, |c| c.exit_code == 0);
+        let last_passed = commands.last().is_some_and(|c| c.exit_code == 0);
 
         if failed == 0 {
             if total == 1 {

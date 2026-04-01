@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 use topagent_core::{
-    model::{ModelRoute, ProviderId, RoutingPolicy, TaskCategory},
+    model::{ModelRoute, ProviderId},
     RuntimeOptions,
 };
 
@@ -120,9 +120,8 @@ pub(crate) fn require_telegram_token(token: Option<String>) -> Result<String> {
 
 pub(crate) fn build_route(provider: String, model: Option<String>) -> Result<ModelRoute> {
     let provider_id = ProviderId::parse(&provider).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let mut route = RoutingPolicy::select_route(TaskCategory::Default, model.as_deref());
-    route.provider_id = provider_id;
-    Ok(route)
+    let base = ModelRoute::with_override(model.as_deref());
+    Ok(ModelRoute::new(provider_id, base.model_id))
 }
 
 pub(crate) fn resolve_telegram_mode_config(

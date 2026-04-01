@@ -27,7 +27,7 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 | `provider` | Provider trait, response types |
 | `openrouter` | OpenRouter API implementation |
 | `provider_factory` | Create provider from route config |
-| `model` | ModelRoute, ProviderId, RoutingPolicy |
+| `model` | ModelRoute, ProviderId |
 | `runtime` | RuntimeOptions (step limits, timeouts, truncation thresholds) |
 | `tools/` | Tool trait, ToolRegistry, built-in tools (read, write, edit, bash, git_*) |
 | `tool_genesis` | Dynamic tool creation: design, propose, approve, implement, repair |

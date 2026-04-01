@@ -90,19 +90,16 @@ impl SecretRegistry {
         }
 
         // Layer 2: pattern-based redaction (only allocates when a pattern matches)
-        match TELEGRAM_TOKEN_RE.replace_all(&result, REDACTED) {
-            Cow::Owned(s) => result = Cow::Owned(s),
-            Cow::Borrowed(_) => {}
+        if let Cow::Owned(s) = TELEGRAM_TOKEN_RE.replace_all(&result, REDACTED) {
+            result = Cow::Owned(s);
         }
-        match SK_KEY_RE.replace_all(&result, REDACTED) {
-            Cow::Owned(s) => result = Cow::Owned(s),
-            Cow::Borrowed(_) => {}
+        if let Cow::Owned(s) = SK_KEY_RE.replace_all(&result, REDACTED) {
+            result = Cow::Owned(s);
         }
-        match KEY_VALUE_RE.replace_all(&result, |caps: &regex::Captures| {
+        if let Cow::Owned(s) = KEY_VALUE_RE.replace_all(&result, |caps: &regex::Captures| {
             format!("{}{}", &caps[1], REDACTED)
         }) {
-            Cow::Owned(s) => result = Cow::Owned(s),
-            Cow::Borrowed(_) => {}
+            result = Cow::Owned(s);
         }
 
         result
@@ -117,7 +114,7 @@ fn contains_shell_command(haystack: &str, needle: &str) -> bool {
             && haystack
                 .as_bytes()
                 .get(needle.len())
-                .map_or(false, |&b| b == b' ' || b == b'\n')
+                .is_some_and(|&b| b == b' ' || b == b'\n')
         || haystack.contains(&["| ", needle].concat())
         || haystack.contains(&["|", needle].concat())
         || haystack.contains(&["; ", needle].concat())

@@ -33,7 +33,7 @@ pub use error::{Error, Result};
 pub use external::{ExternalTool, ExternalToolEffect, ExternalToolRegistry, ExternalToolResult};
 pub use hooks::{HookRegistry, ToolHooks};
 pub use message::{Content, Message, Role};
-pub use model::{ModelRoute, ProviderId, RoutingPolicy, TaskCategory};
+pub use model::{ModelRoute, ProviderId};
 pub use openrouter::OpenRouterProvider;
 pub use plan::{Plan, TaskMode, TodoItem, TodoStatus};
 pub use progress::{ProgressCallback, ProgressKind, ProgressUpdate};

@@ -1,5 +1,3 @@
-use crate::model::TaskCategory;
-
 #[derive(Debug, Clone)]
 pub struct RuntimeOptions {
     pub max_steps: usize,
@@ -10,7 +8,6 @@ pub struct RuntimeOptions {
     pub progress_heartbeat_secs: u64,
     pub max_messages_before_truncation: usize,
     pub require_plan: bool,
-    pub task_category: TaskCategory,
     pub research_model: Option<String>,
     pub edit_model: Option<String>,
     pub review_model: Option<String>,
@@ -27,7 +24,6 @@ impl Default for RuntimeOptions {
             progress_heartbeat_secs: 10,
             max_messages_before_truncation: 100,
             require_plan: true,
-            task_category: TaskCategory::Default,
             research_model: None,
             edit_model: None,
             review_model: None,
@@ -80,11 +76,6 @@ impl RuntimeOptions {
 
     pub fn with_require_plan(mut self, require_plan: bool) -> Self {
         self.require_plan = require_plan;
-        self
-    }
-
-    pub fn with_task_category(mut self, task_category: TaskCategory) -> Self {
-        self.task_category = task_category;
         self
     }
 

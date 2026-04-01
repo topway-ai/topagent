@@ -2,7 +2,6 @@ use std::sync::{Arc, RwLock};
 use tempfile::TempDir;
 use topagent_core::{
     context::ExecutionContext,
-    model::TaskCategory,
     tools::{BashTool, EditTool, GitDiffTool, ReadTool, Tool, WriteTool},
     Agent, CancellationToken, Content, Error, ExecutionStage, Message, ProgressKind,
     ProgressUpdate, Provider, ProviderResponse, Role, RuntimeOptions, TaskResult, ToolCallEntry,
@@ -1115,19 +1114,12 @@ fn test_verification_section_in_system_prompt() {
 fn test_runtime_options_defaults_include_require_plan() {
     let options = RuntimeOptions::default();
     assert!(options.require_plan, "require_plan should default to true");
-    assert_eq!(options.task_category, TaskCategory::Default);
 }
 
 #[test]
 fn test_runtime_options_builder_with_require_plan() {
     let options = RuntimeOptions::new().with_require_plan(false);
     assert!(!options.require_plan);
-}
-
-#[test]
-fn test_runtime_options_builder_with_task_category() {
-    let options = RuntimeOptions::new().with_task_category(TaskCategory::EditMutation);
-    assert_eq!(options.task_category, TaskCategory::EditMutation);
 }
 
 #[test]
@@ -2482,7 +2474,7 @@ fn test_text_response_during_planning_phase_is_redirected() {
         )),
     ]);
     let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
-    let (updates, callback) = capture_progress_updates();
+    let (_updates, callback) = capture_progress_updates();
     agent.set_progress_callback(Some(callback));
 
     let result = agent.run(&ctx, "refactor the entire codebase and then test it");

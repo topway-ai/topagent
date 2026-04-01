@@ -17,7 +17,7 @@ use topagent_core::{
 use tracing::{error, info, warn};
 
 use crate::config::*;
-use crate::managed_files::write_private_file;
+use crate::managed_files::write_managed_file;
 use crate::progress::LiveProgress;
 
 const TELEGRAM_HISTORY_VERSION: u32 = 1;
@@ -97,9 +97,7 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                     session_manager.notify_polling_recovered();
                 }
                 polling_retries = 0;
-                session_manager.collect_finished_tasks();
                 for update in updates {
-                    session_manager.collect_finished_tasks();
                     let Some(msg) = &update.message else { continue };
                     offset = update.update_id + 1;
                     let chat_id = msg.chat.id;
@@ -300,7 +298,7 @@ impl ChatHistoryStore {
         };
         let contents = serde_json::to_string_pretty(&history)
             .with_context(|| format!("failed to encode {}", path.display()))?;
-        write_private_file(&path, &contents)?;
+        write_managed_file(&path, &contents, true)?;
         Ok(path)
     }
 
@@ -331,7 +329,7 @@ pub(crate) struct ChatSessionManager {
 }
 
 pub(crate) enum SessionState {
-    Idle(Agent),
+    Idle(Box<Agent>),
     Running(RunningChatTask),
 }
 
@@ -416,7 +414,7 @@ impl ChatSessionManager {
         while let Ok(task) = self.completed_rx.try_recv() {
             self.persist_agent_history(task.chat_id, &task.agent);
             self.sessions
-                .insert(task.chat_id, SessionState::Idle(task.agent));
+                .insert(task.chat_id, SessionState::Idle(Box::new(task.agent)));
         }
     }
 
@@ -499,7 +497,7 @@ impl ChatSessionManager {
 
         let heartbeat_interval = Duration::from_secs(self.options.progress_heartbeat_secs);
         let mut agent = match self.sessions.remove(&chat_id) {
-            Some(SessionState::Idle(agent)) => agent,
+            Some(SessionState::Idle(agent)) => *agent,
             Some(SessionState::Running(task)) => {
                 self.sessions.insert(chat_id, SessionState::Running(task));
                 return vec![
@@ -825,7 +823,7 @@ mod tests {
             .join("chat-9001.json");
         assert!(history_path.is_file());
 
-        manager.sessions.insert(chat_id, SessionState::Idle(agent));
+        manager.sessions.insert(chat_id, SessionState::Idle(Box::new(agent)));
         manager.reset_chat(chat_id);
 
         assert!(!history_path.exists());

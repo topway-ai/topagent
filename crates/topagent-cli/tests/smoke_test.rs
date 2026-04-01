@@ -160,7 +160,7 @@ fn test_readme_documents_uninstall() {
     let readme = std::fs::read_to_string(repo_root.join("README.md")).unwrap();
 
     assert!(readme.contains("topagent uninstall"));
-    assert!(readme.contains("removes the installed `topagent` binary"));
+    assert!(readme.contains("remove service, config, and installed binary"));
 }
 
 #[test]
@@ -175,7 +175,7 @@ fn test_readme_documents_product_setup_commands() {
     assert!(readme.contains("topagent service start"));
     assert!(readme.contains("topagent service stop"));
     assert!(readme.contains("topagent service restart"));
-    assert!(readme.contains("downloads the latest Linux release binary"));
+    assert!(readme.contains("Download the latest release binary"));
 }
 
 #[test]

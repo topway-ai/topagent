@@ -1,7 +1,7 @@
 use crate::context::{ExecutionContext, ToolContext};
 use crate::external::{ExternalToolEffect, ExternalToolRegistry};
 use crate::hooks::HookRegistry;
-use crate::model::{ModelRoute, RoutingPolicy};
+use crate::model::ModelRoute;
 use crate::plan::{self, Plan};
 use crate::progress::{ProgressCallback, ProgressUpdate};
 use crate::project::get_project_instructions_or_error;
@@ -141,7 +141,7 @@ impl Agent {
         registry.add(Box::new(ImplementToolProposalTool::new()));
         registry.add(Box::new(ListToolProposalsTool::new()));
 
-        let resolved_route = RoutingPolicy::select_route(options.task_category, None);
+        let resolved_route = ModelRoute::default();
         Self {
             session: Session::new(),
             provider,
@@ -244,16 +244,13 @@ impl Agent {
             let bash_cmd = Self::extract_bash_command(args);
             return match Self::classify_bash_command(&bash_cmd) {
                 BashCommandClass::Verification => {
-                    ProgressUpdate::working(format!("Running tool: bash (verification)"))
+                    ProgressUpdate::working("Running tool: bash (verification)".to_string())
                 }
                 _ => ProgressUpdate::running_tool("bash"),
             };
         }
 
-        match name {
-            "write" | "edit" | "git_add" | "git_commit" => ProgressUpdate::running_tool(name),
-            _ => ProgressUpdate::running_tool(name),
-        }
+        ProgressUpdate::running_tool(name)
     }
 
     fn blocked_progress(reason: &str) -> ProgressUpdate {

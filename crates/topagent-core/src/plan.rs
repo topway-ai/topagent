@@ -295,12 +295,9 @@ pub fn should_use_plan(instruction: &str) -> bool {
 }
 
 pub fn should_require_research_plan_build(instruction: &str) -> bool {
-    match heuristic_fast_path(instruction) {
-        Some(result) => result,
-        // When called without an LLM, default to false — direct execution.
-        // The agent's classify_task method will use the LLM for this case.
-        None => false,
-    }
+    // When called without an LLM, default to false — direct execution.
+    // The agent's classify_task method will use the LLM for this case.
+    heuristic_fast_path(instruction).unwrap_or_default()
 }
 
 // ── Plan generation via LLM ──

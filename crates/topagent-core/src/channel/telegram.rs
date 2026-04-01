@@ -317,11 +317,7 @@ mod tests {
 
     #[test]
     fn test_send_client_timeout_is_short() {
-        assert!(
-            SEND_CLIENT_TIMEOUT_SECS <= 30,
-            "send client timeout ({}) should be short for quick API calls",
-            SEND_CLIENT_TIMEOUT_SECS,
-        );
+        const { assert!(SEND_CLIENT_TIMEOUT_SECS <= 30) };
     }
 
     #[test]

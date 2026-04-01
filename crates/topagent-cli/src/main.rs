@@ -142,10 +142,10 @@ fn main() -> Result<()> {
     };
 
     match command {
-        Some(Commands::Install) => return run_install(params),
-        Some(Commands::Status) => return run_status(),
-        Some(Commands::Uninstall) => return run_uninstall(),
-        Some(Commands::Service { command }) => return run_service_command(command, params),
+        Some(Commands::Install) => run_install(params),
+        Some(Commands::Status) => run_status(),
+        Some(Commands::Uninstall) => run_uninstall(),
+        Some(Commands::Service { command }) => run_service_command(command, params),
         Some(Commands::Telegram { token }) => run_telegram(token, params),
         Some(Commands::Run { instruction }) => run_one_shot(params, instruction),
         None => {

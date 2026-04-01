@@ -70,10 +70,11 @@ topagent uninstall           # remove service, config, and installed binary
 
 ### What topagent status shows
 
-- Whether the service unit file and env file exist
-- systemd service state (active, inactive, failed)
-- Config file path and workspace path
-- Last 15 lines of journal output
+- Whether setup and service are installed
+- systemd service state (enabled, active/inactive/failed)
+- Config file path, unit file path, and workspace path
+- Provider and model route (from config)
+- Hints when something is wrong (e.g., journal command to inspect logs)
 
 ### What topagent uninstall removes
 

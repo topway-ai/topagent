@@ -94,18 +94,6 @@ pub(crate) fn write_managed_file(path: &Path, contents: &str, private: bool) -> 
     Ok(())
 }
 
-pub(crate) fn write_private_file(path: &Path, contents: &str) -> Result<()> {
-    std::fs::write(path, contents)
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("failed to set permissions on {}", path.display()))?;
-    }
-    Ok(())
-}
-
 pub(crate) fn remove_managed_file(path: &Path, label: &str) -> Result<Option<String>> {
     if !path.exists() {
         return Ok(None);

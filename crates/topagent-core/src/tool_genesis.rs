@@ -194,6 +194,7 @@ impl ToolGenesis {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn create_tool(
         &self,
         requirement: &str,

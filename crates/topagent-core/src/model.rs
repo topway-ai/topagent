@@ -54,36 +54,10 @@ impl ModelRoute {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskCategory {
-    Default,
-    Summarization,
-    EditMutation,
-    Review,
-}
-
-impl TaskCategory {
-    pub fn all() -> &'static [Self] {
-        &[
-            Self::Default,
-            Self::Summarization,
-            Self::EditMutation,
-            Self::Review,
-        ]
-    }
-}
-
-pub struct RoutingPolicy;
-
-impl RoutingPolicy {
-    pub fn select_route(category: TaskCategory, model_override: Option<&str>) -> ModelRoute {
-        let model = model_override.unwrap_or("minimax/minimax-m2.7");
-        match category {
-            TaskCategory::Default => ModelRoute::openrouter(model),
-            TaskCategory::Summarization => ModelRoute::openrouter(model),
-            TaskCategory::EditMutation => ModelRoute::openrouter(model),
-            TaskCategory::Review => ModelRoute::openrouter(model),
-        }
+impl ModelRoute {
+    /// Build a route with an optional model override, falling back to the default model.
+    pub fn with_override(model_override: Option<&str>) -> Self {
+        Self::openrouter(model_override.unwrap_or("minimax/minimax-m2.7"))
     }
 }
 
@@ -138,28 +112,15 @@ mod tests {
     }
 
     #[test]
-    fn test_routing_policy_default_route() {
-        let route = RoutingPolicy::select_route(TaskCategory::Default, None);
+    fn test_with_override_uses_default_model() {
+        let route = ModelRoute::with_override(None);
         assert_eq!(route.provider_id, ProviderId::OpenRouter);
         assert_eq!(route.model_id, "minimax/minimax-m2.7");
     }
 
     #[test]
-    fn test_routing_policy_with_model_override() {
-        let route = RoutingPolicy::select_route(TaskCategory::Default, Some("custom/model"));
+    fn test_with_override_uses_custom_model() {
+        let route = ModelRoute::with_override(Some("custom/model"));
         assert_eq!(route.model_id, "custom/model");
-    }
-
-    #[test]
-    fn test_routing_policy_all_categories_return_valid_route() {
-        for &category in TaskCategory::all() {
-            let route = RoutingPolicy::select_route(category, None);
-            assert_eq!(route.provider_id, ProviderId::OpenRouter);
-        }
-    }
-
-    #[test]
-    fn test_task_category_all_has_four_values() {
-        assert_eq!(TaskCategory::all().len(), 4);
     }
 }
