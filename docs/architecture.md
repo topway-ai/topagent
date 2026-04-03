@@ -7,8 +7,8 @@ TopAgent is a Rust workspace with two crates:
 ```
 topagent/
   crates/
-    topagent-core/     # Agent engine, tools, providers, channels
-    topagent-cli/      # CLI binary, Telegram loop, service management
+    topagent-core/     # Agent loop, tools, provider seam, Telegram primitives
+    topagent-cli/      # CLI binary, Telegram runtime, memory, service management
   scripts/
     install.sh         # One-line installer
 ```
@@ -30,17 +30,16 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 | `model` | ModelRoute, ProviderId |
 | `runtime` | RuntimeOptions (step limits, timeouts, truncation thresholds) |
 | `tools/` | Tool trait, ToolRegistry, built-in tools (read, write, edit, bash, git_*) |
-| `tool_genesis` | Dynamic tool creation: design, propose, approve, implement, repair |
+| `tool_genesis` | Workspace tool genesis split into storage core, generated-tool tools, and proposal tools |
 | `tool_spec` | Tool specification (name, description, parameters) |
 | `context` | ExecutionContext (workspace root, cancel token, secrets), ToolContext |
 | `secrets` | SecretRegistry: value-based and pattern-based redaction |
 | `plan` | Plan struct, TodoItem, task modes |
 | `project` | Load `TOPAGENT.md` project instructions |
 | `prompt` | System prompt construction |
-| `commands` | Custom command registry (loaded from `.topagent/commands.json`) |
-| `external` | External tool trait and registry (for tool genesis tools) |
+| `external` | Workspace external tool registry loaded from `.topagent/external-tools.json` (and legacy `commands.json`) |
 | `hooks` | Pre/post tool hooks |
-| `channel/` | ChannelAdapter trait, TelegramAdapter (polling-based) |
+| `channel/` | Telegram adapter and channel error types |
 | `cancel` | CancellationToken for graceful shutdown |
 | `progress` | Progress update types for UI feedback |
 | `file_util` | File hashing for change detection |
@@ -70,7 +69,7 @@ CLI parses args
   -> create ExecutionContext with workspace + cancel token + memory briefing
   -> create Agent with provider + tools + options
   -> agent.run(ctx, instruction)
-     -> load TOPAGENT.md, external tools, commands
+     -> load TOPAGENT.md, workspace external tools, generated tools
      -> build system prompt (+ project instructions + workspace memory briefing)
      -> classify task complexity -> activate planning gate if non-trivial
      -> enter step loop:

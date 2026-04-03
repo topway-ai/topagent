@@ -46,6 +46,8 @@ use std::sync::{Arc, Mutex};
 const MAX_PLANNING_BLOCKS_BEFORE_FAILURE: usize = 5;
 const MAX_PLANNING_PHASE_STEPS: usize = 10;
 const MAX_PLANNING_REDIRECTS: usize = 2;
+const WORKSPACE_EXTERNAL_TOOLS_PATH: &str = ".topagent/external-tools.json";
+const LEGACY_WORKSPACE_COMMANDS_PATH: &str = "commands.json";
 
 /// Number of distinct files changed without a plan before we consider
 /// escalating a non-plan-required task into plan-required.
@@ -1125,13 +1127,14 @@ impl Agent {
         self.external_tools.load_from_str(&content)
     }
 
-    pub fn load_commands_from_workspace(&mut self, workspace_root: &Path) -> Result<()> {
-        let commands_path = workspace_root.join("commands.json");
-        if !commands_path.exists() {
-            return Ok(());
+    pub fn load_workspace_external_tools(&mut self, workspace_root: &Path) -> Result<()> {
+        for path in Self::workspace_external_tool_paths(workspace_root) {
+            if !path.exists() {
+                continue;
+            }
+            let content = std::fs::read_to_string(&path).map_err(Error::Io)?;
+            self.external_tools.load_from_str(&content)?;
         }
-        let content = std::fs::read_to_string(&commands_path).map_err(Error::Io)?;
-        self.external_tools.load_from_str(&content)?;
         Ok(())
     }
 
@@ -1158,74 +1161,13 @@ impl Agent {
 
     fn run_inner(&mut self, ctx: &ExecutionContext, instruction: &str) -> Result<String> {
         self.check_cancelled(ctx)?;
-        self.external_tools = ExternalToolRegistry::new();
-        self.load_commands_from_workspace(&ctx.workspace_root)?;
-        self.load_generated_tools_from_workspace(&ctx.workspace_root)?;
-
-        self.changed_files.borrow_mut().clear();
-        self.bash_history.borrow_mut().clear();
-        *self.external_tool_ran.borrow_mut() = false;
-
-        self.capture_run_baseline(&ctx.workspace_root);
-
-        self.planning_required_for_task =
-            self.options.require_plan && self.classify_task(instruction);
-        self.task_mode = if self.planning_required_for_task {
-            self.classify_task_mode(instruction)
-        } else {
-            plan::TaskMode::PlanAndExecute
-        };
-        self.planning_gate_active = self.planning_required_for_task;
-        self.planning_escalated = false;
-        self.planning_block_count = 0;
-
-        self.execution_stage = ExecutionStage::Research;
+        self.reload_workspace_tools(&ctx.workspace_root)?;
+        self.reset_run_state(&ctx.workspace_root, instruction);
         self.emit_progress(self.current_working_progress());
 
         self.session.add_message(Message::user(instruction));
-
-        let mut system_prompt =
-            prompt::build_system_prompt(&self.tools.specs(), &self.external_tools.specs());
-
-        match get_project_instructions_or_error(&ctx.workspace_root)? {
-            Some(project_instructions) => {
-                system_prompt.push_str("\n## Project Instructions (from TOPAGENT.md)\n\n");
-                system_prompt.push_str(&project_instructions);
-                system_prompt.push('\n');
-            }
-            None => {
-                system_prompt.push_str(prompt::NO_PI_MD_NOTE);
-            }
-        }
-
-        if let Some(memory_context) = ctx.memory_context() {
-            system_prompt.push_str("\n## Workspace Memory\n\n");
-            system_prompt.push_str(memory_context);
-            system_prompt.push('\n');
-        }
-
-        if let Ok(plan) = self.plan.lock() {
-            if !plan.is_empty() {
-                system_prompt.push_str("\n## Current Plan\n\n");
-                system_prompt.push_str(&plan.format_for_display());
-            }
-        }
-
-        if self.planning_gate_active {
-            if let Ok(plan) = self.plan.lock() {
-                if plan.is_empty() {
-                    system_prompt.push_str(
-                        "\n## Planning Required\n\n\
-                        This task is non-trivial. Before making changes:\n\
-                        1. Research: inspect relevant files and git context\n\
-                        2. Plan: use update_plan to create a plan with clear steps\n\
-                        3. Build: execute plan items, updating status as you complete each step\n\n",
-                    );
-                }
-            }
-        }
-
-        self.session.set_system_prompt(&system_prompt);
+        self.session
+            .set_system_prompt(&self.build_run_system_prompt(ctx)?);
 
         let mut steps = 0;
         let mut empty_response_retries = 0;
@@ -1354,6 +1296,78 @@ impl Agent {
                 }
             }
         }
+    }
+
+    fn workspace_external_tool_paths(workspace_root: &Path) -> [std::path::PathBuf; 2] {
+        [
+            workspace_root.join(LEGACY_WORKSPACE_COMMANDS_PATH),
+            workspace_root.join(WORKSPACE_EXTERNAL_TOOLS_PATH),
+        ]
+    }
+
+    fn reload_workspace_tools(&mut self, workspace_root: &Path) -> Result<()> {
+        self.external_tools = ExternalToolRegistry::new();
+        self.load_workspace_external_tools(workspace_root)?;
+        self.load_generated_tools_from_workspace(workspace_root)?;
+        Ok(())
+    }
+
+    fn reset_run_state(&mut self, workspace_root: &Path, instruction: &str) {
+        self.changed_files.borrow_mut().clear();
+        self.bash_history.borrow_mut().clear();
+        *self.external_tool_ran.borrow_mut() = false;
+        self.capture_run_baseline(workspace_root);
+
+        self.planning_required_for_task =
+            self.options.require_plan && self.classify_task(instruction);
+        self.task_mode = if self.planning_required_for_task {
+            self.classify_task_mode(instruction)
+        } else {
+            plan::TaskMode::PlanAndExecute
+        };
+        self.planning_gate_active = self.planning_required_for_task;
+        self.planning_escalated = false;
+        self.planning_block_count = 0;
+        self.execution_stage = ExecutionStage::Research;
+    }
+
+    fn build_run_system_prompt(&self, ctx: &ExecutionContext) -> Result<String> {
+        let mut system_prompt =
+            prompt::build_system_prompt(&self.tools.specs(), &self.external_tools.specs());
+
+        match get_project_instructions_or_error(&ctx.workspace_root)? {
+            Some(project_instructions) => {
+                system_prompt.push_str("\n## Project Instructions (from TOPAGENT.md)\n\n");
+                system_prompt.push_str(&project_instructions);
+                system_prompt.push('\n');
+            }
+            None => system_prompt.push_str(prompt::NO_PI_MD_NOTE),
+        }
+
+        if let Some(memory_context) = ctx.memory_context() {
+            system_prompt.push_str("\n## Workspace Memory\n\n");
+            system_prompt.push_str(memory_context);
+            system_prompt.push('\n');
+        }
+
+        if let Ok(plan) = self.plan.lock() {
+            if !plan.is_empty() {
+                system_prompt.push_str("\n## Current Plan\n\n");
+                system_prompt.push_str(&plan.format_for_display());
+            }
+        }
+
+        if self.planning_gate_active && !self.plan_exists() {
+            system_prompt.push_str(
+                "\n## Planning Required\n\n\
+                This task is non-trivial. Before making changes:\n\
+                1. Research: inspect relevant files and git context\n\
+                2. Plan: use update_plan to create a plan with clear steps\n\
+                3. Build: execute plan items, updating status as you complete each step\n\n",
+            );
+        }
+
+        Ok(system_prompt)
     }
 
     fn build_proof_of_work(&self, response: &str, workspace_root: &Path) -> String {
@@ -1600,9 +1614,11 @@ path = "src/lib.rs"
         )
     }
 
-    fn write_commands_json(temp: &TempDir, entries: serde_json::Value) {
+    fn write_workspace_external_tools_json(temp: &TempDir, entries: serde_json::Value) {
+        let topagent_dir = temp.path().join(".topagent");
+        fs::create_dir_all(&topagent_dir).unwrap();
         fs::write(
-            temp.path().join("commands.json"),
+            topagent_dir.join("external-tools.json"),
             serde_json::to_string(&entries).unwrap(),
         )
         .unwrap();
@@ -1759,7 +1775,7 @@ path = "src/lib.rs"
     #[test]
     fn test_external_tool_execution_effect_unlocks_verification_without_diff() {
         let (temp, ctx) = create_temp_crate();
-        write_commands_json(
+        write_workspace_external_tools_json(
             &temp,
             serde_json::json!([
                 {
@@ -1794,7 +1810,7 @@ path = "src/lib.rs"
     #[test]
     fn test_verification_remains_blocked_without_real_execution_signal() {
         let (temp, ctx) = create_temp_crate();
-        write_commands_json(
+        write_workspace_external_tools_json(
             &temp,
             serde_json::json!([
                 {

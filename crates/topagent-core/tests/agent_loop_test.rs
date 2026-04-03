@@ -32,6 +32,12 @@ fn make_tools_with_git() -> Vec<Box<dyn Tool>> {
     ]
 }
 
+fn write_workspace_external_tools(temp: &TempDir, contents: &str) {
+    let topagent_dir = temp.path().join(".topagent");
+    std::fs::create_dir_all(&topagent_dir).unwrap();
+    std::fs::write(topagent_dir.join("external-tools.json"), contents).unwrap();
+}
+
 struct TransientFailProvider {
     fail_count: Arc<RwLock<usize>>,
     responses: Vec<ProviderResponse>,
@@ -538,17 +544,15 @@ fn test_runtime_options_builder() {
 }
 
 #[test]
-fn test_agent_loads_commands_from_workspace() {
+fn test_agent_loads_external_tools_from_workspace_state_dir() {
     let temp = TempDir::new().unwrap();
-    let commands_json = temp.path().join("commands.json");
-    std::fs::write(
-        &commands_json,
+    write_workspace_external_tools(
+        &temp,
         r#"[
             {"name": "greet", "description": "Say hello", "command": "echo", "args_template": "hello {name}"},
             {"name": "version", "description": "Get version", "command": "echo", "args_template": "v1.0.0"}
         ]"#,
-    )
-    .unwrap();
+    );
 
     let root = temp.path().to_path_buf();
     let ctx = ExecutionContext::new(root);
@@ -574,7 +578,7 @@ fn test_agent_loads_commands_from_workspace() {
 }
 
 #[test]
-fn test_agent_commands_json_missing_is_ok() {
+fn test_agent_external_tools_file_missing_is_ok() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().to_path_buf();
     let ctx = ExecutionContext::new(root);
@@ -696,10 +700,39 @@ fn test_genesis_tools_become_external_after_verification() {
 }
 
 #[test]
-fn test_agent_commands_json_invalid_fails() {
+fn test_agent_legacy_commands_json_is_still_loaded() {
     let temp = TempDir::new().unwrap();
-    let commands_json = temp.path().join("commands.json");
-    std::fs::write(&commands_json, "invalid json {").unwrap();
+    std::fs::write(
+        temp.path().join("commands.json"),
+        r#"[{"name": "legacy_tool", "description": "Legacy tool", "command": "echo", "argv_template": ["hello"]}]"#,
+    )
+    .unwrap();
+
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root);
+
+    struct TestProvider;
+    impl Provider for TestProvider {
+        fn complete(
+            &self,
+            _messages: &[Message],
+            _route: &topagent_core::ModelRoute,
+        ) -> topagent_core::Result<ProviderResponse> {
+            Ok(ProviderResponse::Message(Message::assistant("done")))
+        }
+    }
+
+    let mut agent = Agent::new(Box::new(TestProvider), make_tools());
+    let result = agent.run(&ctx, "test");
+
+    assert!(result.is_ok());
+    assert!(agent.external_tools().get("legacy_tool").is_some());
+}
+
+#[test]
+fn test_agent_external_tools_file_invalid_fails() {
+    let temp = TempDir::new().unwrap();
+    write_workspace_external_tools(&temp, "invalid json {");
 
     let root = temp.path().to_path_buf();
     let ctx = ExecutionContext::new(root);
@@ -1663,10 +1696,10 @@ fn test_blocked_then_plan_then_complete_has_single_final_completed_state() {
 #[test]
 fn test_external_tool_blocked_before_plan() {
     let temp = tempfile::TempDir::new().unwrap();
-    std::fs::write(
-        temp.path().join("commands.json"),
-        r#"[{"name": "my_tool", "description": "test", "command": "echo", "argv_template": ["hello"]}]"#
-    ).unwrap();
+    write_workspace_external_tools(
+        &temp,
+        r#"[{"name": "my_tool", "description": "test", "command": "echo", "argv_template": ["hello"]}]"#,
+    );
     std::fs::write(temp.path().join("test.txt"), "content").unwrap();
 
     let root = temp.path().to_path_buf();
@@ -1831,10 +1864,10 @@ fn test_external_tool_mutation_tracked() {
         .unwrap();
 
     // Create external tool that touches a file
-    std::fs::write(
-        temp.path().join("commands.json"),
-        r#"[{"name": "create_file", "description": "Create a file", "command": "touch", "argv_template": ["{filename}"]}]"#
-    ).unwrap();
+    write_workspace_external_tools(
+        &temp,
+        r#"[{"name": "create_file", "description": "Create a file", "command": "touch", "argv_template": ["{filename}"]}]"#,
+    );
 
     let root = temp.path().to_path_buf();
     let ctx = ExecutionContext::new(root);

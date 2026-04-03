@@ -1,6 +1,6 @@
 # TopAgent
 
-A local coding agent that reads your repository, plans changes, and executes them using shell commands and file tools. Runs as a CLI for one-shot tasks or as a Telegram bot for ongoing interaction.
+A Telegram-first, CLI-backed local coding agent that reads one repository, plans changes, and executes them with file tools and local shell commands.
 
 Uses [OpenRouter](https://openrouter.ai/) for LLM access. Default model: `minimax/minimax-m2.7`.
 
@@ -78,7 +78,7 @@ See [docs/operations.md](docs/operations.md) for full operational details.
 | Flag                  | Default        | Description                        |
 |-----------------------|----------------|------------------------------------|
 | `--api-key`           | `$OPENROUTER_API_KEY` | OpenRouter API key            |
-| `--provider`          | `openrouter`   | LLM provider                       |
+| `--provider`          | `openrouter`   | LLM provider (OpenRouter only today) |
 | `--model`             | `minimax/minimax-m2.7` | Model identifier (OpenRouter format) |
 | `--workspace`         | current directory (one-shot) or auto-created (install) | Workspace path |
 | `--max-steps`         | `50`           | Maximum agent loop iterations      |

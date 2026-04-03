@@ -1,4 +1,3 @@
-use super::adapter::{ChannelAdapter, ChannelError, IncomingMessage, OutgoingMessage};
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -16,6 +15,33 @@ const SEND_CLIENT_TIMEOUT_SECS: u64 = 15;
 
 /// Maximum retries for transient HTTP failures on send/edit calls.
 const SEND_MAX_RETRIES: usize = 3;
+
+#[derive(thiserror::Error, Debug)]
+pub enum ChannelError {
+    #[error("HTTP request failed: {0}")]
+    Http(String),
+
+    #[error("parse error: {0}")]
+    Parse(String),
+
+    #[error("telegram error: {0}")]
+    Telegram(String),
+
+    #[error("channel error: {0}")]
+    Other(String),
+}
+
+impl From<reqwest::Error> for ChannelError {
+    fn from(e: reqwest::Error) -> Self {
+        ChannelError::Http(e.to_string())
+    }
+}
+
+impl From<serde_json::Error> for ChannelError {
+    fn from(e: serde_json::Error) -> Self {
+        ChannelError::Parse(e.to_string())
+    }
+}
 
 #[derive(Clone)]
 pub struct TelegramAdapter {
@@ -177,36 +203,8 @@ impl TelegramAdapter {
         }
         unreachable!("loop always returns")
     }
-}
 
-impl ChannelAdapter for TelegramAdapter {
-    fn fetch_messages(&self) -> Result<Vec<IncomingMessage>, ChannelError> {
-        let updates = self.get_updates(None, Some(POLL_TIMEOUT_SECS), None)?;
-        let messages: Vec<IncomingMessage> = updates
-            .into_iter()
-            .filter_map(|update| {
-                let msg = update.message?;
-                if msg.chat.chat_type != "private" {
-                    return None;
-                }
-                let text = msg.text?;
-                Some(IncomingMessage {
-                    chat_id: msg.chat.id,
-                    text: Some(text),
-                    message_id: msg.message_id,
-                    is_command: false,
-                })
-            })
-            .collect();
-        Ok(messages)
-    }
-
-    fn send_message(&self, msg: OutgoingMessage) -> Result<(), ChannelError> {
-        self.send_message_to_chat(msg.chat_id, &msg.text)?;
-        Ok(())
-    }
-
-    fn acknowledge(&self, _chat_id: i64, _message_id: i64) -> Result<(), ChannelError> {
+    pub fn acknowledge(&self, _chat_id: i64, _message_id: i64) -> Result<(), ChannelError> {
         Ok(())
     }
 }

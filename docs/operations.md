@@ -109,10 +109,13 @@ workspace/.topagent/
   tools/                      # generated custom tools (manifests + scripts)
   tool-genesis/proposals/     # tool proposals awaiting approval
   telegram-history/           # per-chat transcript evidence files (JSON)
-  commands.json               # custom command definitions (if present)
+  external-tools.json         # workspace external tool definitions (if present)
 ```
 
 Created automatically as needed. Not removed by `topagent uninstall`.
+
+TopAgent still reads a legacy workspace-root `commands.json` file for compatibility, but
+`.topagent/external-tools.json` is the canonical location now.
 
 ## Persistence and reset
 

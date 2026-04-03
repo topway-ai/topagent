@@ -6,12 +6,8 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 use topagent_core::{
-    channel::{ChannelAdapter, OutgoingMessage},
-    context::ExecutionContext,
-    create_provider,
-    model::ModelRoute,
-    tools::default_tools,
-    Agent, CancellationToken, Message, ProgressCallback, ProgressUpdate, Role, RuntimeOptions,
+    context::ExecutionContext, create_provider, model::ModelRoute, tools::default_tools, Agent,
+    CancellationToken, Message, ProgressCallback, ProgressUpdate, Role, RuntimeOptions,
     TelegramAdapter, POLL_TIMEOUT_SECS,
 };
 use tracing::{error, info, warn};
@@ -205,8 +201,7 @@ fn send_telegram(
             Some(reg) => reg.redact(&chunk).into_owned(),
             None => chunk,
         };
-        let outgoing = OutgoingMessage { chat_id, text };
-        if let Err(e) = adapter.send_message(outgoing) {
+        if let Err(e) = adapter.send_message_to_chat(chat_id, &text) {
             error!("failed to send message: {}", e);
         }
     }
@@ -255,7 +250,7 @@ fn persist_messages_to_store(history_store: &ChatHistoryStore, chat_id: i64, mes
         return;
     }
 
-    match history_store.save(chat_id, &messages) {
+    match history_store.save(chat_id, messages) {
         Ok(path) => {
             info!(
                 "saved {} Telegram history messages for chat {} to {}",
