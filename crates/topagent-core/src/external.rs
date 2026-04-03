@@ -1,5 +1,5 @@
 use crate::context::ToolContext;
-use crate::file_util::format_command_output_with_limit;
+use crate::file_util::{format_command_output_with_limit, run_command_with_cancellation};
 use crate::secrets::SECRET_ENV_VARS;
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
@@ -146,12 +146,9 @@ impl ExternalTool {
             cmd.env_remove(var_name);
         }
 
-        let output = cmd.output().map_err(|e| {
-            Error::ToolFailed(format!(
-                "failed to execute external tool '{}': {}",
-                self.config.name, e
-            ))
-        })?;
+        let display_name = format!("external tool '{}'", self.config.name);
+        let output =
+            run_command_with_cancellation(&mut cmd, ctx.exec.cancel_token(), &display_name)?;
 
         if !output.status.success() {
             let summary =
@@ -339,8 +336,11 @@ fn build_input_schema_from_argv_template(argv_template: &[String]) -> serde_json
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cancel::CancellationToken;
     use crate::context::{ExecutionContext, ToolContext};
     use crate::runtime::RuntimeOptions;
+    use std::thread;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     #[test]
@@ -589,5 +589,26 @@ mod tests {
 
         assert!(output.contains("Output truncated"));
         assert!(output.contains("showing first 5"));
+    }
+
+    #[test]
+    fn test_external_tool_honors_cancellation() {
+        let tool = ExternalTool::new("sleep", "sleep tool", "sleep")
+            .with_argv_template(vec!["30".to_string()]);
+
+        let temp = TempDir::new().unwrap();
+        let token = CancellationToken::new();
+        let exec =
+            ExecutionContext::new(temp.path().to_path_buf()).with_cancel_token(token.clone());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            token.cancel();
+        });
+
+        let err = tool.execute(&serde_json::json!({}), &ctx).unwrap_err();
+        assert!(matches!(err, Error::Stopped(_)));
     }
 }

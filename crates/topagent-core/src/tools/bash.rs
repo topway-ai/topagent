@@ -1,14 +1,11 @@
 use crate::context::ToolContext;
-use crate::file_util::format_command_output_with_limit;
+use crate::file_util::{format_command_output_with_limit, run_command_with_cancellation};
 use crate::secrets;
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::io::Read;
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
-use std::thread;
-use std::time::Duration;
 use tracing::warn;
 
 /// Paths the sandbox allows read-only access to.
@@ -133,71 +130,12 @@ impl crate::tools::Tool for BashTool {
             c
         };
 
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
         // Strip secret-bearing environment variables from child processes.
         for var_name in secrets::SECRET_ENV_VARS {
             cmd.env_remove(var_name);
         }
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| Error::ToolFailed(format!("failed to execute command: {}", e)))?;
-
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or_else(|| Error::ToolFailed("failed to capture stdout".into()))?;
-        let stderr = child
-            .stderr
-            .take()
-            .ok_or_else(|| Error::ToolFailed("failed to capture stderr".into()))?;
-
-        let stdout_reader = thread::spawn(move || {
-            let mut stdout = stdout;
-            let mut buf = Vec::new();
-            let _ = stdout.read_to_end(&mut buf);
-            buf
-        });
-        let stderr_reader = thread::spawn(move || {
-            let mut stderr = stderr;
-            let mut buf = Vec::new();
-            let _ = stderr.read_to_end(&mut buf);
-            buf
-        });
-
-        let status = loop {
-            if ctx.exec.is_cancelled() {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                return Err(Error::Stopped("user requested stop".into()));
-            }
-
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) => thread::sleep(Duration::from_millis(100)),
-                Err(e) => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    let _ = stdout_reader.join();
-                    let _ = stderr_reader.join();
-                    return Err(Error::ToolFailed(format!(
-                        "failed while waiting for command: {}",
-                        e
-                    )));
-                }
-            }
-        };
-
-        let stdout = stdout_reader.join().unwrap_or_default();
-        let stderr = stderr_reader.join().unwrap_or_default();
-        let output = Output {
-            status,
-            stdout,
-            stderr,
-        };
+        let output = run_command_with_cancellation(&mut cmd, ctx.exec.cancel_token(), "command")?;
         Ok(format_command_output_with_limit(
             output,
             ctx.runtime.max_bash_output_bytes,
@@ -212,6 +150,8 @@ mod tests {
     use crate::runtime::RuntimeOptions;
     use crate::tools::Tool;
     use crate::CancellationToken;
+    use std::thread;
+    use std::time::Duration;
     use tempfile::TempDir;
 
     #[test]

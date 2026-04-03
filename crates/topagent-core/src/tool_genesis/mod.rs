@@ -1,5 +1,6 @@
 use crate::error::Error;
 use crate::external::{resolve_argv_template, ExternalTool};
+use crate::file_util::run_command_with_cancellation;
 use crate::secrets::SECRET_ENV_VARS;
 use crate::Result;
 use serde::{Deserialize, Serialize};
@@ -257,12 +258,7 @@ impl ToolGenesis {
             cmd.env_remove(var_name);
         }
 
-        let output = cmd.output().map_err(|e| {
-            Error::ToolFailed(format!(
-                "verification failed to run generated script: {}",
-                e
-            ))
-        })?;
+        let output = run_command_with_cancellation(&mut cmd, None, "generated tool verification")?;
 
         let exit_match = output.status.code() == Some(spec.expected_exit);
         let output_contains_match = if let Some(ref expected) = spec.expected_output_contains {
