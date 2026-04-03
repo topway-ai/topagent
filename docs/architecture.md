@@ -30,7 +30,7 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 | `model` | ModelRoute, ProviderId |
 | `runtime` | RuntimeOptions (step limits, timeouts, truncation thresholds) |
 | `tools/` | Tool trait, ToolRegistry, built-in tools (read, write, edit, bash, git_*) |
-| `tool_genesis` | Workspace tool genesis split into storage core, generated-tool tools, and proposal tools |
+| `tool_genesis` | Workspace-local tool creation, repair, deletion, verification, loading, and generated-tool health scanning |
 | `tool_spec` | Tool specification (name, description, parameters) |
 | `context` | ExecutionContext (workspace root, cancel token, secrets), ToolContext |
 | `secrets` | SecretRegistry: value-based and pattern-based redaction |
@@ -69,8 +69,9 @@ CLI parses args
   -> create ExecutionContext with workspace + cancel token + memory briefing
   -> create Agent with provider + tools + options
   -> agent.run(ctx, instruction)
-     -> load TOPAGENT.md, workspace external tools, generated tools
-     -> build system prompt (+ project instructions + workspace memory briefing)
+     -> classify tool-authoring intent for this task
+     -> load TOPAGENT.md, workspace external tools, generated tools, generated-tool warnings
+     -> build system prompt (+ project instructions + workspace memory briefing + generated-tool warnings)
      -> classify task complexity -> activate planning gate if non-trivial
      -> enter step loop:
         1. send conversation to LLM

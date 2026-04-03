@@ -24,7 +24,7 @@ It uses an LLM (via OpenRouter) to decide what to do at each step. The agent loo
 - Keep a tiny workspace memory index in `.topagent/MEMORY.md`
 - Load compact topic notes from `.topagent/topics/` only when relevant
 - Search prior Telegram transcripts as evidence without restoring them wholesale
-- Create and manage custom tools (tool genesis)
+- Create, repair, list, and remove workspace-local custom tools when the task explicitly asks for tool work
 - Save reusable plans and lessons to `.topagent/`
 
 ## What it is not
@@ -72,7 +72,7 @@ The agent runs up to 50 steps by default (configurable with `--max-steps`). If i
 | `save_plan` | Archive a plan to `.topagent/plans/` |
 | `save_lesson` | Save a lesson note to `.topagent/lessons/` |
 
-Custom tools can be created via the tool genesis system and are stored in `.topagent/tools/`.
+Custom tools are stored in `.topagent/tools/`. Tool-authoring tools are only exposed when the task is explicitly about creating, repairing, listing, or deleting workspace tools. Broken generated tools are reported as workspace warnings.
 
 ## Current limitations
 

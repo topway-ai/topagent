@@ -107,12 +107,13 @@ workspace/.topagent/
   plans/                      # saved plans (JSON)
   lessons/                    # saved lesson notes (JSON)
   tools/                      # generated custom tools (manifests + scripts)
-  tool-genesis/proposals/     # tool proposals awaiting approval
   telegram-history/           # per-chat transcript evidence files (JSON)
   external-tools.json         # workspace external tool definitions (if present)
 ```
 
 Created automatically as needed. Not removed by `topagent uninstall`.
+
+If a generated tool has an invalid manifest or is missing `script.sh`, TopAgent keeps the artifact on disk but reports it as a workspace warning instead of silently loading it.
 
 TopAgent still reads a legacy workspace-root `commands.json` file for compatibility, but
 `.topagent/external-tools.json` is the canonical location now.

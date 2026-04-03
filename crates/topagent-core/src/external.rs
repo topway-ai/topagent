@@ -131,48 +131,13 @@ impl ExternalTool {
                 self.config.name
             ))
         })?;
-
-        let placeholders = placeholder_names(argv_template);
-
-        if let Some(obj) = args.as_object() {
-            for key in obj.keys() {
-                if !placeholders.contains(&key.as_str()) {
-                    return Err(Error::InvalidInput(format!(
-                        "unknown input '{}' for tool '{}'",
-                        key, self.config.name
-                    )));
-                }
-            }
-        }
-
-        for placeholder in &placeholders {
-            if args.get(*placeholder).is_none() {
-                return Err(Error::InvalidInput(format!(
-                    "missing required input '{}' for tool '{}'",
-                    placeholder, self.config.name
-                )));
-            }
-        }
+        let resolved_argv = resolve_argv_template(argv_template, args, &self.config.name)?;
 
         let mut cmd = Command::new(&self.config.command);
         cmd.current_dir(&ctx.exec.workspace_root);
 
-        for part in argv_template {
-            if part.starts_with('{') && part.ends_with('}') {
-                let key = &part[1..part.len() - 1];
-                if let Some(value) = args.get(key) {
-                    if let Some(s) = value.as_str() {
-                        cmd.arg(s);
-                    } else {
-                        return Err(Error::InvalidInput(format!(
-                            "input '{}' for tool '{}' must be a string",
-                            key, self.config.name
-                        )));
-                    }
-                }
-            } else {
-                cmd.arg(part);
-            }
+        for part in resolved_argv {
+            cmd.arg(part);
         }
 
         let output = cmd.output().map_err(|e| {
@@ -289,6 +254,58 @@ impl RawExternalToolConfig {
             effect: self.effect,
         })
     }
+}
+
+pub(crate) fn resolve_argv_template(
+    argv_template: &[String],
+    args: &serde_json::Value,
+    tool_name: &str,
+) -> Result<Vec<String>> {
+    let placeholders = placeholder_names(argv_template);
+
+    if let Some(obj) = args.as_object() {
+        for key in obj.keys() {
+            if !placeholders.contains(&key.as_str()) {
+                return Err(Error::InvalidInput(format!(
+                    "unknown input '{}' for tool '{}'",
+                    key, tool_name
+                )));
+            }
+        }
+    }
+
+    for placeholder in &placeholders {
+        if args.get(*placeholder).is_none() {
+            return Err(Error::InvalidInput(format!(
+                "missing required input '{}' for tool '{}'",
+                placeholder, tool_name
+            )));
+        }
+    }
+
+    let mut resolved = Vec::with_capacity(argv_template.len());
+    for part in argv_template {
+        if part.starts_with('{') && part.ends_with('}') {
+            let key = &part[1..part.len() - 1];
+            let value = args.get(key).ok_or_else(|| {
+                Error::InvalidInput(format!(
+                    "missing required input '{}' for tool '{}'",
+                    key, tool_name
+                ))
+            })?;
+            let value = value.as_str().ok_or_else(|| {
+                Error::InvalidInput(format!(
+                    "input '{}' for tool '{}' must be a string",
+                    key, tool_name
+                ))
+            })?;
+            resolved.push(value.to_string());
+        } else {
+            resolved.push(part.clone());
+        }
+    }
+
+    Ok(resolved)
 }
 
 fn placeholder_names(argv_template: &[String]) -> Vec<&str> {

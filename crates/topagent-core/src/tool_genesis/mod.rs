@@ -1,13 +1,13 @@
 use crate::error::Error;
-use crate::external::ExternalTool;
+use crate::external::{resolve_argv_template, ExternalTool};
 use crate::Result;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
 const TOOLS_DIR: &str = ".topagent/tools";
-const GENESIS_DIR: &str = ".topagent/tool-genesis";
-const PROPOSALS_DIR: &str = "proposals";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolInput {
@@ -25,7 +25,6 @@ fn default_true() -> bool {
 pub struct ToolManifest {
     pub name: String,
     pub description: String,
-    pub command: String,
     pub verification: Option<VerificationSpec>,
     #[serde(default)]
     pub verified: bool,
@@ -36,73 +35,14 @@ pub struct ToolManifest {
     pub manifest_version: Option<u32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct VerificationSpec {
+    #[serde(default)]
+    pub verification_inputs: BTreeMap<String, String>,
     pub verification_args: Vec<String>,
     #[serde(default)]
     pub expected_exit: i32,
     #[serde(default)]
-    pub expected_output_contains: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct GenesisRecord {
-    pub requirement: String,
-    pub tool_name: String,
-    pub verification_passed: bool,
-    pub repair_attempts: usize,
-    pub final_outcome: String,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum ProposalStatus {
-    #[default]
-    Proposed,
-    Approved,
-    Implemented,
-    Verified,
-    Rejected,
-}
-
-impl std::fmt::Display for ProposalStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ProposalStatus::Proposed => write!(f, "proposed"),
-            ProposalStatus::Approved => write!(f, "approved"),
-            ProposalStatus::Implemented => write!(f, "implemented"),
-            ProposalStatus::Verified => write!(f, "verified"),
-            ProposalStatus::Rejected => write!(f, "rejected"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ToolDesign {
-    pub requirement: String,
-    pub name: String,
-    pub description: String,
-    pub rationale: String,
-    pub inputs: Vec<ToolInput>,
-    pub argv_template: Vec<String>,
-    pub verification: VerificationPlan,
-    pub status: ProposalStatus,
-    pub created_at: String,
-    #[serde(default)]
-    pub approved_at: Option<String>,
-    #[serde(default)]
-    pub rejected_at: Option<String>,
-    #[serde(default)]
-    pub reason: Option<String>,
-    #[serde(default)]
-    pub revised_at: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct VerificationPlan {
-    pub verification_args: Vec<String>,
-    pub expected_exit: i32,
     pub expected_output_contains: Option<String>,
 }
 
@@ -119,83 +59,9 @@ impl ToolGenesis {
         self.workspace_root.join(TOOLS_DIR)
     }
 
-    pub fn genesis_dir(&self) -> PathBuf {
-        self.workspace_root.join(GENESIS_DIR)
-    }
-
-    pub fn proposals_dir(&self) -> PathBuf {
-        self.genesis_dir().join(PROPOSALS_DIR)
-    }
-
-    pub fn save_proposal(&self, design: &ToolDesign) -> Result<PathBuf> {
-        let proposals_dir = self.proposals_dir();
-        std::fs::create_dir_all(&proposals_dir)
-            .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
-
-        let proposal_path = proposals_dir.join(format!("{}.json", design.name));
-        let json =
-            serde_json::to_string_pretty(design).map_err(|e| Error::InvalidInput(e.to_string()))?;
-        std::fs::write(&proposal_path, json).map_err(Error::Io)?;
-        Ok(proposal_path)
-    }
-
-    pub fn load_proposal(&self, name: &str) -> Result<ToolDesign> {
-        let proposal_path = self.proposals_dir().join(format!("{}.json", name));
-        let content = std::fs::read_to_string(&proposal_path).map_err(Error::Io)?;
-        serde_json::from_str(&content).map_err(|e| Error::InvalidInput(e.to_string()))
-    }
-
-    pub fn list_proposals(&self) -> Result<Vec<ToolDesign>> {
-        let proposals_dir = self.proposals_dir();
-        if !proposals_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let mut proposals = Vec::new();
-        for entry in std::fs::read_dir(&proposals_dir).map_err(Error::Io)? {
-            let entry = entry.map_err(Error::Io)?;
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Ok(proposal) = serde_json::from_str::<ToolDesign>(&content) {
-                        proposals.push(proposal);
-                    }
-                }
-            }
-        }
-        Ok(proposals)
-    }
-
-    pub fn update_proposal_status(&self, name: &str, status: ProposalStatus) -> Result<()> {
-        let mut proposal = self.load_proposal(name)?;
-        proposal.status = status;
-        self.save_proposal(&proposal)?;
-        Ok(())
-    }
-
-    pub fn update_proposal_metadata(
-        &self,
-        name: &str,
-        status: ProposalStatus,
-        approved_at: Option<String>,
-        rejected_at: Option<String>,
-        reason: Option<String>,
-        revised_at: Option<String>,
-    ) -> Result<()> {
-        let mut proposal = self.load_proposal(name)?;
-        proposal.status = status;
-        proposal.approved_at = approved_at.or(proposal.approved_at);
-        proposal.rejected_at = rejected_at.or(proposal.rejected_at);
-        proposal.reason = reason.or(proposal.reason);
-        proposal.revised_at = revised_at.or(proposal.revised_at);
-        self.save_proposal(&proposal)?;
-        Ok(())
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn create_tool(
         &self,
-        requirement: &str,
         name: &str,
         description: &str,
         command: &str,
@@ -203,6 +69,7 @@ impl ToolGenesis {
         argv_template: Vec<String>,
         verification: Option<VerificationSpec>,
     ) -> Result<GenesisResult> {
+        validate_tool_name(name)?;
         let tool_dir = self.tools_dir().join(name);
         let manifest_path = tool_dir.join("manifest.json");
 
@@ -226,6 +93,20 @@ impl ToolGenesis {
             ));
         }
 
+        let manifest = ToolManifest {
+            name: name.to_string(),
+            description: description.to_string(),
+            verification: verification.clone(),
+            verified: false,
+            inputs,
+            argv_template,
+            manifest_version: Some(1),
+        };
+        validate_manifest_interface(&manifest)?;
+        if let Some(spec) = verification.as_ref() {
+            validate_verification_spec(&manifest, spec)?;
+        }
+
         std::fs::create_dir_all(&tool_dir)
             .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
 
@@ -237,17 +118,6 @@ impl ToolGenesis {
             std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
                 .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
         }
-
-        let manifest = ToolManifest {
-            name: name.to_string(),
-            description: description.to_string(),
-            command: command.to_string(),
-            verification: verification.clone(),
-            verified: false,
-            inputs,
-            argv_template,
-            manifest_version: Some(1),
-        };
 
         let manifest_json = serde_json::to_string_pretty(&manifest)
             .map_err(|e| Error::InvalidInput(e.to_string()))?;
@@ -266,24 +136,6 @@ impl ToolGenesis {
         } else {
             false
         };
-
-        let outcome = if verify_result {
-            "promoted".to_string()
-        } else if verification.is_some() {
-            "failed_verification".to_string()
-        } else {
-            "awaiting_verification".to_string()
-        };
-
-        let record = GenesisRecord {
-            requirement: requirement.to_string(),
-            tool_name: name.to_string(),
-            verification_passed: verify_result,
-            repair_attempts: 0,
-            final_outcome: outcome.clone(),
-            created_at: chrono_timestamp(),
-        };
-        self.write_genesis_record(&record)?;
 
         Ok(GenesisResult {
             success: verify_result || verification.is_none(),
@@ -308,6 +160,7 @@ impl ToolGenesis {
         new_argv_template: Option<Vec<String>>,
         new_verification: Option<&VerificationSpec>,
     ) -> Result<GenesisResult> {
+        validate_tool_name(name)?;
         let tool_dir = self.tools_dir().join(name);
         let manifest_path = tool_dir.join("manifest.json");
 
@@ -322,7 +175,6 @@ impl ToolGenesis {
         let mut manifest: ToolManifest =
             serde_json::from_str(&content).map_err(|e| Error::InvalidInput(e.to_string()))?;
 
-        manifest.command = new_command.to_string();
         if let Some(inputs) = new_inputs {
             manifest.inputs = inputs;
         }
@@ -334,6 +186,10 @@ impl ToolGenesis {
         }
         manifest.verified = false;
         manifest.manifest_version = Some(1);
+        validate_manifest_interface(&manifest)?;
+        if let Some(spec) = manifest.verification.as_ref() {
+            validate_verification_spec(&manifest, spec)?;
+        }
 
         let script_path = tool_dir.join("script.sh");
         std::fs::write(&script_path, new_command).map_err(Error::Io)?;
@@ -378,17 +234,24 @@ impl ToolGenesis {
     }
 
     pub fn verify_tool(&self, name: &str, spec: &VerificationSpec) -> Result<bool> {
+        validate_tool_name(name)?;
         let tool_dir = self.tools_dir().join(name);
+        let manifest_path = tool_dir.join("manifest.json");
         let script_path = tool_dir.join("script.sh");
 
-        if !script_path.exists() {
+        if !manifest_path.exists() || !script_path.exists() {
             return Ok(false);
         }
 
+        let content = std::fs::read_to_string(&manifest_path).map_err(Error::Io)?;
+        let manifest: ToolManifest =
+            serde_json::from_str(&content).map_err(|e| Error::InvalidInput(e.to_string()))?;
+        validate_manifest_interface(&manifest)?;
+        let verification_argv = verification_command_argv(&manifest, &script_path, spec)?;
+
         let mut cmd = Command::new("sh");
         cmd.current_dir(&self.workspace_root);
-        cmd.arg(&script_path);
-        for arg in &spec.verification_args {
+        for arg in verification_argv {
             cmd.arg(arg);
         }
 
@@ -412,95 +275,33 @@ impl ToolGenesis {
     }
 
     pub fn load_verified_tools(&self) -> Result<Vec<ExternalTool>> {
-        let tools_dir = self.tools_dir();
-        if !tools_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let mut tools = Vec::new();
-        for entry in std::fs::read_dir(tools_dir).map_err(Error::Io)? {
-            let entry = entry.map_err(Error::Io)?;
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let manifest_path = path.join("manifest.json");
-            if !manifest_path.exists() {
-                continue;
-            }
-            let content = match std::fs::read_to_string(&manifest_path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-            let manifest: ToolManifest = match serde_json::from_str(&content) {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-
-            if !manifest.verified {
-                continue;
-            }
-
-            let script_path = path.join("script.sh");
-            if !script_path.exists() {
-                continue;
-            }
-
-            if manifest.manifest_version.is_none() {
-                eprintln!(
-                    "tool '{}' has no manifest_version, skipping (regenerate with create_tool or repair_tool)",
-                    manifest.name
-                );
-                continue;
-            }
-
-            if let Err(e) = validate_manifest_interface(&manifest) {
-                eprintln!(
-                    "tool '{}' has invalid interface: {}, skipping",
-                    manifest.name, e
-                );
-                continue;
-            }
-
-            let mut full_argv = vec![script_path.display().to_string()];
-            full_argv.extend(manifest.argv_template.clone());
-
-            let input_schema = build_input_schema(&manifest.inputs);
-
-            let tool = ExternalTool::new(&manifest.name, &manifest.description, "sh")
-                .with_argv_template(full_argv)
-                .with_input_schema(input_schema);
-            tools.push(tool);
-        }
-        Ok(tools)
+        Ok(self.generated_tool_inventory()?.verified_tools)
     }
 
-    pub fn list_generated_tools(&self) -> Result<Vec<ToolManifest>> {
-        let tools_dir = self.tools_dir();
-        if !tools_dir.exists() {
-            return Ok(Vec::new());
+    pub fn list_generated_tools(&self) -> Result<Vec<GeneratedToolSummary>> {
+        Ok(self.generated_tool_inventory()?.summaries)
+    }
+
+    pub fn generated_tool_inventory(&self) -> Result<GeneratedToolInventory> {
+        let scanned = self.scan_generated_tools()?;
+        let mut summaries = Vec::with_capacity(scanned.len());
+        let mut verified_tools = Vec::new();
+
+        for entry in scanned {
+            summaries.push(entry.summary);
+            if let Some(tool) = entry.external_tool {
+                verified_tools.push(tool);
+            }
         }
 
-        let mut manifests = Vec::new();
-        for entry in std::fs::read_dir(tools_dir).map_err(Error::Io)? {
-            let entry = entry.map_err(Error::Io)?;
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
-            }
-            let manifest_path = path.join("manifest.json");
-            if !manifest_path.exists() {
-                continue;
-            }
-            let content = std::fs::read_to_string(&manifest_path).map_err(Error::Io)?;
-            let manifest: ToolManifest =
-                serde_json::from_str(&content).map_err(|e| Error::InvalidInput(e.to_string()))?;
-            manifests.push(manifest);
-        }
-        Ok(manifests)
+        Ok(GeneratedToolInventory {
+            summaries,
+            verified_tools,
+        })
     }
 
     pub fn delete_generated_tool(&self, name: &str) -> Result<()> {
+        validate_tool_name(name)?;
         let tool_dir = self.tools_dir().join(name);
         if !tool_dir.exists() {
             return Err(Error::InvalidInput(format!(
@@ -513,42 +314,127 @@ impl ToolGenesis {
         Ok(())
     }
 
-    fn write_genesis_record(&self, record: &GenesisRecord) -> Result<()> {
-        let genesis_dir = self.genesis_dir();
-        std::fs::create_dir_all(&genesis_dir)
-            .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
-
-        let filename = format!(
-            "{}-{}.json",
-            timestamp_for_filename(&record.created_at),
-            sanitize_filename(&record.tool_name)
-        );
-        let path = genesis_dir.join(filename);
-        let json =
-            serde_json::to_string_pretty(record).map_err(|e| Error::InvalidInput(e.to_string()))?;
-        std::fs::write(&path, json).map_err(Error::Io)?;
-        Ok(())
-    }
-
-    pub fn list_genesis_records(&self) -> Result<Vec<GenesisRecord>> {
-        let genesis_dir = self.genesis_dir();
-        if !genesis_dir.exists() {
+    fn scan_generated_tools(&self) -> Result<Vec<ScannedGeneratedTool>> {
+        let tools_dir = self.tools_dir();
+        if !tools_dir.exists() {
             return Ok(Vec::new());
         }
 
-        let mut records = Vec::new();
-        for entry in std::fs::read_dir(genesis_dir).map_err(Error::Io)? {
+        let mut paths = Vec::new();
+        for entry in std::fs::read_dir(tools_dir).map_err(Error::Io)? {
             let entry = entry.map_err(Error::Io)?;
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("json") {
-                continue;
+            if path.is_dir() {
+                paths.push(path);
             }
-            let content = std::fs::read_to_string(&path).map_err(Error::Io)?;
-            let record: GenesisRecord =
-                serde_json::from_str(&content).map_err(|e| Error::InvalidInput(e.to_string()))?;
-            records.push(record);
         }
-        Ok(records)
+        paths.sort();
+
+        Ok(paths
+            .iter()
+            .map(|path| self.scan_generated_tool(path))
+            .collect())
+    }
+
+    fn scan_generated_tool(&self, path: &Path) -> ScannedGeneratedTool {
+        let fallback_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("<unknown>")
+            .to_string();
+        let manifest_path = path.join("manifest.json");
+        if !manifest_path.exists() {
+            return ScannedGeneratedTool::invalid(
+                fallback_name,
+                "invalid generated tool artifact",
+                "missing manifest.json".to_string(),
+            );
+        }
+
+        let content = match std::fs::read_to_string(&manifest_path) {
+            Ok(content) => content,
+            Err(err) => {
+                return ScannedGeneratedTool::invalid(
+                    fallback_name,
+                    "invalid generated tool artifact",
+                    format!("failed to read manifest.json: {}", err),
+                );
+            }
+        };
+
+        let manifest: ToolManifest = match serde_json::from_str(&content) {
+            Ok(manifest) => manifest,
+            Err(err) => {
+                return ScannedGeneratedTool::invalid(
+                    fallback_name,
+                    "invalid generated tool artifact",
+                    format!("invalid manifest.json: {}", err),
+                );
+            }
+        };
+
+        let script_path = path.join("script.sh");
+        let load_warning = if manifest.manifest_version.is_none() {
+            Some(
+                "missing manifest_version; recreate or repair the tool to make it usable"
+                    .to_string(),
+            )
+        } else if let Err(err) = validate_manifest_interface(&manifest) {
+            Some(format!("invalid interface: {}", err))
+        } else if !script_path.exists() {
+            Some("missing script.sh".to_string())
+        } else {
+            None
+        };
+
+        let external_tool = if manifest.verified && load_warning.is_none() {
+            Some(external_tool_from_manifest(&manifest, &script_path))
+        } else {
+            None
+        };
+
+        ScannedGeneratedTool {
+            summary: GeneratedToolSummary {
+                name: manifest.name.clone(),
+                description: manifest.description.clone(),
+                verified: manifest.verified,
+                load_warning,
+            },
+            external_tool,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedToolSummary {
+    pub name: String,
+    pub description: String,
+    pub verified: bool,
+    pub load_warning: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GeneratedToolInventory {
+    pub summaries: Vec<GeneratedToolSummary>,
+    pub verified_tools: Vec<ExternalTool>,
+}
+
+struct ScannedGeneratedTool {
+    summary: GeneratedToolSummary,
+    external_tool: Option<ExternalTool>,
+}
+
+impl ScannedGeneratedTool {
+    fn invalid(name: String, description: &str, warning: String) -> Self {
+        Self {
+            summary: GeneratedToolSummary {
+                name,
+                description: description.to_string(),
+                verified: false,
+                load_warning: Some(warning),
+            },
+            external_tool: None,
+        }
     }
 }
 
@@ -561,25 +447,25 @@ pub struct GenesisResult {
     pub repair_attempts: usize,
 }
 
-fn chrono_timestamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let dur = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = dur.as_secs();
-    let nanos = dur.subsec_nanos();
-    format!("{}.{:09}", secs, nanos)
-}
-
-fn timestamp_for_filename(ts: &str) -> String {
-    ts.replace(".", "-").replace(":", "-")
-}
-
-fn sanitize_filename(name: &str) -> String {
-    name.replace("/", "_").replace(" ", "_")
+fn validate_tool_name(name: &str) -> Result<()> {
+    if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        Ok(())
+    } else {
+        Err(Error::InvalidInput(
+            "tool name must be alphanumeric + underscore only".to_string(),
+        ))
+    }
 }
 
 fn validate_manifest_interface(manifest: &ToolManifest) -> Result<()> {
+    validate_tool_name(&manifest.name)?;
+
+    if !manifest.inputs.is_empty() && manifest.argv_template.is_empty() {
+        return Err(Error::InvalidInput(
+            "if inputs are defined, argv_template must also be defined".to_string(),
+        ));
+    }
+
     let mut input_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for input in &manifest.inputs {
         if !input_names.insert(input.name.as_str()) {
@@ -610,6 +496,105 @@ fn validate_manifest_interface(manifest: &ToolManifest) -> Result<()> {
     Ok(())
 }
 
+fn validate_verification_spec(manifest: &ToolManifest, spec: &VerificationSpec) -> Result<()> {
+    let _ = verification_invocation_for_manifest(manifest, spec)?;
+    Ok(())
+}
+
+enum VerificationInvocation {
+    RuntimePayload(serde_json::Value),
+    LegacyPositional(Vec<String>),
+}
+
+fn verification_invocation_for_manifest(
+    manifest: &ToolManifest,
+    spec: &VerificationSpec,
+) -> Result<VerificationInvocation> {
+    if !spec.verification_inputs.is_empty() {
+        let known_inputs: std::collections::HashSet<&str> = manifest
+            .inputs
+            .iter()
+            .map(|input| input.name.as_str())
+            .collect();
+        for key in spec.verification_inputs.keys() {
+            if !known_inputs.contains(key.as_str()) {
+                return Err(Error::InvalidInput(format!(
+                    "verification input '{}' does not match any declared tool input",
+                    key
+                )));
+            }
+        }
+
+        let payload = serde_json::Value::Object(
+            spec.verification_inputs
+                .iter()
+                .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
+                .collect(),
+        );
+        resolve_argv_template(&manifest.argv_template, &payload, &manifest.name)?;
+        return Ok(VerificationInvocation::RuntimePayload(payload));
+    }
+
+    if !manifest.inputs.is_empty() || !manifest.argv_template.is_empty() {
+        if manifest.inputs.is_empty() {
+            if !spec.verification_args.is_empty() {
+                return Err(Error::InvalidInput(format!(
+                    "tool '{}' has no declared inputs; verification_args cannot add extra runtime arguments",
+                    manifest.name
+                )));
+            }
+
+            let payload = serde_json::json!({});
+            resolve_argv_template(&manifest.argv_template, &payload, &manifest.name)?;
+            return Ok(VerificationInvocation::RuntimePayload(payload));
+        }
+
+        if spec.verification_args.len() != manifest.inputs.len() {
+            return Err(Error::InvalidInput(format!(
+                "tool '{}' verification_args must provide exactly {} values to match declared inputs; use verification_inputs for named verification",
+                manifest.name,
+                manifest.inputs.len()
+            )));
+        }
+
+        let payload = serde_json::Value::Object(
+            manifest
+                .inputs
+                .iter()
+                .zip(spec.verification_args.iter())
+                .map(|(input, value)| {
+                    (input.name.clone(), serde_json::Value::String(value.clone()))
+                })
+                .collect(),
+        );
+        resolve_argv_template(&manifest.argv_template, &payload, &manifest.name)?;
+        return Ok(VerificationInvocation::RuntimePayload(payload));
+    }
+
+    Ok(VerificationInvocation::LegacyPositional(
+        spec.verification_args.clone(),
+    ))
+}
+
+fn verification_command_argv(
+    manifest: &ToolManifest,
+    script_path: &Path,
+    spec: &VerificationSpec,
+) -> Result<Vec<String>> {
+    let mut argv = vec![script_path.display().to_string()];
+    match verification_invocation_for_manifest(manifest, spec)? {
+        VerificationInvocation::RuntimePayload(payload) => {
+            argv.extend(resolve_argv_template(
+                &manifest.argv_template,
+                &payload,
+                &manifest.name,
+            )?);
+        }
+        VerificationInvocation::LegacyPositional(args) => argv.extend(args),
+    }
+    Ok(argv)
+}
+
 fn build_input_schema(inputs: &[ToolInput]) -> serde_json::Value {
     let mut properties = serde_json::Map::new();
     let mut required = Vec::new();
@@ -632,15 +617,21 @@ fn build_input_schema(inputs: &[ToolInput]) -> serde_json::Value {
     })
 }
 
+fn external_tool_from_manifest(manifest: &ToolManifest, script_path: &Path) -> ExternalTool {
+    let mut full_argv = vec![script_path.display().to_string()];
+    full_argv.extend(manifest.argv_template.clone());
+
+    let input_schema = build_input_schema(&manifest.inputs);
+
+    ExternalTool::new(&manifest.name, &manifest.description, "sh")
+        .with_argv_template(full_argv)
+        .with_input_schema(input_schema)
+}
+
 mod generated_tools;
-mod proposal_tools;
 
 pub use generated_tools::{
     CreateToolTool, DeleteGeneratedToolTool, ListGeneratedToolsTool, RepairToolTool,
-};
-pub use proposal_tools::{
-    ApproveToolProposalTool, DesignToolTool, ImplementToolProposalTool, ListToolProposalsTool,
-    RejectToolProposalTool, ReviseToolProposalTool, ShowToolProposalTool,
 };
 
 fn get_string(value: &serde_json::Value, key: &str) -> Result<String> {
@@ -649,21 +640,6 @@ fn get_string(value: &serde_json::Value, key: &str) -> Result<String> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
         .ok_or_else(|| Error::InvalidInput(format!("missing or invalid '{}' field", key)))
-}
-
-fn get_optional_string(value: &serde_json::Value, key: &str) -> Option<String> {
-    value
-        .get(key)
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-}
-
-fn get_current_timestamp() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    format!("{}", duration.as_secs())
 }
 
 #[cfg(test)]
@@ -681,13 +657,13 @@ mod tests {
 
         let result = genesis
             .create_tool(
-                "echo hello",
                 "echo_hello",
                 "echo hello",
                 "echo hello",
                 vec![],
                 vec![],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec!["hello".to_string()],
                     expected_exit: 0,
                     expected_output_contains: Some("hello".to_string()),
@@ -711,13 +687,13 @@ mod tests {
 
         let result = genesis
             .create_tool(
-                "fail",
                 "failing_tool",
                 "fails",
                 "exit 1",
                 vec![],
                 vec![],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: None,
@@ -736,13 +712,13 @@ mod tests {
 
         genesis
             .create_tool(
-                "test",
                 "tool_one",
                 "first",
                 "echo one",
                 vec![],
                 vec![],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("one".to_string()),
@@ -753,22 +729,23 @@ mod tests {
         let tools = genesis.list_generated_tools().unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "tool_one");
+        assert!(tools[0].load_warning.is_none());
     }
 
     #[test]
-    fn test_genesis_record_written() {
+    fn test_create_tool_persists_only_manifest_and_script() {
         let temp = TempDir::new().unwrap();
         let genesis = ToolGenesis::new(temp.path().to_path_buf());
 
         genesis
             .create_tool(
-                "test record",
-                "record_test",
-                "test",
+                "persisted_tool",
+                "test persistence",
                 "echo ok",
                 vec![],
                 vec![],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("ok".to_string()),
@@ -776,10 +753,17 @@ mod tests {
             )
             .unwrap();
 
-        let records = genesis.list_genesis_records().unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].tool_name, "record_test");
-        assert_eq!(records[0].requirement, "test record");
+        let tool_dir = temp.path().join(".topagent/tools/persisted_tool");
+        let manifest_json = std::fs::read_to_string(tool_dir.join("manifest.json")).unwrap();
+        assert!(tool_dir.join("script.sh").exists());
+        assert!(
+            !manifest_json.contains("\"command\""),
+            "generated tool manifests should not duplicate the shell script body"
+        );
+        assert!(
+            !temp.path().join(".topagent/tool-genesis").exists(),
+            "generated tool creation should not leave behind a second persistence tree"
+        );
     }
 
     #[test]
@@ -791,7 +775,6 @@ mod tests {
         let tool = CreateToolTool::new();
 
         let bad_args = serde_json::json!({
-            "requirement": "test",
             "name": "bad/name",
             "description": "test",
             "script": "echo hi",
@@ -803,19 +786,127 @@ mod tests {
     }
 
     #[test]
+    fn test_repair_tool_name_validation() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let result = genesis.repair_tool(
+            "../bad_name",
+            "echo fixed",
+            None,
+            None,
+            Some(&VerificationSpec {
+                verification_inputs: BTreeMap::new(),
+                verification_args: vec![],
+                expected_exit: 0,
+                expected_output_contains: None,
+            }),
+        );
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("tool name must be alphanumeric + underscore only"));
+    }
+
+    #[test]
+    fn test_delete_tool_name_validation() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let result = genesis.delete_generated_tool("../bad_name");
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("tool name must be alphanumeric + underscore only"));
+    }
+
+    #[test]
+    fn test_create_tool_rejects_invalid_interface_before_writing_files() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let result = genesis.create_tool(
+            "invalid_interface",
+            "broken interface",
+            "echo ok",
+            vec![ToolInput {
+                name: "msg".to_string(),
+                description: "message".to_string(),
+                required: true,
+            }],
+            vec!["{missing}".to_string()],
+            Some(VerificationSpec {
+                verification_inputs: BTreeMap::from([("msg".to_string(), "ok".to_string())]),
+                verification_args: vec![],
+                expected_exit: 0,
+                expected_output_contains: Some("ok".to_string()),
+            }),
+        );
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("has no matching input"));
+        assert!(
+            !temp
+                .path()
+                .join(".topagent/tools/invalid_interface")
+                .exists(),
+            "invalid tools should fail before any on-disk artifact is created"
+        );
+    }
+
+    #[test]
+    fn test_structured_generated_tool_verifies_with_named_inputs() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        let result = genesis
+            .create_tool(
+                "named_verify",
+                "echo args tool",
+                "printf 'hello %s' \"$1\"",
+                vec![ToolInput {
+                    name: "name".to_string(),
+                    description: "name to greet".to_string(),
+                    required: true,
+                }],
+                vec!["{name}".to_string()],
+                Some(VerificationSpec {
+                    verification_inputs: BTreeMap::from([(
+                        "name".to_string(),
+                        "world".to_string(),
+                    )]),
+                    verification_args: vec![],
+                    expected_exit: 0,
+                    expected_output_contains: Some("hello world".to_string()),
+                }),
+            )
+            .unwrap();
+
+        assert!(result.success);
+        assert!(result.verification_passed);
+    }
+
+    #[test]
     fn test_create_and_repair_tool() {
         let temp = TempDir::new().unwrap();
         let genesis = ToolGenesis::new(temp.path().to_path_buf());
 
         let result = genesis
             .create_tool(
-                "test",
                 "repairable",
                 "initially broken",
                 "exit 1",
                 vec![],
                 vec![],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: None,
@@ -832,6 +923,7 @@ mod tests {
                 None,
                 None,
                 Some(&VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("fixed".to_string()),
@@ -851,13 +943,13 @@ mod tests {
         let script = "echo SCRIPT_OUTPUT";
         let result = genesis
             .create_tool(
-                "verify script was run",
                 "script_check",
                 "checks script runs",
                 script,
                 vec![],
                 vec![],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("SCRIPT_OUTPUT".to_string()),
@@ -879,13 +971,13 @@ mod tests {
 
         genesis
             .create_tool(
-                "test",
                 "incomplete_tool",
                 "incomplete",
                 "echo test",
                 vec![],
                 vec![],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("test".to_string()),
@@ -912,6 +1004,11 @@ mod tests {
             loaded.is_empty(),
             "tool with missing script should not be loaded even if manifest says verified"
         );
+
+        let tools = genesis.list_generated_tools().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "incomplete_tool");
+        assert_eq!(tools[0].load_warning.as_deref(), Some("missing script.sh"));
     }
 
     #[test]
@@ -921,13 +1018,13 @@ mod tests {
 
         let result = genesis
             .create_tool(
-                "test wrong output",
                 "wrong_output",
                 "fails output check",
                 "echo ACTUAL_OUTPUT",
                 vec![],
                 vec![],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("WRONG_OUTPUT".to_string()),
@@ -949,13 +1046,13 @@ mod tests {
 
         genesis
             .create_tool(
-                "test",
                 "single_repair",
                 "broken",
                 "exit 1",
                 vec![],
                 vec![],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: None,
@@ -970,6 +1067,7 @@ mod tests {
                 None,
                 None,
                 Some(&VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: None,
@@ -998,6 +1096,15 @@ mod tests {
 
         let loaded = genesis.load_verified_tools().unwrap();
         assert!(loaded.is_empty(), "corrupt manifest should not be loaded");
+
+        let tools = genesis.list_generated_tools().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "bad_manifest");
+        assert!(tools[0]
+            .load_warning
+            .as_deref()
+            .unwrap_or_default()
+            .contains("invalid manifest.json"));
     }
 
     #[test]
@@ -1007,7 +1114,6 @@ mod tests {
 
         let result = genesis
             .create_tool(
-                "echo with args",
                 "echo_args",
                 "echo args tool",
                 "echo \"$@\"",
@@ -1018,6 +1124,7 @@ mod tests {
                 }],
                 vec!["{msg}".to_string()],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec!["test".to_string()],
                     expected_exit: 0,
                     expected_output_contains: Some("test".to_string()),
@@ -1052,7 +1159,6 @@ mod tests {
 
         let result = genesis
             .create_tool(
-                "printf special chars",
                 "printf_special",
                 "printf tool",
                 "printf '%s' \"$1\"",
@@ -1063,6 +1169,7 @@ mod tests {
                 }],
                 vec!["{arg}".to_string()],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec!["ok".to_string()],
                     expected_exit: 0,
                     expected_output_contains: Some("ok".to_string()),
@@ -1112,476 +1219,15 @@ mod tests {
             0,
             "legacy manifest without argv_template should be rejected"
         );
-    }
 
-    #[test]
-    fn test_design_tool_creates_proposal() {
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-        let tool = DesignToolTool::new();
-
-        let args = serde_json::json!({
-            "requirement": "I need a tool that echoes a message",
-            "name": "echo_msg",
-            "description": "Echoes the provided message",
-            "rationale": "Useful for testing",
-            "inputs": [
-                {"name": "msg", "description": "message to echo", "required": true}
-            ],
-            "argv_template": ["echo", "{msg}"],
-            "verification_args": ["hello"],
-            "expected_exit": 0,
-            "expected_output_contains": "hello"
-        });
-
-        let result = tool.execute(args, &ctx);
-        assert!(result.is_ok());
-        let output = result.unwrap();
-        assert!(output.contains("tool design proposal saved"));
-        assert!(output.contains("proposal"));
-    }
-
-    #[test]
-    fn test_proposal_persisted_to_proposals_dir() {
-        let temp = TempDir::new().unwrap();
-        let genesis = ToolGenesis::new(temp.path().to_path_buf());
-
-        let design = ToolDesign {
-            requirement: "test requirement".to_string(),
-            name: "test_proposal".to_string(),
-            description: "A test proposal".to_string(),
-            rationale: "Testing".to_string(),
-            inputs: vec![ToolInput {
-                name: "input".to_string(),
-                description: "an input".to_string(),
-                required: true,
-            }],
-            argv_template: vec!["echo".to_string(), "{input}".to_string()],
-            verification: VerificationPlan {
-                verification_args: vec!["test".to_string()],
-                expected_exit: 0,
-                expected_output_contains: Some("test".to_string()),
-            },
-            status: ProposalStatus::Proposed,
-            created_at: "1.0".to_string(),
-            ..ToolDesign::default()
-        };
-
-        let path = genesis.save_proposal(&design).unwrap();
-        assert!(path.to_string_lossy().contains("proposals"));
-        assert!(path.to_string_lossy().contains("test_proposal.json"));
-
-        let loaded = genesis.load_proposal("test_proposal").unwrap();
-        assert_eq!(loaded.name, "test_proposal");
-        assert_eq!(loaded.requirement, "test requirement");
-    }
-
-    #[test]
-    fn test_implement_proposal_creates_tool() {
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-
-        let genesis = ToolGenesis::new(temp.path().to_path_buf());
-
-        let design = ToolDesign {
-            requirement: "echo a message".to_string(),
-            name: "echo_proposed".to_string(),
-            description: "Echoes provided message".to_string(),
-            rationale: "Testing".to_string(),
-            inputs: vec![],
-            argv_template: vec![],
-            verification: VerificationPlan {
-                verification_args: vec![],
-                expected_exit: 0,
-                expected_output_contains: Some("ok".to_string()),
-            },
-            status: ProposalStatus::Approved,
-            created_at: "1.0".to_string(),
-            ..ToolDesign::default()
-        };
-        genesis.save_proposal(&design).unwrap();
-
-        let tool = ImplementToolProposalTool::new();
-        let args = serde_json::json!({
-            "name": "echo_proposed",
-            "script": "echo ok"
-        });
-
-        let result = tool.execute(args, &ctx);
-        assert!(result.is_ok());
-        let output = result.unwrap();
-        assert!(output.contains("created and verified"));
-
-        let proposal = genesis.load_proposal("echo_proposed").unwrap();
-        assert_eq!(proposal.status, ProposalStatus::Verified);
-    }
-
-    #[test]
-    fn test_implement_already_implemented_proposal_fails() {
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-
-        let genesis = ToolGenesis::new(temp.path().to_path_buf());
-
-        let design = ToolDesign {
-            requirement: "echo".to_string(),
-            name: "already_done".to_string(),
-            description: "already done".to_string(),
-            rationale: "test".to_string(),
-            inputs: vec![],
-            argv_template: vec![],
-            verification: VerificationPlan {
-                verification_args: vec![],
-                expected_exit: 0,
-                expected_output_contains: None,
-            },
-            status: ProposalStatus::Implemented,
-            created_at: "1.0".to_string(),
-            ..ToolDesign::default()
-        };
-        genesis.save_proposal(&design).unwrap();
-
-        let tool = ImplementToolProposalTool::new();
-        let args = serde_json::json!({
-            "name": "already_done",
-            "script": "echo test"
-        });
-
-        let result = tool.execute(args, &ctx);
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("already been implemented"));
-    }
-
-    #[test]
-    fn test_list_tool_proposals() {
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-
-        let genesis = ToolGenesis::new(temp.path().to_path_buf());
-
-        let design = ToolDesign {
-            requirement: "test".to_string(),
-            name: "proposal_one".to_string(),
-            description: "First proposal".to_string(),
-            rationale: "testing".to_string(),
-            inputs: vec![],
-            argv_template: vec![],
-            verification: VerificationPlan {
-                verification_args: vec![],
-                expected_exit: 0,
-                expected_output_contains: None,
-            },
-            status: ProposalStatus::Proposed,
-            created_at: "1.0".to_string(),
-            ..ToolDesign::default()
-        };
-        genesis.save_proposal(&design).unwrap();
-
-        let tool = ListToolProposalsTool::new();
-        let result = tool.execute(serde_json::json!({}), &ctx);
-        assert!(result.is_ok());
-        let output = result.unwrap();
-        assert!(output.contains("proposal_one"));
-        assert!(output.contains("proposed"));
-    }
-
-    #[test]
-    fn test_approve_tool_proposal() {
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-
-        let genesis = ToolGenesis::new(temp.path().to_path_buf());
-
-        let design = ToolDesign {
-            requirement: "test".to_string(),
-            name: "test_approve".to_string(),
-            description: "Test approval".to_string(),
-            rationale: "testing".to_string(),
-            inputs: vec![],
-            argv_template: vec![],
-            verification: VerificationPlan {
-                verification_args: vec![],
-                expected_exit: 0,
-                expected_output_contains: None,
-            },
-            status: ProposalStatus::Proposed,
-            created_at: "1.0".to_string(),
-            ..ToolDesign::default()
-        };
-        genesis.save_proposal(&design).unwrap();
-
-        let tool = ApproveToolProposalTool::new();
-        let result = tool.execute(serde_json::json!({"name": "test_approve"}), &ctx);
-        assert!(result.is_ok());
-        assert!(result.unwrap().contains("approved"));
-
-        let proposal = genesis.load_proposal("test_approve").unwrap();
-        assert_eq!(proposal.status, ProposalStatus::Approved);
-    }
-
-    #[test]
-    fn test_approve_already_approved_proposal_fails() {
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-
-        let genesis = ToolGenesis::new(temp.path().to_path_buf());
-
-        let design = ToolDesign {
-            requirement: "test".to_string(),
-            name: "already_approved".to_string(),
-            description: "already approved".to_string(),
-            rationale: "testing".to_string(),
-            inputs: vec![],
-            argv_template: vec![],
-            verification: VerificationPlan {
-                verification_args: vec![],
-                expected_exit: 0,
-                expected_output_contains: None,
-            },
-            status: ProposalStatus::Approved,
-            created_at: "1.0".to_string(),
-            ..ToolDesign::default()
-        };
-        genesis.save_proposal(&design).unwrap();
-
-        let tool = ApproveToolProposalTool::new();
-        let result = tool.execute(serde_json::json!({"name": "already_approved"}), &ctx);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("already approved"));
-    }
-
-    #[test]
-    fn test_reject_tool_proposal() {
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-
-        let genesis = ToolGenesis::new(temp.path().to_path_buf());
-
-        let design = ToolDesign {
-            requirement: "test".to_string(),
-            name: "test_reject".to_string(),
-            description: "Test rejection".to_string(),
-            rationale: "testing".to_string(),
-            inputs: vec![],
-            argv_template: vec![],
-            verification: VerificationPlan {
-                verification_args: vec![],
-                expected_exit: 0,
-                expected_output_contains: None,
-            },
-            status: ProposalStatus::Proposed,
-            created_at: "1.0".to_string(),
-            ..ToolDesign::default()
-        };
-        genesis.save_proposal(&design).unwrap();
-
-        let tool = RejectToolProposalTool::new();
-        let result = tool.execute(serde_json::json!({"name": "test_reject"}), &ctx);
-        assert!(result.is_ok());
-        assert!(result.unwrap().contains("rejected"));
-
-        let proposal = genesis.load_proposal("test_reject").unwrap();
-        assert_eq!(proposal.status, ProposalStatus::Rejected);
-    }
-
-    #[test]
-    fn test_reject_approved_proposal() {
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-
-        let genesis = ToolGenesis::new(temp.path().to_path_buf());
-
-        let design = ToolDesign {
-            requirement: "test".to_string(),
-            name: "reject_approved".to_string(),
-            description: "Reject an approved proposal".to_string(),
-            rationale: "testing".to_string(),
-            inputs: vec![],
-            argv_template: vec![],
-            verification: VerificationPlan {
-                verification_args: vec![],
-                expected_exit: 0,
-                expected_output_contains: None,
-            },
-            status: ProposalStatus::Approved,
-            created_at: "1.0".to_string(),
-            ..ToolDesign::default()
-        };
-        genesis.save_proposal(&design).unwrap();
-
-        let tool = RejectToolProposalTool::new();
-        let result = tool.execute(serde_json::json!({"name": "reject_approved"}), &ctx);
-        assert!(result.is_ok());
-
-        let proposal = genesis.load_proposal("reject_approved").unwrap();
-        assert_eq!(proposal.status, ProposalStatus::Rejected);
-    }
-
-    #[test]
-    fn test_reject_already_rejected_proposal_fails() {
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-
-        let genesis = ToolGenesis::new(temp.path().to_path_buf());
-
-        let design = ToolDesign {
-            requirement: "test".to_string(),
-            name: "already_rejected".to_string(),
-            description: "already rejected".to_string(),
-            rationale: "testing".to_string(),
-            inputs: vec![],
-            argv_template: vec![],
-            verification: VerificationPlan {
-                verification_args: vec![],
-                expected_exit: 0,
-                expected_output_contains: None,
-            },
-            status: ProposalStatus::Rejected,
-            created_at: "1.0".to_string(),
-            ..ToolDesign::default()
-        };
-        genesis.save_proposal(&design).unwrap();
-
-        let tool = RejectToolProposalTool::new();
-        let result = tool.execute(serde_json::json!({"name": "already_rejected"}), &ctx);
-        assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("already rejected"));
-    }
-
-    #[test]
-    fn test_implement_unapproved_proposal_fails() {
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-
-        let genesis = ToolGenesis::new(temp.path().to_path_buf());
-
-        let design = ToolDesign {
-            requirement: "test".to_string(),
-            name: "unapproved".to_string(),
-            description: "not approved".to_string(),
-            rationale: "testing".to_string(),
-            inputs: vec![],
-            argv_template: vec![],
-            verification: VerificationPlan {
-                verification_args: vec![],
-                expected_exit: 0,
-                expected_output_contains: None,
-            },
-            status: ProposalStatus::Proposed,
-            created_at: "1.0".to_string(),
-            ..ToolDesign::default()
-        };
-        genesis.save_proposal(&design).unwrap();
-
-        let tool = ImplementToolProposalTool::new();
-        let result = tool.execute(
-            serde_json::json!({"name": "unapproved", "script": "echo test"}),
-            &ctx,
-        );
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("not approved"));
-    }
-
-    #[test]
-    fn test_implement_rejected_proposal_fails() {
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-
-        let genesis = ToolGenesis::new(temp.path().to_path_buf());
-
-        let design = ToolDesign {
-            requirement: "test".to_string(),
-            name: "rejected_proposal".to_string(),
-            description: "rejected".to_string(),
-            rationale: "testing".to_string(),
-            inputs: vec![],
-            argv_template: vec![],
-            verification: VerificationPlan {
-                verification_args: vec![],
-                expected_exit: 0,
-                expected_output_contains: None,
-            },
-            status: ProposalStatus::Rejected,
-            created_at: "1.0".to_string(),
-            ..ToolDesign::default()
-        };
-        genesis.save_proposal(&design).unwrap();
-
-        let tool = ImplementToolProposalTool::new();
-        let result = tool.execute(
-            serde_json::json!({"name": "rejected_proposal", "script": "echo test"}),
-            &ctx,
-        );
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(err.to_string().contains("rejected"));
-    }
-
-    #[test]
-    fn test_proposal_full_lifecycle() {
-        let temp = TempDir::new().unwrap();
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default();
-        let ctx = ToolContext::new(&exec, &runtime);
-
-        let genesis = ToolGenesis::new(temp.path().to_path_buf());
-
-        let design = ToolDesign {
-            requirement: "echo lifecycle test".to_string(),
-            name: "lifecycle_test".to_string(),
-            description: "Full lifecycle test".to_string(),
-            rationale: "testing".to_string(),
-            inputs: vec![],
-            argv_template: vec![],
-            verification: VerificationPlan {
-                verification_args: vec![],
-                expected_exit: 0,
-                expected_output_contains: Some("ok".to_string()),
-            },
-            status: ProposalStatus::Proposed,
-            created_at: "1.0".to_string(),
-            ..ToolDesign::default()
-        };
-        genesis.save_proposal(&design).unwrap();
-
-        let approve_tool = ApproveToolProposalTool::new();
-        let result = approve_tool.execute(serde_json::json!({"name": "lifecycle_test"}), &ctx);
-        assert!(result.is_ok());
-        let proposal = genesis.load_proposal("lifecycle_test").unwrap();
-        assert_eq!(proposal.status, ProposalStatus::Approved);
-
-        let implement_tool = ImplementToolProposalTool::new();
-        let result = implement_tool.execute(
-            serde_json::json!({"name": "lifecycle_test", "script": "echo ok"}),
-            &ctx,
-        );
-        assert!(result.is_ok());
-        let proposal = genesis.load_proposal("lifecycle_test").unwrap();
-        assert_eq!(proposal.status, ProposalStatus::Verified);
+        let tools = genesis.list_generated_tools().unwrap();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "legacy_tool");
+        assert!(tools[0]
+            .load_warning
+            .as_deref()
+            .unwrap_or_default()
+            .contains("invalid manifest.json"));
     }
 
     #[test]
@@ -1591,13 +1237,13 @@ mod tests {
 
         genesis
             .create_tool(
-                "test",
                 "to_delete",
                 "will be deleted",
                 "echo ok",
                 vec![],
                 vec![],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("ok".to_string()),
@@ -1632,13 +1278,13 @@ mod tests {
 
         genesis
             .create_tool(
-                "test",
                 "verified_tool",
                 "verified tool",
                 "echo verified",
                 vec![],
                 vec![],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("verified".to_string()),
@@ -1662,13 +1308,13 @@ mod tests {
 
         genesis
             .create_tool(
-                "test",
                 "replaceable",
                 "original",
                 "echo original",
                 vec![],
                 vec![],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("original".to_string()),
@@ -1680,13 +1326,13 @@ mod tests {
 
         genesis
             .create_tool(
-                "test",
                 "replaceable",
                 "replacement",
                 "echo replacement",
                 vec![],
                 vec![],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("replacement".to_string()),
@@ -1706,13 +1352,13 @@ mod tests {
 
         let result = genesis
             .create_tool(
-                "test",
                 "bad_tool",
                 "broken tool",
                 "exit 1",
                 vec![],
                 vec![],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: None,
@@ -1735,7 +1381,6 @@ mod tests {
 
         genesis
             .create_tool(
-                "echo with args",
                 "echo_tool",
                 "echo args tool",
                 "echo \"$@\"",
@@ -1746,6 +1391,7 @@ mod tests {
                 }],
                 vec!["{msg}".to_string()],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec!["test".to_string()],
                     expected_exit: 0,
                     expected_output_contains: Some("test".to_string()),
@@ -1773,13 +1419,13 @@ mod tests {
 
         genesis
             .create_tool(
-                "test",
                 "tool_to_delete",
                 "will be deleted via tool",
                 "echo ok",
                 vec![],
                 vec![],
                 Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
                     verification_args: vec![],
                     expected_exit: 0,
                     expected_output_contains: Some("ok".to_string()),

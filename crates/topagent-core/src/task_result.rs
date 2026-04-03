@@ -6,6 +6,7 @@ pub struct TaskEvidence {
     pub diff_summary: String,
     pub verification_commands_run: Vec<VerificationCommand>,
     pub unresolved_issues: Vec<String>,
+    pub workspace_warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,12 +61,18 @@ impl TaskResult {
         self
     }
 
+    pub fn with_workspace_warnings(mut self, warnings: Vec<String>) -> Self {
+        self.evidence.workspace_warnings.extend(warnings);
+        self
+    }
+
     pub fn format_proof_of_work(&self) -> String {
         let mut output = String::new();
 
         if self.evidence.files_changed.is_empty()
             && self.evidence.verification_commands_run.is_empty()
             && self.evidence.unresolved_issues.is_empty()
+            && self.evidence.workspace_warnings.is_empty()
         {
             return self.outcome_summary.clone();
         }
@@ -113,6 +120,14 @@ impl TaskResult {
             output.push_str("### Unresolved\n\n");
             for issue in &self.evidence.unresolved_issues {
                 output.push_str(&format!("- {}\n", issue));
+            }
+            output.push('\n');
+        }
+
+        if !self.evidence.workspace_warnings.is_empty() {
+            output.push_str("### Workspace Warnings\n\n");
+            for warning in &self.evidence.workspace_warnings {
+                output.push_str(&format!("- {}\n", warning));
             }
             output.push('\n');
         }
@@ -223,6 +238,15 @@ mod tests {
         assert!(proof.contains("Files Changed"));
         assert!(proof.contains("Verification"));
         assert!(proof.contains("Unresolved"));
+    }
+
+    #[test]
+    fn test_task_result_with_workspace_warnings() {
+        let result = TaskResult::new("Task completed".to_string())
+            .with_workspace_warnings(vec!["broken_tool: missing script.sh".to_string()]);
+        let proof = result.format_proof_of_work();
+        assert!(proof.contains("Workspace Warnings"));
+        assert!(proof.contains("broken_tool: missing script.sh"));
     }
 
     // ── Regression: exit_code is the source of truth for labels ──
