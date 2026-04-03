@@ -1,5 +1,6 @@
 use crate::error::Error;
 use crate::external::{resolve_argv_template, ExternalTool};
+use crate::secrets::SECRET_ENV_VARS;
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -251,6 +252,9 @@ impl ToolGenesis {
         cmd.current_dir(&self.workspace_root);
         for arg in verification_argv {
             cmd.arg(arg);
+        }
+        for var_name in SECRET_ENV_VARS {
+            cmd.env_remove(var_name);
         }
 
         let output = cmd.output().map_err(|e| {
@@ -675,6 +679,34 @@ mod tests {
 
         assert!(!result.success);
         assert!(!result.verification_passed);
+    }
+
+    #[test]
+    fn test_generated_tool_verification_strips_secret_env() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+
+        std::env::set_var("OPENROUTER_API_KEY", "sensitive-openrouter-secret");
+        let result = genesis
+            .create_tool(
+                "env_probe",
+                "probe env",
+                "printf %s \"$OPENROUTER_API_KEY\"",
+                vec![],
+                vec![],
+                Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
+                    expected_exit: 0,
+                    expected_output_contains: Some("sensitive-openrouter-secret".to_string()),
+                }),
+            )
+            .unwrap();
+        std::env::remove_var("OPENROUTER_API_KEY");
+
+        assert!(
+            !result.verification_passed,
+            "generated tool verification must not inherit secret env vars"
+        );
     }
 
     #[test]

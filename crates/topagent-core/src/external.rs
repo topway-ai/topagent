@@ -1,4 +1,6 @@
 use crate::context::ToolContext;
+use crate::file_util::format_command_output_with_limit;
+use crate::secrets::SECRET_ENV_VARS;
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -140,6 +142,10 @@ impl ExternalTool {
             cmd.arg(part);
         }
 
+        for var_name in SECRET_ENV_VARS {
+            cmd.env_remove(var_name);
+        }
+
         let output = cmd.output().map_err(|e| {
             Error::ToolFailed(format!(
                 "failed to execute external tool '{}': {}",
@@ -148,30 +154,16 @@ impl ExternalTool {
         })?;
 
         if !output.status.success() {
+            let summary =
+                format_command_output_with_limit(output, ctx.runtime.max_bash_output_bytes);
             return Err(Error::ToolFailed(format!(
-                "external tool '{}' failed with exit code: {:?}",
-                self.config.name,
-                output.status.code()
+                "external tool '{}' failed\n{}",
+                self.config.name, summary
             )));
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        let mut result = String::new();
-        if !stdout.is_empty() {
-            result.push_str(&stdout);
-        }
-        if !stderr.is_empty() {
-            if !result.is_empty() {
-                result.push('\n');
-            }
-            result.push_str("stderr: ");
-            result.push_str(&stderr);
-        }
-
         Ok(ExternalToolResult {
-            output: result,
+            output: format_command_output_with_limit(output, ctx.runtime.max_bash_output_bytes),
             effect: self.config.effect,
         })
     }
@@ -560,5 +552,42 @@ mod tests {
             .with_argv_template(vec![])
             .with_effect(ExternalToolEffect::ExecutionStarted);
         assert_eq!(tool.effect(), ExternalToolEffect::ExecutionStarted);
+    }
+
+    #[test]
+    fn test_external_tool_strips_secret_env_from_child_process() {
+        let tool = ExternalTool::new("echo_secret", "echo env", "sh").with_argv_template(vec![
+            "-c".to_string(),
+            "printf %s \"$OPENROUTER_API_KEY\"".to_string(),
+        ]);
+
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        std::env::set_var("OPENROUTER_API_KEY", "super-secret-openrouter-key");
+        let output = tool.execute(&serde_json::json!({}), &ctx).unwrap().output;
+        std::env::remove_var("OPENROUTER_API_KEY");
+
+        assert!(
+            !output.contains("super-secret-openrouter-key"),
+            "external tools must not inherit secret env vars: {output}"
+        );
+    }
+
+    #[test]
+    fn test_external_tool_output_respects_runtime_limit() {
+        let tool = ExternalTool::new("long_output", "long output", "sh")
+            .with_argv_template(vec!["-c".to_string(), "printf 1234567890".to_string()]);
+
+        let temp = TempDir::new().unwrap();
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default().with_max_bash_output_bytes(5);
+        let ctx = ToolContext::new(&exec, &runtime);
+        let output = tool.execute(&serde_json::json!({}), &ctx).unwrap().output;
+
+        assert!(output.contains("Output truncated"));
+        assert!(output.contains("showing first 5"));
     }
 }

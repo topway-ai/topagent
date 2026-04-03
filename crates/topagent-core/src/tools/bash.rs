@@ -1,4 +1,5 @@
 use crate::context::ToolContext;
+use crate::file_util::format_command_output_with_limit;
 use crate::secrets;
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
@@ -197,63 +198,11 @@ impl crate::tools::Tool for BashTool {
             stdout,
             stderr,
         };
-        format_output_with_limit(output, ctx.runtime.max_bash_output_bytes)
+        Ok(format_command_output_with_limit(
+            output,
+            ctx.runtime.max_bash_output_bytes,
+        ))
     }
-}
-
-fn format_output_with_limit(output: Output, max_size: usize) -> Result<String> {
-    let stdout_raw = &output.stdout;
-    let stderr_raw = &output.stderr;
-    let status = output.status;
-
-    let stdout_len = stdout_raw.len();
-    let stderr_len = stderr_raw.len();
-
-    let mut stdout_truncated = false;
-    let mut stderr_truncated = false;
-
-    let stdout_bytes = if stdout_len > max_size {
-        stdout_truncated = true;
-        &stdout_raw[..max_size]
-    } else {
-        stdout_raw.as_slice()
-    };
-
-    let stderr_bytes = if stderr_len > max_size {
-        stderr_truncated = true;
-        &stderr_raw[..max_size]
-    } else {
-        stderr_raw.as_slice()
-    };
-
-    let stdout = String::from_utf8_lossy(stdout_bytes);
-    let stderr = String::from_utf8_lossy(stderr_bytes);
-
-    let mut result = String::new();
-    if !stdout_raw.is_empty() {
-        result.push_str("Output: ");
-        result.push_str(&stdout);
-        if stdout_truncated {
-            result.push_str(&format!(
-                "\n[Output truncated: {} bytes total, showing first {}]",
-                stdout_len, max_size
-            ));
-        }
-        result.push('\n');
-    }
-    if !stderr_raw.is_empty() {
-        result.push_str("Stderr: ");
-        result.push_str(&stderr);
-        if stderr_truncated {
-            result.push_str(&format!(
-                "\n[Stderr truncated: {} bytes total, showing first {}]",
-                stderr_len, max_size
-            ));
-        }
-        result.push('\n');
-    }
-    result.push_str(&format!("Exit code: {}", status.code().unwrap_or(-1)));
-    Ok(result)
 }
 
 #[cfg(test)]
