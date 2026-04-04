@@ -3,13 +3,13 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 use topagent_core::{
     context::ExecutionContext, create_provider, model::ModelRoute, tools::default_tools, Agent,
-    CancellationToken, Message, ProgressCallback, ProgressUpdate, Role, RuntimeOptions,
-    TelegramAdapter, POLL_TIMEOUT_SECS,
+    ApprovalEntry, ApprovalMailbox, ApprovalMailboxMode, CancellationToken, Message,
+    ProgressCallback, ProgressUpdate, Role, RuntimeOptions, TelegramAdapter, POLL_TIMEOUT_SECS,
 };
 use tracing::{error, info, warn};
 
@@ -142,6 +142,9 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                              Commands:\n\
                              /help - show this message\n\
                              /stop - stop the current task\n\
+                             /approvals - list pending approvals for this chat\n\
+                             /approve <id> - approve a pending action\n\
+                             /deny <id> - deny a pending action\n\
                              /reset - clear this chat's saved transcript\n\
                              /tool_authoring on|off - enable or disable generated-tool authoring for this chat\n\n\
                              Send a plain text message to start a task.",
@@ -157,6 +160,26 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                         } else {
                             "No task is currently running.".to_string()
                         };
+                        send_telegram(&adapter, chat_id, vec![reply], None);
+                        continue;
+                    }
+
+                    if text == "/approvals" {
+                        let reply = session_manager.pending_approvals_reply(chat_id);
+                        send_telegram(&adapter, chat_id, vec![reply], None);
+                        continue;
+                    }
+
+                    if let Some(argument) = text.strip_prefix("/approve") {
+                        let reply =
+                            session_manager.resolve_approval_command(chat_id, argument, true);
+                        send_telegram(&adapter, chat_id, vec![reply], None);
+                        continue;
+                    }
+
+                    if let Some(argument) = text.strip_prefix("/deny") {
+                        let reply =
+                            session_manager.resolve_approval_command(chat_id, argument, false);
                         send_telegram(&adapter, chat_id, vec![reply], None);
                         continue;
                     }
@@ -500,6 +523,7 @@ pub(crate) struct ChatSessionManager {
 pub(crate) struct RunningChatTask {
     pub cancel_token: CancellationToken,
     pub progress_callback: Option<ProgressCallback>,
+    pub approval_mailbox: ApprovalMailbox,
 }
 
 impl ChatSessionManager {
@@ -670,6 +694,8 @@ impl ChatSessionManager {
             return false;
         };
 
+        task.approval_mailbox
+            .expire_pending("task stopped by operator");
         task.cancel_token.cancel();
         if let Some(callback) = &task.progress_callback {
             callback(ProgressUpdate::stopping());
@@ -698,7 +724,10 @@ impl ChatSessionManager {
     }
 
     pub fn reset_chat(&mut self, chat_id: i64) {
-        self.sessions.remove(&chat_id);
+        if let Some(task) = self.sessions.remove(&chat_id) {
+            task.approval_mailbox
+                .supersede_pending("chat reset before approval was resolved");
+        }
         match self.history_store.clear(chat_id) {
             Ok(true) => {
                 info!(
@@ -716,6 +745,61 @@ impl ChatSessionManager {
                     err
                 );
             }
+        }
+    }
+
+    fn pending_approvals(&self, chat_id: i64) -> Vec<ApprovalEntry> {
+        self.sessions
+            .get(&chat_id)
+            .map(|task| task.approval_mailbox.pending())
+            .unwrap_or_default()
+    }
+
+    fn pending_approvals_reply(&self, chat_id: i64) -> String {
+        let approvals = self.pending_approvals(chat_id);
+        if approvals.is_empty() {
+            return "No pending approvals for this chat.".to_string();
+        }
+
+        let mut reply = String::from("Pending approvals:\n");
+        for approval in approvals {
+            reply.push_str("- ");
+            reply.push_str(&approval.request.render_status_line(approval.state));
+            reply.push('\n');
+        }
+        reply.push_str("\nReply with /approve <id> or /deny <id>.");
+        reply
+    }
+
+    fn resolve_approval_command(&self, chat_id: i64, argument: &str, approve: bool) -> String {
+        let id = argument.trim();
+        if id.is_empty() {
+            return if approve {
+                "Usage: /approve <id>".to_string()
+            } else {
+                "Usage: /deny <id>".to_string()
+            };
+        }
+
+        let Some(task) = self.sessions.get(&chat_id) else {
+            return "No task is currently running in this chat.".to_string();
+        };
+
+        let result = if approve {
+            task.approval_mailbox
+                .approve(id, Some("approved from Telegram".to_string()))
+        } else {
+            task.approval_mailbox
+                .deny(id, Some("denied from Telegram".to_string()))
+        };
+
+        match result {
+            Ok(entry) => format!(
+                "Approval {} {}.",
+                entry.request.id,
+                if approve { "approved" } else { "denied" }
+            ),
+            Err(err) => format!("Could not update approval {}: {}", id, err),
         }
     }
 
@@ -738,8 +822,22 @@ impl ChatSessionManager {
         let mut agent = self.create_agent_for_chat(chat_id);
 
         let cancel_token = CancellationToken::new();
+        let approval_mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Wait);
+        let approval_adapter = adapter.clone();
+        let approval_secrets = self.secrets.clone();
+        approval_mailbox.set_notifier(Arc::new(move |request| {
+            let mut message = request.render_details();
+            message.push_str(&format!(
+                "\n\nReply with /approve {} or /deny {}.",
+                request.id, request.id
+            ));
+            let chunks = topagent_core::channel::telegram::chunk_text(&message, 4000);
+            send_telegram(&approval_adapter, chat_id, chunks, Some(&approval_secrets));
+        }));
         let run_ctx = self.build_run_context(
-            &ctx.clone().with_cancel_token(cancel_token.clone()),
+            &ctx.clone()
+                .with_cancel_token(cancel_token.clone())
+                .with_approval_mailbox(approval_mailbox.clone()),
             chat_id,
             text,
         );
@@ -811,6 +909,7 @@ impl ChatSessionManager {
             RunningChatTask {
                 cancel_token,
                 progress_callback,
+                approval_mailbox,
             },
         );
         Vec::new()
@@ -822,7 +921,10 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
-    use topagent_core::{CancellationToken, Message, ModelRoute, ProgressKind, ProgressUpdate};
+    use topagent_core::{
+        ApprovalCheck, ApprovalRequestDraft, ApprovalTriggerKind, CancellationToken, Message,
+        ModelRoute, ProgressKind, ProgressUpdate,
+    };
 
     fn test_manager(workspace_root: PathBuf) -> ChatSessionManager {
         ChatSessionManager::new(
@@ -832,6 +934,27 @@ mod tests {
             workspace_root,
             topagent_core::SecretRegistry::new(),
         )
+    }
+
+    fn pending_approval_mailbox() -> ApprovalMailbox {
+        let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
+        let check = mailbox.request_decision(
+            ApprovalRequestDraft {
+                action_kind: ApprovalTriggerKind::GitCommit,
+                short_summary: "git commit: ship it".to_string(),
+                exact_action: "git_commit(message=\"ship it\")".to_string(),
+                reason: "commits publish a durable repo milestone".to_string(),
+                scope_of_impact: "Creates a new git commit in the workspace repository."
+                    .to_string(),
+                expected_effect: "Staged changes become a durable repo milestone.".to_string(),
+                rollback_hint: Some(
+                    "Use git revert or git reset if the commit was mistaken.".to_string(),
+                ),
+            },
+            None,
+        );
+        assert!(matches!(check, ApprovalCheck::Pending(_)));
+        mailbox
     }
 
     #[test]
@@ -850,6 +973,7 @@ mod tests {
             RunningChatTask {
                 cancel_token: cancel_token.clone(),
                 progress_callback: Some(progress_callback),
+                approval_mailbox: ApprovalMailbox::new(ApprovalMailboxMode::Immediate),
             },
         );
 
@@ -870,6 +994,49 @@ mod tests {
     }
 
     #[test]
+    fn test_pending_approvals_reply_lists_request_ids() {
+        let workspace = TempDir::new().unwrap();
+        let mut manager = test_manager(workspace.path().to_path_buf());
+
+        manager.sessions.insert(
+            42,
+            RunningChatTask {
+                cancel_token: CancellationToken::new(),
+                progress_callback: None,
+                approval_mailbox: pending_approval_mailbox(),
+            },
+        );
+
+        let reply = manager.pending_approvals_reply(42);
+        assert!(reply.contains("Pending approvals"));
+        assert!(reply.contains("apr-1"));
+        assert!(reply.contains("/approve <id>"));
+    }
+
+    #[test]
+    fn test_resolve_approval_command_updates_pending_request() {
+        let workspace = TempDir::new().unwrap();
+        let mut manager = test_manager(workspace.path().to_path_buf());
+        let mailbox = pending_approval_mailbox();
+
+        manager.sessions.insert(
+            42,
+            RunningChatTask {
+                cancel_token: CancellationToken::new(),
+                progress_callback: None,
+                approval_mailbox: mailbox.clone(),
+            },
+        );
+
+        let reply = manager.resolve_approval_command(42, "apr-1", true);
+        assert!(reply.contains("Approval apr-1 approved"));
+        assert_eq!(
+            mailbox.get("apr-1").unwrap().state,
+            topagent_core::ApprovalState::Approved
+        );
+    }
+
+    #[test]
     fn test_notify_polling_retry_emits_retrying_progress_to_running_chat() {
         let workspace = TempDir::new().unwrap();
         let mut manager = test_manager(workspace.path().to_path_buf());
@@ -884,6 +1051,7 @@ mod tests {
             RunningChatTask {
                 cancel_token: CancellationToken::new(),
                 progress_callback: Some(progress_callback),
+                approval_mailbox: ApprovalMailbox::new(ApprovalMailboxMode::Immediate),
             },
         );
 
@@ -913,6 +1081,7 @@ mod tests {
             RunningChatTask {
                 cancel_token: CancellationToken::new(),
                 progress_callback: Some(progress_callback),
+                approval_mailbox: ApprovalMailbox::new(ApprovalMailboxMode::Immediate),
             },
         );
 
@@ -1079,6 +1248,7 @@ mod tests {
             RunningChatTask {
                 cancel_token: CancellationToken::new(),
                 progress_callback: None,
+                approval_mailbox: ApprovalMailbox::new(ApprovalMailboxMode::Immediate),
             },
         );
         manager.reset_chat(chat_id);

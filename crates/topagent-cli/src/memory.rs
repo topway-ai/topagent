@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
-use topagent_core::{Message, Role};
+use topagent_core::{BehaviorContract, Message, Role};
 use tracing::warn;
 
 use crate::managed_files::write_managed_file;
@@ -9,17 +9,6 @@ use crate::managed_files::write_managed_file;
 const MEMORY_ROOT_DIR: &str = ".topagent";
 pub(crate) const MEMORY_INDEX_RELATIVE_PATH: &str = ".topagent/MEMORY.md";
 pub(crate) const MEMORY_TOPICS_RELATIVE_DIR: &str = ".topagent/topics";
-
-const MEMORY_INDEX_TEMPLATE: &str = "# TopAgent Memory Index
-
-Keep this file tiny. Each durable memory entry must stay on one line.
-Use this file as an index only. Put richer durable notes in topic files.
-
-Format:
-- topic: <name> | file: topics/<name>.md | status: verified|tentative|stale | tags: tag1, tag2 | note: short pointer
-
-Do not store transcripts, logs, command output dumps, transient plans, or secrets here.
-";
 
 const MAX_INDEX_PROMPT_BYTES: usize = 1_400;
 const MAX_TOPIC_PROMPT_BYTES: usize = 1_200;
@@ -79,6 +68,14 @@ const STOP_WORDS: &[&str] = &[
     "your",
 ];
 
+fn memory_contract() -> BehaviorContract {
+    BehaviorContract::default()
+}
+
+fn memory_index_template() -> String {
+    memory_contract().render_memory_index_template()
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct MemoryPrompt {
     pub prompt: Option<String>,
@@ -131,7 +128,8 @@ impl WorkspaceMemory {
                 std::fs::create_dir_all(parent)
                     .with_context(|| format!("failed to create {}", parent.display()))?;
             }
-            write_managed_file(&self.index_path, MEMORY_INDEX_TEMPLATE, false)?;
+            let template = memory_index_template();
+            write_managed_file(&self.index_path, &template, false)?;
         }
 
         Ok(())
@@ -189,16 +187,7 @@ impl WorkspaceMemory {
         }
 
         let mut prompt = String::new();
-        prompt.push_str("Treat every memory item below as a hint, not truth.\n");
-        prompt.push_str(
-            "- Re-verify any claim about code, files, runtime behavior, config, service state, or security against the current workspace and tools.\n",
-        );
-        prompt.push_str(
-            "- If memory conflicts with current files or runtime state, current state wins.\n",
-        );
-        prompt.push_str(
-            "- Do not rely on memory for facts that are cheap to re-derive from the repo.\n",
-        );
+        prompt.push_str(&memory_contract().render_memory_prompt_preamble());
 
         let mut stats = MemoryPromptStats::default();
 

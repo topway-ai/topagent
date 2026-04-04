@@ -45,7 +45,12 @@ impl LiveProgress {
                             break;
                         }
                         if changed {
-                            if last_rendered_at.elapsed() >= interval {
+                            if last_rendered_at.elapsed() >= interval
+                                || matches!(
+                                    latest.kind,
+                                    ProgressKind::Stopping | ProgressKind::Blocked
+                                )
+                            {
                                 // Enough time passed — render now.
                                 render(&latest, started_at.elapsed(), false);
                                 last_rendered_at = Instant::now();
@@ -257,6 +262,20 @@ mod tests {
         let rendered = rendered.lock().unwrap();
         assert!(rendered.iter().any(|line| line.contains("Stopping after")));
         assert!(rendered.iter().any(|line| line.contains("stopped after")));
+    }
+
+    #[test]
+    fn test_live_progress_renders_blocked_state_immediately() {
+        let (progress, rendered) = capture_progress(Duration::from_millis(100));
+        (progress.callback())(ProgressUpdate::blocked("Blocked: approval required."));
+        std::thread::sleep(Duration::from_millis(20));
+        (progress.callback())(ProgressUpdate::stopped());
+        progress.wait();
+
+        let rendered = rendered.lock().unwrap();
+        assert!(rendered
+            .iter()
+            .any(|line| line.contains("Blocked: approval required.")));
     }
 
     #[test]

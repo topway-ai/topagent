@@ -9,6 +9,7 @@ mod telegram;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -16,8 +17,8 @@ use std::sync::{
 };
 use std::time::Duration;
 use topagent_core::{
-    context::ExecutionContext, create_provider, tools::default_tools, Agent, CancellationToken,
-    ProgressCallback, ProgressUpdate,
+    context::ExecutionContext, create_provider, tools::default_tools, Agent, ApprovalMailbox,
+    ApprovalMailboxMode, ApprovalRequest, CancellationToken, ProgressCallback, ProgressUpdate,
 };
 use tracing::warn;
 use tracing::{error, info};
@@ -206,7 +207,11 @@ fn install_ctrlc_handler(
 fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
     let workspace = resolve_workspace_path(params.workspace)?;
     let cancel_token = CancellationToken::new();
-    let mut ctx = ExecutionContext::new(workspace).with_cancel_token(cancel_token.clone());
+    let interactive_approvals = io::stdin().is_terminal() && io::stderr().is_terminal();
+    let approval_mailbox = build_cli_approval_mailbox(interactive_approvals);
+    let mut ctx = ExecutionContext::new(workspace)
+        .with_cancel_token(cancel_token.clone())
+        .with_approval_mailbox(approval_mailbox);
     let options = build_runtime_options(params.max_steps, params.max_retries, params.timeout_secs)
         .with_generated_tool_authoring(params.generated_tool_authoring.unwrap_or(false));
     let route = build_route(params.provider, params.model)?;
@@ -262,10 +267,145 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
             info!("one-shot run stopped by user");
             std::process::exit(130);
         }
+        Err(topagent_core::Error::ApprovalRequired(request)) => {
+            error!("approval required during one-shot run: {}", request);
+            eprintln!(
+                "{}",
+                format_cli_approval_required(&request, interactive_approvals)
+            );
+            std::process::exit(2);
+        }
         Err(e) => {
             error!("agent error: {}", e);
             eprintln!("error: {}", e);
             std::process::exit(1);
         }
+    }
+}
+
+fn build_cli_approval_mailbox(interactive: bool) -> ApprovalMailbox {
+    let mode = if interactive {
+        ApprovalMailboxMode::Wait
+    } else {
+        ApprovalMailboxMode::Immediate
+    };
+    let mailbox = ApprovalMailbox::new(mode);
+    if interactive {
+        let mailbox_for_prompt = mailbox.clone();
+        mailbox.set_notifier(Arc::new(move |request| {
+            let stdin = io::stdin();
+            let mut stderr = io::stderr();
+            let decision =
+                prompt_for_cli_approval_with_io(&request, &mut stdin.lock(), &mut stderr)
+                    .unwrap_or(false);
+            let result = if decision {
+                mailbox_for_prompt.approve(&request.id, Some("approved in one-shot CLI".into()))
+            } else {
+                mailbox_for_prompt.deny(&request.id, Some("denied in one-shot CLI".into()))
+            };
+            if let Err(err) = result {
+                let _ = writeln!(
+                    stderr,
+                    "failed to resolve approval request {}: {}",
+                    request.id, err
+                );
+            }
+        }));
+    }
+    mailbox
+}
+
+fn prompt_for_cli_approval_with_io(
+    request: &ApprovalRequest,
+    reader: &mut impl BufRead,
+    writer: &mut impl Write,
+) -> Result<bool> {
+    writeln!(writer, "\n{}\n", request.render_details())?;
+    loop {
+        write!(writer, "Approve this action? [y/N]: ")?;
+        writer.flush()?;
+
+        let mut line = String::new();
+        if reader.read_line(&mut line)? == 0 {
+            writeln!(writer)?;
+            return Ok(false);
+        }
+
+        match line.trim().to_ascii_lowercase().as_str() {
+            "y" | "yes" => return Ok(true),
+            "" | "n" | "no" => return Ok(false),
+            _ => {
+                writeln!(writer, "Please answer yes or no.")?;
+            }
+        }
+    }
+}
+
+fn format_cli_approval_required(request: &ApprovalRequest, interactive: bool) -> String {
+    let mut message = request.render_details();
+    if interactive {
+        message.push_str(
+            "\n\nThe operator declined or did not resolve the approval in this one-shot run.",
+        );
+    } else {
+        message.push_str(
+            "\n\nThis one-shot run is non-interactive, so the action was not executed. Re-run from an interactive terminal to approve it.",
+        );
+    }
+    message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+    use topagent_core::ApprovalTriggerKind;
+
+    fn sample_request() -> ApprovalRequest {
+        ApprovalRequest {
+            id: "apr-7".to_string(),
+            action_kind: ApprovalTriggerKind::GitCommit,
+            short_summary: "git commit: ship it".to_string(),
+            exact_action: "git_commit(message=\"ship it\")".to_string(),
+            reason: "commits publish a durable repo milestone".to_string(),
+            scope_of_impact: "Creates a new git commit in the workspace repository.".to_string(),
+            expected_effect: "Staged changes become a durable repo milestone.".to_string(),
+            rollback_hint: Some("Use git revert or git reset if the commit was mistaken.".into()),
+            created_at: std::time::SystemTime::now(),
+        }
+    }
+
+    #[test]
+    fn test_prompt_for_cli_approval_accepts_yes() {
+        let request = sample_request();
+        let mut reader = Cursor::new(b"yes\n".to_vec());
+        let mut output = Vec::new();
+
+        let approved = prompt_for_cli_approval_with_io(&request, &mut reader, &mut output).unwrap();
+
+        assert!(approved);
+        assert!(String::from_utf8(output)
+            .unwrap()
+            .contains("Approve this action?"));
+    }
+
+    #[test]
+    fn test_prompt_for_cli_approval_defaults_to_no_on_blank() {
+        let request = sample_request();
+        let mut reader = Cursor::new(b"\n".to_vec());
+        let mut output = Vec::new();
+
+        let approved = prompt_for_cli_approval_with_io(&request, &mut reader, &mut output).unwrap();
+
+        assert!(!approved);
+    }
+
+    #[test]
+    fn test_format_cli_approval_required_mentions_non_interactive_mode() {
+        let request = sample_request();
+        let message = format_cli_approval_required(&request, false);
+
+        assert!(message.contains("non-interactive"));
+        assert!(message.contains("apr-7"));
     }
 }
