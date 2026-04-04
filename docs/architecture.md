@@ -139,6 +139,8 @@ Secrets are protected at multiple layers:
    - read-write access only to the workspace and `/tmp`
    - network access disabled (`--unshare-net`)
 
+Generated tools use the same workspace sandbox policy as bash. Workspace external tools use a centralized sandbox policy too, but they default to host execution for compatibility unless their `.topagent/external-tools.json` entry explicitly sets `"sandbox": "workspace"`.
+
 5. **Path validation**: file tools reject absolute paths and parent directory traversal (`../`)
 
 6. **Reply redaction**: Telegram replies are scanned for secrets before sending

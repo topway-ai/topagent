@@ -222,3 +222,14 @@ fn test_release_workflow_exists_and_uses_tag_trigger() {
     assert!(workflow.contains("softprops/action-gh-release"));
     assert!(workflow.contains("topagent-x86_64-unknown-linux-gnu"));
 }
+
+#[test]
+fn test_operations_docs_explain_external_tool_sandbox_rollout() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let operations = std::fs::read_to_string(repo_root.join("docs/operations.md")).unwrap();
+
+    assert!(operations.contains("\"sandbox\": \"workspace\""));
+    assert!(operations.contains("compatibility default of host execution"));
+    assert!(operations.contains("Generated tools do not have this toggle"));
+}

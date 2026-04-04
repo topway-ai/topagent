@@ -119,6 +119,22 @@ If a generated tool has an invalid manifest, is missing `script.sh`, is missing 
 TopAgent still reads a legacy workspace-root `commands.json` file for compatibility, but
 `.topagent/external-tools.json` is the canonical location now.
 
+External tool entries can opt into the same workspace sandbox policy used by `bash` and generated tools:
+
+```json
+[
+  {
+    "name": "repo_todos",
+    "description": "search TODOs inside the repo",
+    "command": "rg",
+    "argv_template": ["TODO", "{path}"],
+    "sandbox": "workspace"
+  }
+]
+```
+
+If `sandbox` is omitted, external tools keep their compatibility default of host execution. Generated tools do not have this toggle; they always use the workspace sandbox policy when `bwrap` is available.
+
 ## Persistence and reset
 
 ### Three memory layers
@@ -259,7 +275,7 @@ curl "https://api.telegram.org/bot<YOUR_TOKEN>/deleteWebhook"
 
 ### Sandbox warnings
 
-If you see `bwrap unavailable` in the logs, bash commands run without filesystem sandboxing. Install bubblewrap for sandboxed execution:
+If you see `bwrap unavailable` in the logs, workspace-sandboxed commands run without filesystem sandboxing. That includes `bash`, generated tools, and any external tool configured with `"sandbox": "workspace"`. Install bubblewrap for sandboxed execution:
 
 ```bash
 sudo apt install -y bubblewrap

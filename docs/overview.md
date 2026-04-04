@@ -72,7 +72,7 @@ The agent runs up to 50 steps by default (configurable with `--max-steps`). If i
 | `save_plan` | Archive a plan to `.topagent/plans/` |
 | `save_lesson` | Save a lesson note to `.topagent/lessons/` |
 
-Custom tools are stored in `.topagent/tools/`. Tool-authoring tools are only exposed when the operator enables them with `--tool-authoring on` or, in Telegram, with `/tool_authoring on`. Broken generated tools are reported as workspace warnings.
+Custom tools are stored in `.topagent/tools/`. Tool-authoring tools are only exposed when the operator enables them with `--tool-authoring on` or, in Telegram, with `/tool_authoring on`. Broken generated tools are reported as workspace warnings. Generated tools run under the same workspace sandbox policy as `bash` when `bwrap` is available. Workspace external tools keep a compatibility default of host execution unless their `.topagent/external-tools.json` entry sets `"sandbox": "workspace"`.
 
 ## Current limitations
 
@@ -80,6 +80,6 @@ Custom tools are stored in `.topagent/tools/`. Tool-authoring tools are only exp
 - **Provider**: OpenRouter is the only supported LLM provider
 - **Platform**: Linux only; systemd required for the background service
 - **Workspace**: one workspace per process; the agent cannot operate across repositories
-- **Network**: bash commands run with network disabled when bubblewrap is available
+- **Network**: bash commands and generated tools run with network disabled when bubblewrap is available; workspace external tools only get that policy when their config sets `"sandbox": "workspace"`
 - **Context**: TopAgent no longer restores whole Telegram transcripts by default; it injects a small memory briefing and only targeted transcript snippets when relevant
 - **Model**: default model is `minimax/minimax-m2.7`; quality depends on the model used
