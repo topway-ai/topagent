@@ -1,8 +1,9 @@
 use crate::approval::ApprovalCheck;
 use crate::behavior::{
-    BashCommandClass, BehaviorContract, BehaviorPromptContext, PreExecutionState,
+    BashCommandClass, BehaviorContract, BehaviorPromptContext, PreExecutionState, RunStateSnapshot,
 };
 use crate::command_exec::CommandSandboxPolicy;
+use crate::compaction::{CompactionRuntimeState, TranscriptCompactor};
 use crate::context::{ExecutionContext, ToolContext};
 use crate::external::{ExternalToolEffect, ExternalToolRegistry};
 use crate::hooks::HookRegistry;
@@ -54,7 +55,9 @@ pub struct Agent {
     behavior: BehaviorContract,
     plan: Arc<Mutex<Plan>>,
     hooks: HookRegistry,
+    current_objective: Option<String>,
     changed_files: RefCell<Vec<String>>,
+    active_files: RefCell<Vec<String>>,
     bash_history: RefCell<Vec<(String, String, i32)>>,
     planning_gate_active: bool,
     planning_required_for_task: bool,
@@ -68,6 +71,7 @@ pub struct Agent {
     run_baseline: RefCell<Option<RunBaseline>>,
     progress_callback: Option<ProgressCallback>,
     planning_block_count: usize,
+    compaction_state: CompactionRuntimeState,
     generated_tool_warnings: Vec<String>,
 }
 
@@ -150,7 +154,9 @@ impl Agent {
             behavior,
             plan,
             hooks: HookRegistry::new(),
+            current_objective: None,
             changed_files: RefCell::new(Vec::new()),
+            active_files: RefCell::new(Vec::new()),
             bash_history: RefCell::new(Vec::new()),
             planning_gate_active: false,
             planning_required_for_task: false,
@@ -162,6 +168,7 @@ impl Agent {
             run_baseline: RefCell::new(None),
             progress_callback: None,
             planning_block_count: 0,
+            compaction_state: CompactionRuntimeState::default(),
             generated_tool_warnings: Vec::new(),
         }
     }
@@ -278,15 +285,52 @@ impl Agent {
         self.clear_planning_block_state();
     }
 
-    fn maybe_truncate_history(&mut self) {
-        if self.session.message_count() > self.behavior.compaction.max_messages_before_truncation {
-            let keep_recent = self.behavior.keep_recent_message_count();
-            let notice = self
-                .behavior
-                .build_truncation_notice(self.session.message_count() - keep_recent);
-            self.session
-                .truncate_history_with_notice(keep_recent, move |_| notice);
+    fn maybe_compact_context(&mut self, ctx: &ExecutionContext) {
+        let message_count = self.session.message_count();
+        if !self.behavior.should_micro_compact(message_count) {
+            return;
         }
+
+        let snapshot = self.build_run_state_snapshot(ctx, self.plan_exists());
+        let compactor = TranscriptCompactor::new(&self.behavior.compaction);
+
+        if self.behavior.should_auto_compact(message_count) && !self.compaction_state.auto_disabled
+        {
+            match compactor.auto_compact(&mut self.session, &snapshot) {
+                Ok(Some(_)) => {
+                    self.compaction_state.consecutive_auto_failures = 0;
+                }
+                Ok(None) => {}
+                Err(_) => {
+                    self.compaction_state.consecutive_auto_failures += 1;
+                    if self.compaction_state.consecutive_auto_failures
+                        >= self.behavior.compaction.max_failed_auto_compactions
+                    {
+                        self.compaction_state.auto_disabled = true;
+                    }
+                    self.fallback_truncate_history();
+                }
+            }
+            return;
+        }
+
+        let _ = compactor.micro_compact(&mut self.session, &snapshot);
+        if self.compaction_state.auto_disabled {
+            self.fallback_truncate_history();
+        }
+    }
+
+    fn fallback_truncate_history(&mut self) {
+        if self.session.message_count() <= self.behavior.compaction.max_messages_before_truncation {
+            return;
+        }
+
+        let keep_recent = self.behavior.keep_recent_message_count();
+        let notice = self
+            .behavior
+            .build_truncation_notice(self.session.message_count() - keep_recent);
+        self.session
+            .truncate_history_with_notice(keep_recent, move |_| notice);
     }
 
     /// Pop a previous redirect message (if present) and replace it with the
@@ -590,6 +634,7 @@ impl Agent {
         }
 
         // ── Preflight: hooks + gates ──
+        self.track_active_file(&name, &args);
         let bash_args = if name == "bash" { Some(&args) } else { None };
         if let Some(block) = self.run_preflight(ctx, &name, &args, bash_args, None, None)? {
             self.record_tool_result(id, name, args, block.message);
@@ -766,6 +811,29 @@ impl Agent {
         }
     }
 
+    fn track_active_file(&self, tool_name: &str, args: &serde_json::Value) {
+        let path = match tool_name {
+            "read" | "write" | "edit" => args.get("path").and_then(|p| p.as_str()),
+            _ => None,
+        };
+        let Some(path) = path else {
+            return;
+        };
+
+        let mut active = self.active_files.borrow_mut();
+        if let Some(existing) = active.iter().position(|entry| entry == path) {
+            let entry = active.remove(existing);
+            active.push(entry);
+            return;
+        }
+
+        active.push(path.to_string());
+        if active.len() > 12 {
+            let excess = active.len() - 12;
+            active.drain(0..excess);
+        }
+    }
+
     fn record_changed_file(&self, path: String) {
         if self.is_pre_existing_dirty(&path) {
             return;
@@ -773,6 +841,96 @@ impl Agent {
         let mut changed = self.changed_files.borrow_mut();
         if !changed.contains(&path) {
             changed.push(path);
+        }
+    }
+
+    fn build_run_state_snapshot(
+        &self,
+        ctx: &ExecutionContext,
+        plan_exists: bool,
+    ) -> RunStateSnapshot {
+        let mut blockers = Vec::new();
+        if self.planning_gate_active && !plan_exists {
+            blockers
+                .push("Planning required before mutation-risk actions can continue.".to_string());
+        }
+
+        let mut pending_approvals = Vec::new();
+        let mut recent_approval_decisions = Vec::new();
+        if let Some(mailbox) = ctx.approval_mailbox() {
+            for entry in mailbox.pending() {
+                pending_approvals.push(entry.request.render_status_line(entry.state));
+            }
+
+            let mut resolved = mailbox
+                .list()
+                .into_iter()
+                .filter(|entry| entry.state != crate::approval::ApprovalState::Pending)
+                .collect::<Vec<_>>();
+            resolved.sort_by_key(|entry| entry.resolved_at.or(Some(entry.request.created_at)));
+
+            for entry in resolved
+                .into_iter()
+                .rev()
+                .take(self.behavior.compaction.max_recent_approval_decisions)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+            {
+                let mut line = entry.request.render_status_line(entry.state);
+                if let Some(note) = entry.decision_note {
+                    line.push_str(&format!(" ({note})"));
+                }
+                if matches!(
+                    entry.state,
+                    crate::approval::ApprovalState::Denied
+                        | crate::approval::ApprovalState::Expired
+                        | crate::approval::ApprovalState::Superseded
+                ) {
+                    blockers.push(format!(
+                        "Approval {}: {}",
+                        entry.state.label(),
+                        entry.request.short_summary
+                    ));
+                }
+                recent_approval_decisions.push(line);
+            }
+        }
+
+        let mut active_files = self.active_files.borrow().clone();
+        for changed in self.changed_files.borrow().iter() {
+            if !active_files.contains(changed) {
+                active_files.push(changed.clone());
+            }
+        }
+
+        let changed_files = self.changed_files.borrow().clone();
+        let mut proof_of_work_anchors = Vec::new();
+        if !changed_files.is_empty() {
+            proof_of_work_anchors.push(format!("changed files: {}", changed_files.join(", ")));
+        }
+
+        for (command, _output, exit_code) in self.bash_history.borrow().iter().rev() {
+            if !self.behavior.is_verification_command(command) {
+                continue;
+            }
+            proof_of_work_anchors.push(format!("verification: {} (exit {})", command, exit_code));
+            if proof_of_work_anchors.len()
+                >= self.behavior.compaction.max_recent_proof_of_work_anchors
+            {
+                break;
+            }
+        }
+        proof_of_work_anchors.reverse();
+
+        RunStateSnapshot {
+            objective: self.current_objective.clone(),
+            blockers,
+            pending_approvals,
+            recent_approval_decisions,
+            active_files,
+            proof_of_work_anchors,
+            memory_context_loaded: ctx.memory_context().is_some(),
         }
     }
 
@@ -1123,6 +1281,7 @@ impl Agent {
                 )));
             }
 
+            self.maybe_compact_context(ctx);
             if self.behavior.compaction.refresh_system_prompt_each_turn || steps == 0 {
                 self.session
                     .set_system_prompt(&self.build_run_system_prompt(ctx)?);
@@ -1220,7 +1379,6 @@ impl Agent {
                 ProviderResponse::ToolCall { id, name, args } => {
                     self.execute_single_tool_call(ctx, instruction, id, name, args)?;
                     empty_response_retries = 0;
-                    self.maybe_truncate_history();
                 }
                 ProviderResponse::ToolCalls(calls) => {
                     for call in calls {
@@ -1233,7 +1391,6 @@ impl Agent {
                         )?;
                     }
                     empty_response_retries = 0;
-                    self.maybe_truncate_history();
                 }
                 ProviderResponse::RequiresInput => {
                     return Err(Error::Session(
@@ -1261,9 +1418,12 @@ impl Agent {
 
     fn reset_run_state(&mut self, ctx: &ExecutionContext, instruction: &str) -> Result<()> {
         let workspace_root = &ctx.workspace_root;
+        self.current_objective = Some(instruction.to_string());
         self.changed_files.borrow_mut().clear();
+        self.active_files.borrow_mut().clear();
         self.bash_history.borrow_mut().clear();
         *self.external_tool_ran.borrow_mut() = false;
+        self.compaction_state = CompactionRuntimeState::default();
         self.capture_run_baseline(workspace_root);
 
         self.planning_required_for_task = self.behavior.planning.require_plan_by_default
@@ -1290,6 +1450,7 @@ impl Agent {
             .filter(|plan| !plan.is_empty())
             .map(|plan| &**plan);
         let plan_exists = current_plan.is_some();
+        let run_state = self.build_run_state_snapshot(ctx, plan_exists);
 
         Ok(self.behavior.render_system_prompt(&BehaviorPromptContext {
             available_tools: &available_tools,
@@ -1297,6 +1458,7 @@ impl Agent {
             project_instructions: project_instructions.as_deref(),
             memory_context: ctx.memory_context(),
             current_plan,
+            run_state: Some(&run_state),
             generated_tool_warnings: &self.generated_tool_warnings,
             planning_required_now: self.planning_gate_active && !plan_exists,
             approval_mailbox_available: ctx.approval_mailbox().is_some(),
@@ -1464,7 +1626,9 @@ fn extract_exit_code(result: &str) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::{extract_exit_code, Agent};
-    use crate::approval::{ApprovalMailbox, ApprovalMailboxMode, ApprovalTriggerKind};
+    use crate::approval::{
+        ApprovalMailbox, ApprovalMailboxMode, ApprovalRequestDraft, ApprovalTriggerKind,
+    };
     use crate::context::ExecutionContext;
     use crate::provider::{ProviderResponse, ScriptedProvider};
     use crate::runtime::RuntimeOptions;
@@ -1596,6 +1760,50 @@ path = "src/lib.rs"
         fs::write(temp.path().join("tracked.txt"), "after\n").unwrap();
         run_git(temp.path(), &["add", "tracked.txt"]);
         (temp, ExecutionContext::new(root))
+    }
+
+    fn seed_mailbox_for_compaction_test(mailbox: &ApprovalMailbox) {
+        let pending = mailbox.request_decision(
+            ApprovalRequestDraft {
+                action_kind: ApprovalTriggerKind::GitCommit,
+                short_summary: "git commit: release snapshot".to_string(),
+                exact_action: "git_commit(message=\"release snapshot\")".to_string(),
+                reason: "commits publish a durable repo milestone".to_string(),
+                scope_of_impact: "Creates a new git commit in the workspace repository."
+                    .to_string(),
+                expected_effect: "Staged changes become a durable commit.".to_string(),
+                rollback_hint: Some(
+                    "Use git revert or git reset if the commit was mistaken.".to_string(),
+                ),
+            },
+            None,
+        );
+        let denied = mailbox.request_decision(
+            ApprovalRequestDraft {
+                action_kind: ApprovalTriggerKind::GeneratedToolDeletion,
+                short_summary: "delete generated tool: cleanup_helper".to_string(),
+                exact_action: "delete_generated_tool(name=\"cleanup_helper\")".to_string(),
+                reason: "tool deletion removes workspace-local capability".to_string(),
+                scope_of_impact: "Deletes a generated tool from .topagent/tools.".to_string(),
+                expected_effect: "The generated helper disappears from the callable tool surface."
+                    .to_string(),
+                rollback_hint: Some("Recreate the tool if the deletion was mistaken.".to_string()),
+            },
+            None,
+        );
+
+        let denied_id = match denied {
+            crate::approval::ApprovalCheck::Pending(entry) => entry.request.id,
+            other => panic!("expected pending approval entry, got {other:?}"),
+        };
+        mailbox
+            .deny(&denied_id, Some("keep the helper around".to_string()))
+            .unwrap();
+
+        match pending {
+            crate::approval::ApprovalCheck::Pending(_) => {}
+            other => panic!("expected pending approval entry, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1930,5 +2138,51 @@ path = "src/lib.rs"
             mailbox.get("apr-1").unwrap().state,
             crate::approval::ApprovalState::Approved
         );
+    }
+
+    #[test]
+    fn test_compaction_preserves_objective_plan_and_approval_state_in_prompt_rebuild() {
+        let (_temp, ctx) = create_temp_crate();
+        let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
+        seed_mailbox_for_compaction_test(&mailbox);
+        let ctx = ctx.with_approval_mailbox(mailbox);
+        let provider = ScriptedProvider::new(vec![
+            update_plan_call("plan"),
+            tool_call("read-1", "read", serde_json::json!({"path": "src/lib.rs"})),
+            tool_call("read-2", "read", serde_json::json!({"path": "src/lib.rs"})),
+            assistant_message("done"),
+        ]);
+        let mut agent = Agent::with_options(
+            Box::new(provider),
+            default_tools().into_inner(),
+            RuntimeOptions::default().with_max_messages_before_truncation(4),
+        );
+
+        let instruction = "Refactor the entire codebase safely after you make a plan.";
+        let result = agent.run(&ctx, instruction).unwrap();
+
+        assert_eq!(result, "done");
+        let prompt = agent.build_run_system_prompt(&ctx).unwrap();
+        assert!(prompt.contains("## Active Run State"));
+        assert!(prompt.contains(instruction));
+        assert!(prompt.contains("## Current Plan"));
+        assert!(prompt.contains("apr-1 [pending] git commit: release snapshot"));
+        assert!(prompt.contains("apr-2 [denied] delete generated tool: cleanup_helper"));
+        assert!(prompt.contains("Approval denied: delete generated tool: cleanup_helper"));
+
+        let summary = agent
+            .session
+            .raw_messages()
+            .into_iter()
+            .find_map(|message| {
+                message
+                    .as_text()
+                    .filter(|text| text.starts_with("["))
+                    .map(str::to_string)
+            })
+            .expect("compaction summary should be present");
+        assert!(summary.contains(instruction));
+        assert!(summary.contains("current plan"));
+        assert!(summary.contains("apr-2 [denied] delete generated tool: cleanup_helper"));
     }
 }
