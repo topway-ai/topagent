@@ -218,7 +218,7 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
     let api_key = require_openrouter_api_key(params.api_key)?;
     let workspace_memory = WorkspaceMemory::new(ctx.workspace_root.clone());
 
-    if let Err(err) = workspace_memory.consolidate_index_if_needed() {
+    if let Err(err) = workspace_memory.consolidate_memory_if_needed() {
         warn!("failed to consolidate workspace memory index: {}", err);
     }
     match workspace_memory.build_prompt(&instruction, None) {

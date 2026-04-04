@@ -543,7 +543,7 @@ impl ChatSessionManager {
                 err
             );
         }
-        if let Err(err) = memory.consolidate_index_if_needed() {
+        if let Err(err) = memory.consolidate_memory_if_needed() {
             warn!(
                 "failed to consolidate workspace memory index in {}: {}",
                 workspace_root.display(),
@@ -623,7 +623,7 @@ impl ChatSessionManager {
     }
 
     fn build_memory_context(&self, chat_id: i64, instruction: &str) -> Option<String> {
-        if let Err(err) = self.memory.consolidate_index_if_needed() {
+        if let Err(err) = self.memory.consolidate_memory_if_needed() {
             warn!(
                 "failed to consolidate workspace memory index in {}: {}",
                 self.history_store.history_dir.display(),

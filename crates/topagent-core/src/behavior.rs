@@ -147,7 +147,18 @@ pub struct MemoryPolicy {
     pub keep_index_tiny: bool,
     pub index_is_pointer_only: bool,
     pub topic_file_relative_dir: &'static str,
+    pub archival_relative_dirs: &'static [&'static str],
     pub index_entry_format: &'static str,
+    pub max_index_entries: usize,
+    pub max_index_note_chars: usize,
+    pub max_index_prompt_bytes: usize,
+    pub max_durable_file_prompt_bytes: usize,
+    pub max_topics_to_load: usize,
+    pub max_transcript_prompt_bytes: usize,
+    pub max_transcript_snippets: usize,
+    pub max_transcript_message_bytes: usize,
+    pub max_curated_lessons: usize,
+    pub max_curated_plans: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -433,8 +444,19 @@ Use the update_plan tool to create a plan with concrete steps, then execute it."
                 keep_index_tiny: true,
                 index_is_pointer_only: true,
                 topic_file_relative_dir: "topics",
+                archival_relative_dirs: &["lessons", "plans"],
                 index_entry_format:
                     "- topic: <name> | file: topics/<name>.md | status: verified|tentative|stale | tags: tag1, tag2 | note: short pointer",
+                max_index_entries: 24,
+                max_index_note_chars: 120,
+                max_index_prompt_bytes: 1_400,
+                max_durable_file_prompt_bytes: 1_200,
+                max_topics_to_load: 2,
+                max_transcript_prompt_bytes: 1_500,
+                max_transcript_snippets: 3,
+                max_transcript_message_bytes: 220,
+                max_curated_lessons: 6,
+                max_curated_plans: 4,
             },
             generated_tools: GeneratedToolPolicy {
                 authoring_enabled: options.enable_generated_tool_authoring,
@@ -727,6 +749,12 @@ Use the update_plan tool to create a plan with concrete steps, then execute it."
             "- Do not rely on memory for facts that are cheap to re-derive from the repo.\n",
         );
         prompt
+    }
+
+    pub fn render_memory_transcript_preamble(&self) -> String {
+        String::from(
+            "Relevant snippets from prior Telegram chat. Use them as recall support, then verify against current files and runtime state.\n",
+        )
     }
 
     pub fn render_memory_index_template(&self) -> String {

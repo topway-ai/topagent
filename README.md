@@ -47,7 +47,7 @@ Then open a private chat with your bot and send a message.
 TopAgent keeps Telegram memory in three layers:
 
 - a tiny always-loaded workspace index at `workspace/.topagent/MEMORY.md`
-- compact topic files under `workspace/.topagent/topics/`, loaded only when relevant
+- compact durable notes under `workspace/.topagent/topics/`, plus archived lessons and saved plans under `workspace/.topagent/lessons/` and `workspace/.topagent/plans/`, loaded only when relevant
 - a per-chat raw transcript under `workspace/.topagent/telegram-history/`, used as searchable evidence rather than replayed wholesale
 
 ### Bot commands
@@ -95,7 +95,7 @@ Workspace memory is separate from `TOPAGENT.md`:
 
 - `TOPAGENT.md` is for always-on project instructions
 - `.topagent/MEMORY.md` is a tiny durable memory index
-- `.topagent/topics/` holds compact topic notes loaded only when the task matches them
+- `.topagent/topics/`, `.topagent/lessons/`, and `.topagent/plans/` hold compact durable notes and archived artifacts that get curated back into the index when useful
 - `.topagent/telegram-history/` stores searchable per-chat transcript evidence
 
 ## Troubleshooting
