@@ -1,3 +1,6 @@
+use crate::behavior::{
+    BashCommandClass, BehaviorContract, BehaviorPromptContext, PreExecutionState,
+};
 use crate::context::{ExecutionContext, ToolContext};
 use crate::external::{ExternalToolEffect, ExternalToolRegistry};
 use crate::hooks::HookRegistry;
@@ -5,7 +8,6 @@ use crate::model::ModelRoute;
 use crate::plan::{self, Plan};
 use crate::progress::{ProgressCallback, ProgressUpdate};
 use crate::project::get_project_instructions_or_error;
-use crate::prompt;
 use crate::runtime::RuntimeOptions;
 use crate::session::Session;
 use crate::task_result::{TaskEvidence, TaskResult, VerificationCommand};
@@ -24,11 +26,11 @@ use std::sync::{Arc, Mutex};
 // Two independent counters protect against distinct planning failures.
 // They are intentionally separate:
 //
-// 1. `planning_block_count` (vs MAX_PLANNING_BLOCKS_BEFORE_FAILURE):
+// 1. `planning_block_count` (vs behavior.planning.max_blocked_mutations_before_auto_plan):
 //    Counts consecutive mutation-tool calls blocked by the planning gate.
 //    Covers: model actively tries to mutate without creating a plan.
 //
-// 2. `planning_phase_steps` (vs MAX_PLANNING_PHASE_STEPS):
+// 2. `planning_phase_steps` (vs behavior.planning.max_research_steps_without_plan):
 //    Counts total loop iterations while gate is active and plan is empty.
 //    Covers: model loops in research tools without ever attempting mutation
 //    or planning.
@@ -36,29 +38,18 @@ use std::sync::{Arc, Mutex};
 // Both trigger the same fallback: try a dedicated LLM plan-generation call,
 // and if that fails, create a minimal emergency plan.
 //
-// `planning_redirects` (vs MAX_PLANNING_REDIRECTS):
+// `planning_redirects` (vs behavior.planning.max_text_redirects_before_auto_plan):
 //    Counts text-response bail-outs during planning phase.
 //    Covers: model tries to return a final answer without planning.
 
-const MAX_PLANNING_BLOCKS_BEFORE_FAILURE: usize = 5;
-const MAX_PLANNING_PHASE_STEPS: usize = 10;
-const MAX_PLANNING_REDIRECTS: usize = 2;
 const WORKSPACE_EXTERNAL_TOOLS_PATH: &str = ".topagent/external-tools.json";
-
-/// Number of distinct files changed without a plan before we consider
-/// escalating a non-plan-required task into plan-required.
-const UNPLANNED_MUTATION_ESCALATION_THRESHOLD: usize = 3;
-const GENERATED_TOOL_WARNING_SECTION_TITLE: &str = "## Generated Tool Warnings";
-
-const PLANNING_REDIRECT_MSG: &str = "\
-This task requires a plan before proceeding. \
-Use the update_plan tool to create a plan with concrete steps, then execute it.";
 pub struct Agent {
     session: Session,
     provider: Box<dyn Provider>,
     tools: ToolRegistry,
     external_tools: ExternalToolRegistry,
     options: RuntimeOptions,
+    behavior: BehaviorContract,
     plan: Arc<Mutex<Plan>>,
     hooks: HookRegistry,
     changed_files: RefCell<Vec<String>>,
@@ -90,13 +81,6 @@ pub enum ExecutionStage {
     Research,
     Edit,
     Review,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BashCommandClass {
-    ResearchSafe,
-    MutationRisk,
-    Verification,
 }
 
 /// Result of a preflight check that blocked tool execution.
@@ -133,6 +117,7 @@ impl Agent {
         tools: Vec<Box<dyn Tool>>,
         options: RuntimeOptions,
     ) -> Self {
+        let behavior = BehaviorContract::from_runtime_options(&options);
         let mut registry = ToolRegistry::new();
         for tool in tools {
             registry.add(tool);
@@ -147,7 +132,7 @@ impl Agent {
 
         registry.add(Box::new(SaveLessonTool::new()));
 
-        if options.enable_generated_tool_authoring {
+        if behavior.generated_tools.authoring_enabled {
             registry.add(Box::new(CreateToolTool::new()));
             registry.add(Box::new(RepairToolTool::new()));
             registry.add(Box::new(ListGeneratedToolsTool::new()));
@@ -160,6 +145,7 @@ impl Agent {
             tools: registry,
             external_tools: ExternalToolRegistry::new(),
             options,
+            behavior,
             plan,
             hooks: HookRegistry::new(),
             changed_files: RefCell::new(Vec::new()),
@@ -249,7 +235,7 @@ impl Agent {
     }
 
     fn tool_progress(&self, name: &str, args: &serde_json::Value) -> ProgressUpdate {
-        if Self::is_plan_tool(name) {
+        if self.behavior.is_planning_tool(name) {
             return ProgressUpdate::planning();
         }
 
@@ -291,9 +277,13 @@ impl Agent {
     }
 
     fn maybe_truncate_history(&mut self) {
-        if self.session.message_count() > self.options.max_messages_before_truncation {
-            let keep_recent = self.options.max_messages_before_truncation / 2;
-            self.session.truncate_history(keep_recent);
+        if self.session.message_count() > self.behavior.compaction.max_messages_before_truncation {
+            let keep_recent = self.behavior.keep_recent_message_count();
+            let notice = self
+                .behavior
+                .build_truncation_notice(self.session.message_count() - keep_recent);
+            self.session
+                .truncate_history_with_notice(keep_recent, move |_| notice);
         }
     }
 
@@ -318,7 +308,7 @@ impl Agent {
         instruction: &str,
         cancel: Option<&crate::CancellationToken>,
     ) -> Result<bool> {
-        match plan::heuristic_fast_path(instruction) {
+        match self.behavior.classify_task_fast_path(instruction) {
             Some(result) => Ok(result),
             None => self.classify_task_with_llm(instruction, cancel),
         }
@@ -329,7 +319,9 @@ impl Agent {
         instruction: &str,
         cancel: Option<&crate::CancellationToken>,
     ) -> Result<bool> {
-        let (system_prompt, user_msg) = plan::build_classification_messages(instruction);
+        let (system_prompt, user_msg) = self
+            .behavior
+            .build_task_classification_messages(instruction);
         let messages = vec![Message::system(system_prompt), Message::user(user_msg)];
         let route = self.resolved_route.clone();
 
@@ -352,7 +344,7 @@ impl Agent {
         instruction: &str,
         cancel: Option<&crate::CancellationToken>,
     ) -> Result<plan::TaskMode> {
-        match plan::task_mode_fast_path(instruction) {
+        match self.behavior.task_mode_fast_path(instruction) {
             Some(mode) => Ok(mode),
             None => self.classify_task_mode_with_llm(instruction, cancel),
         }
@@ -363,7 +355,7 @@ impl Agent {
         instruction: &str,
         cancel: Option<&crate::CancellationToken>,
     ) -> Result<plan::TaskMode> {
-        let (system_prompt, user_msg) = plan::build_task_mode_messages(instruction);
+        let (system_prompt, user_msg) = self.behavior.build_task_mode_messages(instruction);
         let messages = vec![Message::system(system_prompt), Message::user(user_msg)];
         let route = self.resolved_route.clone();
 
@@ -417,7 +409,7 @@ impl Agent {
         instruction: &str,
         cancel: Option<&crate::CancellationToken>,
     ) -> Result<bool> {
-        let prompt = plan::build_plan_generation_prompt(instruction);
+        let prompt = self.behavior.build_plan_generation_prompt(instruction);
         let messages = vec![Message::system(prompt.0), Message::user(prompt.1)];
         let route = self.resolved_route.clone();
 
@@ -453,7 +445,12 @@ impl Agent {
         }
 
         self.planning_block_count += 1;
-        if self.planning_block_count >= MAX_PLANNING_BLOCKS_BEFORE_FAILURE {
+        if self.planning_block_count
+            >= self
+                .behavior
+                .planning
+                .max_blocked_mutations_before_auto_plan
+        {
             self.generate_or_fallback_plan(instruction, ctx.cancel_token())?;
         }
 
@@ -465,15 +462,13 @@ impl Agent {
     /// Activates the planning gate if multiple distinct files have been
     /// changed without any plan in place.
     fn maybe_escalate_to_planning(&mut self) {
-        // Only escalate once; don't re-escalate after auto-plan resolved it.
-        if self.planning_gate_active || self.planning_escalated || self.plan_exists() {
-            return;
-        }
-        if !self.options.require_plan {
-            return;
-        }
         let distinct_files = self.changed_files.borrow().len();
-        if distinct_files >= UNPLANNED_MUTATION_ESCALATION_THRESHOLD {
+        if self.behavior.should_escalate_to_planning(
+            self.planning_gate_active,
+            self.planning_escalated,
+            self.plan_exists(),
+            distinct_files,
+        ) {
             self.planning_gate_active = true;
             self.planning_required_for_task = true;
             self.planning_escalated = true;
@@ -656,17 +651,17 @@ impl Agent {
         // ── Track mutations ──
         self.track_changed_file(&name, &args);
 
-        if Self::is_mutation_tool(&name) {
+        if self.behavior.is_mutation_tool(&name) {
             self.reconcile_changed_files(&ctx.workspace_root);
             self.mark_execution_started();
             self.maybe_escalate_to_planning();
         }
 
-        if Self::is_plan_tool(&name) && self.plan_exists() {
+        if self.behavior.is_planning_tool(&name) && self.plan_exists() {
             self.deactivate_planning_gate();
         }
 
-        if Self::mutates_generated_tool_surface(&name) {
+        if self.behavior.mutates_generated_tool_surface(&name) {
             self.reload_workspace_tools(&ctx.workspace_root)?;
         }
 
@@ -805,44 +800,27 @@ impl Agent {
         }
     }
 
-    fn task_requires_concrete_execution(&self) -> bool {
-        matches!(self.task_mode, plan::TaskMode::PlanAndExecute)
-    }
-
-    fn should_block_pre_execution_actions(&self) -> bool {
-        self.planning_required_for_task
-            && self.plan_exists()
-            && !self.execution_started()
-            && self.task_requires_concrete_execution()
-    }
-
     fn check_pre_execution_verification_gate(
         &self,
         tool_name: &str,
         bash_args: Option<&serde_json::Value>,
         external_effect: Option<ExternalToolEffect>,
     ) -> Option<String> {
-        if !self.should_block_pre_execution_actions() {
-            return None;
-        }
+        let bash_command = bash_args
+            .and_then(|args| args.get("command"))
+            .and_then(|value| value.as_str());
 
-        if tool_name == "bash" {
-            let args = bash_args?;
-            let cmd = args.get("command").and_then(|c| c.as_str())?;
-            if Self::classify_bash_command(cmd) == BashCommandClass::Verification {
-                return Some(
-                    "A plan exists, but no concrete execution step has run yet. Execute at least one plan step before verification commands.".to_string(),
-                );
-            }
-        }
-
-        if matches!(external_effect, Some(ExternalToolEffect::VerificationOnly)) {
-            return Some(
-                "A plan exists, but no concrete execution step has run yet. Execute at least one plan step before verification tools.".to_string(),
-            );
-        }
-
-        None
+        self.behavior.pre_execution_block_message(
+            tool_name,
+            bash_command,
+            external_effect,
+            &PreExecutionState {
+                planning_required_for_task: self.planning_required_for_task,
+                plan_exists: self.plan_exists(),
+                execution_started: self.execution_started(),
+                task_mode: self.task_mode,
+            },
+        )
     }
 
     fn compute_file_hash(path: &Path) -> Option<String> {
@@ -977,75 +955,8 @@ impl Agent {
         dirty
     }
 
-    fn is_mutation_tool(name: &str) -> bool {
-        matches!(name, "write" | "edit" | "git_commit" | "git_add")
-    }
-
-    fn is_plan_tool(name: &str) -> bool {
-        matches!(name, "update_plan" | "save_plan")
-    }
-
     pub fn classify_bash_command(cmd: &str) -> BashCommandClass {
-        let trimmed = cmd.trim();
-        let lower = trimmed.to_lowercase();
-
-        if Self::is_verification_command(trimmed) {
-            return BashCommandClass::Verification;
-        }
-
-        // Detect common mutation patterns before safe prefixes
-        if lower.contains(" >")
-            || lower.contains(">>")
-            || lower.contains("|")
-            || lower.contains("rm ")
-            || lower.contains("mv ")
-            || lower.contains("cp ")
-            || lower.contains("touch ")
-            || lower.contains("mkdir ")
-            || lower.contains("echo ") && lower.contains(">")
-        {
-            return BashCommandClass::MutationRisk;
-        }
-
-        let research_safe_prefixes = [
-            "ls ",
-            "ls-",
-            "pwd",
-            "find ",
-            "find -",
-            "rg ",
-            "rg -",
-            "grep ",
-            "grep -",
-            "cat ",
-            "head ",
-            "tail ",
-            "wc ",
-            "cut ",
-            "sort ",
-            "uniq ",
-            "diff ",
-            "git status",
-            "git diff",
-            "git log ",
-            "git show",
-            "git blame",
-            "git branch",
-            "git remote",
-            "git stash list",
-            "echo ",
-            "printf ",
-            "true",
-            "false",
-        ];
-
-        for prefix in research_safe_prefixes {
-            if lower.starts_with(prefix) || lower == prefix.trim_end_matches(' ') {
-                return BashCommandClass::ResearchSafe;
-            }
-        }
-
-        BashCommandClass::MutationRisk
+        BehaviorContract::default().classify_bash_command(cmd)
     }
 
     fn check_planning_gate(
@@ -1057,114 +968,16 @@ impl Agent {
         if !self.planning_gate_active {
             return None;
         }
-        if Self::is_plan_tool(tool_name) {
-            return None;
-        }
+        let bash_command = bash_args
+            .and_then(|args| args.get("command"))
+            .and_then(|value| value.as_str());
 
-        if tool_name == "bash" {
-            let plan_exists = self.plan.lock().map(|p| !p.is_empty()).unwrap_or(false);
-            if plan_exists {
-                return None;
-            }
-            if let Some(args) = bash_args {
-                if let Some(cmd) = args.get("command").and_then(|c| c.as_str()) {
-                    let class = Self::classify_bash_command(cmd);
-                    if class == BashCommandClass::ResearchSafe {
-                        return None;
-                    }
-                }
-            }
-            if bash_args.is_none() {
-                return Some(
-                    "Planning required for this task. Please create a plan using update_plan before running bash commands.".to_string(),
-                );
-            }
-            return Some(
-                "Planning required for this task. Use update_plan to create a plan before mutation commands.".to_string(),
-            );
-        }
-
-        if let Some(effect) = external_effect {
-            if self.plan_exists() {
-                return None;
-            }
-
-            return match effect {
-                ExternalToolEffect::ReadOnly => None,
-                ExternalToolEffect::VerificationOnly => Some(
-                    "Planning required for this task. Create a plan before running verification tools.".to_string(),
-                ),
-                ExternalToolEffect::ExecutionStarted => Some(
-                    "Planning required for this task. Create a plan before running execution tools.".to_string(),
-                ),
-            };
-        }
-
-        if !Self::is_mutation_tool(tool_name) {
-            return None;
-        }
-        if let Ok(plan) = self.plan.lock() {
-            if !plan.is_empty() {
-                return None;
-            }
-        }
-        Some(format!(
-            "Planning required for this task. Please create a plan using update_plan before using {}.",
-            tool_name
-        ))
-    }
-
-    fn is_verification_command(cmd: &str) -> bool {
-        let lower = cmd.to_lowercase();
-
-        if lower.starts_with("cargo test")
-            || lower.starts_with("cargo build")
-            || lower.starts_with("cargo check")
-            || lower.starts_with("cargo clippy")
-            || lower.starts_with("cargo fmt")
-            || lower.starts_with("cargo watch")
-            || lower.starts_with("cargo auditable")
-            || lower.starts_with("pytest")
-            || lower.starts_with("py.test")
-            || lower.starts_with("make test")
-            || lower.starts_with("make check")
-            || lower.starts_with("make verify")
-            || lower.starts_with("npm test")
-            || lower.starts_with("npm run test")
-            || lower.starts_with("npm run build")
-            || lower.starts_with("npm run check")
-            || lower.starts_with("go test")
-            || lower.starts_with("go build")
-            || lower.starts_with("go vet")
-            || lower.starts_with("rustfmt")
-            || lower.starts_with("rust-analyzer")
-            || lower.starts_with("clippy")
-            || lower.starts_with("deny ")
-            || lower.starts_with("audit ")
-            || lower.starts_with("cargo deny")
-            || lower.starts_with("cargo audit")
-        {
-            return true;
-        }
-
-        if lower.contains(" --verify") || lower.contains(" --check") {
-            return true;
-        }
-
-        if lower.ends_with(" --test") || lower.ends_with(" --tests") {
-            return true;
-        }
-
-        if lower.contains("verify") || lower.contains("lint") && !lower.contains("git") {
-            let verification_indicators = ["test", "build", "check", "lint", "fmt", "audit", "vet"];
-            for indicator in verification_indicators {
-                if lower.contains(indicator) {
-                    return true;
-                }
-            }
-        }
-
-        false
+        self.behavior.planning_block_message(
+            tool_name,
+            bash_command,
+            external_effect,
+            self.plan_exists(),
+        )
     }
 
     fn extract_bash_command(args: &serde_json::Value) -> String {
@@ -1221,8 +1034,6 @@ impl Agent {
         self.emit_progress(self.current_working_progress());
 
         self.session.add_message(Message::user(instruction));
-        self.session
-            .set_system_prompt(&self.build_run_system_prompt(ctx)?);
 
         let mut steps = 0;
         let mut empty_response_retries = 0;
@@ -1239,11 +1050,16 @@ impl Agent {
                 )));
             }
 
+            if self.behavior.compaction.refresh_system_prompt_each_turn || steps == 0 {
+                self.session
+                    .set_system_prompt(&self.build_run_system_prompt(ctx)?);
+            }
+
             // Planning phase budget: if the model spent too many steps
             // researching without creating a plan, generate one.
             if self.planning_gate_active && !self.plan_exists() {
                 planning_phase_steps += 1;
-                if planning_phase_steps >= MAX_PLANNING_PHASE_STEPS {
+                if planning_phase_steps >= self.behavior.planning.max_research_steps_without_plan {
                     self.generate_or_fallback_plan(instruction, ctx.cancel_token())?;
                     self.emit_progress(self.current_working_progress());
                 }
@@ -1311,12 +1127,14 @@ impl Agent {
                         // Redirect it back to plan instead of accepting as final answer.
                         if self.planning_gate_active && !self.plan_exists() {
                             planning_redirects += 1;
-                            if planning_redirects >= MAX_PLANNING_REDIRECTS {
+                            if planning_redirects
+                                >= self.behavior.planning.max_text_redirects_before_auto_plan
+                            {
                                 // Model repeatedly refused to plan — generate one.
                                 self.generate_or_fallback_plan(instruction, ctx.cancel_token())?;
                                 self.emit_progress(self.current_working_progress());
                             }
-                            self.redirect_to_planning(msg, PLANNING_REDIRECT_MSG);
+                            self.redirect_to_planning(msg, self.behavior.planning.redirect_message);
                             continue;
                         }
 
@@ -1375,8 +1193,8 @@ impl Agent {
         *self.external_tool_ran.borrow_mut() = false;
         self.capture_run_baseline(workspace_root);
 
-        self.planning_required_for_task =
-            self.options.require_plan && self.classify_task(instruction, ctx.cancel_token())?;
+        self.planning_required_for_task = self.behavior.planning.require_plan_by_default
+            && self.classify_task(instruction, ctx.cancel_token())?;
         self.task_mode = if self.planning_required_for_task {
             self.classify_task_mode(instruction, ctx.cancel_token())?
         } else {
@@ -1390,62 +1208,25 @@ impl Agent {
     }
 
     fn build_run_system_prompt(&self, ctx: &ExecutionContext) -> Result<String> {
-        let mut system_prompt =
-            prompt::build_system_prompt(&self.tools.specs(), &self.external_tools.specs());
+        let project_instructions = get_project_instructions_or_error(&ctx.workspace_root)?;
+        let available_tools = self.tools.specs();
+        let external_tools = self.external_tools.specs();
+        let plan_guard = self.plan.lock().ok();
+        let current_plan = plan_guard
+            .as_ref()
+            .filter(|plan| !plan.is_empty())
+            .map(|plan| &**plan);
+        let plan_exists = current_plan.is_some();
 
-        match get_project_instructions_or_error(&ctx.workspace_root)? {
-            Some(project_instructions) => {
-                system_prompt.push_str("\n## Project Instructions (from TOPAGENT.md)\n\n");
-                system_prompt.push_str(&project_instructions);
-                system_prompt.push('\n');
-            }
-            None => system_prompt.push_str(prompt::NO_PI_MD_NOTE),
-        }
-
-        if let Some(memory_context) = ctx.memory_context() {
-            system_prompt.push_str("\n## Workspace Memory\n\n");
-            system_prompt.push_str(memory_context);
-            system_prompt.push('\n');
-        }
-
-        if !self.generated_tool_warnings.is_empty() {
-            system_prompt.push_str(&format!("\n{}\n\n", GENERATED_TOOL_WARNING_SECTION_TITLE));
-            system_prompt.push_str(
-                "Some generated tools in `.topagent/tools/` are currently unavailable. Treat this as current workspace state.\n",
-            );
-            for warning in &self.generated_tool_warnings {
-                system_prompt.push_str(&format!("- {}\n", warning));
-            }
-            system_prompt.push_str(
-                "Do not assume unavailable generated tools can be called unless they appear in the available tools list.\n",
-            );
-        }
-
-        if let Ok(plan) = self.plan.lock() {
-            if !plan.is_empty() {
-                system_prompt.push_str("\n## Current Plan\n\n");
-                system_prompt.push_str(&plan.format_for_display());
-            }
-        }
-
-        if self.planning_gate_active && !self.plan_exists() {
-            system_prompt.push_str(
-                "\n## Planning Required\n\n\
-                This task is non-trivial. Before making changes:\n\
-                1. Research: inspect relevant files and git context\n\
-                2. Plan: use update_plan to create a plan with clear steps\n\
-                3. Build: execute plan items, updating status as you complete each step\n\n",
-            );
-        }
-
-        Ok(system_prompt)
-    }
-
-    fn mutates_generated_tool_surface(tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            "create_tool" | "repair_tool" | "delete_generated_tool"
-        )
+        Ok(self.behavior.render_system_prompt(&BehaviorPromptContext {
+            available_tools: &available_tools,
+            external_tools: &external_tools,
+            project_instructions: project_instructions.as_deref(),
+            memory_context: ctx.memory_context(),
+            current_plan,
+            generated_tool_warnings: &self.generated_tool_warnings,
+            planning_required_now: self.planning_gate_active && !plan_exists,
+        }))
     }
 
     fn generated_tool_warning_lines(&self) -> &[String] {
@@ -1455,14 +1236,6 @@ impl Agent {
     fn build_proof_of_work(&self, response: &str, workspace_root: &Path) -> String {
         let files = self.changed_files.borrow().clone();
         let unattributed_files = self.unattributed_pre_existing_dirty_files(workspace_root);
-        if files.is_empty()
-            && self.bash_history.borrow().is_empty()
-            && unattributed_files.is_empty()
-            && self.generated_tool_warning_lines().is_empty()
-        {
-            return response.to_string();
-        }
-
         let baseline = self.run_baseline.borrow();
         let pre_existing = baseline
             .as_ref()
@@ -1493,7 +1266,7 @@ impl Agent {
         };
 
         for (command, full_output, exit_code) in self.bash_history.borrow().iter() {
-            if Self::is_verification_command(command) {
+            if self.behavior.is_verification_command(command) {
                 let succeeded = exit_code == &0;
                 evidence
                     .verification_commands_run
@@ -1526,6 +1299,15 @@ impl Agent {
             evidence
                 .unresolved_issues
                 .push(format!("Attribution uncertain: {}", details));
+        }
+
+        if !self.behavior.should_attach_proof_of_work(
+            evidence.files_changed.len(),
+            evidence.verification_commands_run.len(),
+            evidence.unresolved_issues.len(),
+            self.generated_tool_warning_lines().len(),
+        ) {
+            return response.to_string();
         }
 
         let task_result = TaskResult::new(response.to_string())

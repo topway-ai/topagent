@@ -70,6 +70,22 @@ impl Session {
     }
 
     pub fn truncate_history(&mut self, keep_recent: usize) {
+        self.truncate_history_with_notice(
+            keep_recent,
+            |dropped_count| {
+                format!(
+                    "[Previous {} messages truncated due to context length.]\nUse tools to re-read files if you need to recall earlier context.",
+                    dropped_count
+                )
+            },
+        );
+    }
+
+    pub fn truncate_history_with_notice(
+        &mut self,
+        keep_recent: usize,
+        build_notice: impl FnOnce(usize) -> String,
+    ) {
         if self.messages.len() <= keep_recent {
             return;
         }
@@ -79,10 +95,8 @@ impl Session {
         let recent: Vec<Message> = self.messages.drain(start..).collect();
 
         self.messages.clear();
-        self.messages.push(Message::system(format!(
-            "[Previous {} messages truncated due to context length.]\nUse tools to re-read files if you need to recall earlier context.",
-            dropped_count
-        )));
+        self.messages
+            .push(Message::system(build_notice(dropped_count)));
         self.messages.extend(recent);
     }
 }

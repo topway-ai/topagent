@@ -260,3 +260,53 @@ fn test_planning_uses_canonical_in_progress() {
     assert!(text.contains("Current plan:"));
     assert!(text.contains("[>] 1 - Task 2"));
 }
+
+#[test]
+fn test_system_prompt_refreshes_after_plan_update() {
+    let (ctx, _temp) = make_test_context();
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let recorded_clone = recorded.clone();
+
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "plan".to_string(),
+            name: "update_plan".to_string(),
+            args: serde_json::json!({
+                "items": [
+                    {"content": "Inspect src/lib.rs", "status": "in_progress"},
+                    {"content": "Verify the change", "status": "pending"}
+                ]
+            }),
+        },
+        ProviderResponse::Message(Message::assistant("done")),
+    ];
+
+    let recording_provider = RecordingProvider::new(responses, recorded);
+
+    let mut agent = Agent::with_options(
+        Box::new(recording_provider),
+        make_tools(),
+        RuntimeOptions::default(),
+    );
+
+    let _ = agent.run(&ctx, "refactor the entire codebase");
+
+    let recorded_data = recorded_clone.lock().unwrap();
+    let system_prompts: Vec<_> = recorded_data
+        .iter()
+        .filter(|message| message.role == Role::System)
+        .filter_map(get_text_from_message)
+        .collect();
+
+    assert!(
+        system_prompts.len() >= 2,
+        "expected a refreshed system prompt after update_plan"
+    );
+    assert!(
+        system_prompts
+            .last()
+            .is_some_and(|text| text.contains("Inspect src/lib.rs")),
+        "expected refreshed system prompt to include the updated plan: {:?}",
+        system_prompts
+    );
+}

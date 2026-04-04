@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod behavior;
 pub mod cancel;
 pub mod channel;
 pub mod command_exec;
@@ -24,7 +25,8 @@ pub mod tool_genesis;
 pub mod tool_spec;
 pub mod tools;
 
-pub use agent::{Agent, BashCommandClass, ExecutionStage};
+pub use agent::{Agent, ExecutionStage};
+pub use behavior::{BashCommandClass, BehaviorContract, BehaviorPromptContext};
 pub use cancel::CancellationToken;
 pub use channel::telegram::{ChannelError, TelegramAdapter, POLL_TIMEOUT_SECS};
 pub use command_exec::CommandSandboxPolicy;

@@ -1,3 +1,4 @@
+use crate::behavior::BehaviorContract;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -117,124 +118,15 @@ impl Plan {
 /// `Some(false)` if it definitely does not, or `None` if the answer is
 /// ambiguous and an LLM classification call should be used.
 pub fn heuristic_fast_path(instruction: &str) -> Option<bool> {
-    let lower = instruction.to_lowercase();
-
-    // ── Definite plan-required ──
-    if has_explicit_plan_request(&lower) {
-        return Some(true);
-    }
-    if has_broad_scope(&lower) {
-        return Some(true);
-    }
-
-    // ── Definite no-plan ──
-    if is_trivial_query(&lower) {
-        return Some(false);
-    }
-
-    // Short instructions (≤ 120 chars) with no broad scope are almost
-    // never plan-worthy — single edits, quick fixes, simple reads.
-    if lower.len() <= 120 {
-        return Some(false);
-    }
-
-    // Ambiguous — defer to LLM classification.
-    None
-}
-
-fn has_explicit_plan_request(lower: &str) -> bool {
-    lower.contains("make a plan")
-        || lower.contains("create a plan")
-        || lower.contains("give me steps")
-        || lower.contains("give me a checklist")
-        || lower.contains("break down")
-        || lower.contains("step by step")
-}
-
-fn has_broad_scope(lower: &str) -> bool {
-    let broad_phrases = [
-        "entire repo",
-        "entire repository",
-        "whole repo",
-        "whole repository",
-        "whole project",
-        "entire project",
-        "project-wide",
-        "across the repo",
-        "across the project",
-        "throughout the",
-        "throughout the repo",
-        "throughout the project",
-        "codebase",
-    ];
-    broad_phrases.iter().any(|p| lower.contains(p))
-}
-
-fn is_trivial_query(lower: &str) -> bool {
-    let query_starters = [
-        "what is", "where is", "how do", "how does", "show me", "list ", "find ", "search ",
-        "get ", "read ",
-    ];
-    query_starters.iter().any(|q| lower.starts_with(q)) && lower.len() < 120
+    BehaviorContract::default().classify_task_fast_path(instruction)
 }
 
 pub fn task_mode_fast_path(instruction: &str) -> Option<TaskMode> {
-    let lower = instruction.to_lowercase();
-    if has_mutation_intent(&lower) {
-        return Some(TaskMode::PlanAndExecute);
-    }
-
-    None
+    BehaviorContract::default().task_mode_fast_path(instruction)
 }
-
-fn has_mutation_intent(lower: &str) -> bool {
-    let mutation_cues = [
-        "fix",
-        "change",
-        "modify",
-        "edit",
-        "write",
-        "update",
-        "implement",
-        "add",
-        "remove",
-        "delete",
-        "refactor",
-        "rename",
-        "create",
-        "patch",
-        "replace",
-    ];
-
-    mutation_cues.iter().any(|cue| lower.contains(cue))
-}
-
-pub const TASK_MODE_CLASSIFICATION_SYSTEM_PROMPT: &str = "\
-You are a task-mode classifier for a coding agent. Given a user instruction, decide \
-what kind of task it is.
-
-Respond with ONLY one of these exact words:
-- execute
-- inspect
-- verify
-
-execute:
-  - The task expects the agent to make or apply changes before finishing
-  - The task asks to implement, fix, edit, add, remove, refactor, or otherwise mutate something
-
-inspect:
-  - The task expects research, analysis, explanation, reporting, or findings only
-  - The task should finish without making changes
-
-verify:
-  - The task expects running checks or tests only
-  - The task may report verification results, but should finish without making changes";
 
 pub fn build_task_mode_messages(instruction: &str) -> (String, String) {
-    (
-        TASK_MODE_CLASSIFICATION_SYSTEM_PROMPT.to_string(),
-        instruction.to_string(),
-    )
+    BehaviorContract::default().build_task_mode_messages(instruction)
 }
 
 pub fn parse_task_mode_response(response: &str) -> Option<TaskMode> {
@@ -247,34 +139,9 @@ pub fn parse_task_mode_response(response: &str) -> Option<TaskMode> {
     }
 }
 
-/// The system prompt used for the lightweight LLM classification call.
-pub const CLASSIFICATION_SYSTEM_PROMPT: &str = "\
-You are a task classifier for a coding agent. Given a user instruction, decide \
-whether it needs upfront planning before execution.
-
-Respond with ONLY the word \"direct\" or \"plan\". Nothing else.
-
-\"direct\" — the task can be executed immediately:
-  - Small edits to one or two files
-  - Adding/removing a comment, line, function, or small feature
-  - Fixing a typo or small bug
-  - Running a verification command
-  - Any task the user describes as tiny, small, or simple
-  - Tasks that ask for a report or diff after a small change
-
-\"plan\" — the task needs research and planning first:
-  - Broad refactors affecting many files
-  - Architectural changes
-  - Tasks spanning multiple unrelated subsystems
-  - Tasks where the user explicitly asks for a plan
-  - Large feature implementations with unclear scope";
-
 /// Build the messages for an LLM classification call.
 pub fn build_classification_messages(instruction: &str) -> (String, String) {
-    (
-        CLASSIFICATION_SYSTEM_PROMPT.to_string(),
-        instruction.to_string(),
-    )
+    BehaviorContract::default().build_task_classification_messages(instruction)
 }
 
 /// Parse the LLM classification response. Returns `true` if planning
@@ -287,27 +154,9 @@ pub fn parse_classification_response(response: &str) -> bool {
     trimmed == "plan" || (trimmed.len() < 20 && trimmed.contains("plan") && !trimmed.contains("no"))
 }
 
-// ── Plan generation via LLM ──
-
-const PLAN_GENERATION_SYSTEM_PROMPT: &str = "\
-You are a planning assistant for a coding agent. Given a task, produce a short \
-execution plan as a numbered list. Each step should be a concrete action the \
-agent can take (read, edit, create, run, verify). Keep the plan short \
-(3-7 steps). Do not include preamble or commentary — just the numbered list.
-
-Example output:
-1. Read src/main.rs to understand entry point
-2. Add the new CLI flag in the argument parser
-3. Implement the handler for the new flag
-4. Update tests in tests/cli_test.rs
-5. Run cargo test to verify";
-
 /// Build messages for a dedicated plan-generation LLM call.
 pub fn build_plan_generation_prompt(instruction: &str) -> (String, String) {
-    (
-        PLAN_GENERATION_SYSTEM_PROMPT.to_string(),
-        format!("Create a plan for this task:\n\n{}", instruction),
-    )
+    BehaviorContract::default().build_plan_generation_prompt(instruction)
 }
 
 /// Parse the LLM plan-generation response into a list of step descriptions.
