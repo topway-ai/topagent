@@ -1,9 +1,6 @@
-use crate::{cancel::CancellationToken, Error, Result};
-use std::io::Read;
+use crate::{Error, Result};
 use std::path::Path;
-use std::process::{Command, Output, Stdio};
-use std::thread;
-use std::time::Duration;
+use std::process::Output;
 
 pub fn is_likely_binary(bytes: &[u8]) -> bool {
     bytes.iter().take(8192).any(|&b| b == 0)
@@ -179,69 +176,4 @@ pub fn format_command_output_with_limit(output: Output, max_size: usize) -> Stri
     }
     result.push_str(&format!("Exit code: {}", status.code().unwrap_or(-1)));
     result
-}
-
-pub fn run_command_with_cancellation(
-    cmd: &mut Command,
-    cancel: Option<&CancellationToken>,
-    display_name: &str,
-) -> Result<Output> {
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| Error::ToolFailed(format!("failed to execute {}: {}", display_name, e)))?;
-
-    let stdout = child.stdout.take().ok_or_else(|| {
-        Error::ToolFailed(format!("failed to capture stdout for {}", display_name))
-    })?;
-    let stderr = child.stderr.take().ok_or_else(|| {
-        Error::ToolFailed(format!("failed to capture stderr for {}", display_name))
-    })?;
-
-    let stdout_reader = thread::spawn(move || {
-        let mut stdout = stdout;
-        let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
-        buf
-    });
-    let stderr_reader = thread::spawn(move || {
-        let mut stderr = stderr;
-        let mut buf = Vec::new();
-        let _ = stderr.read_to_end(&mut buf);
-        buf
-    });
-
-    let status = loop {
-        if cancel.is_some_and(|token| token.is_cancelled()) {
-            let _ = child.kill();
-            let _ = child.wait();
-            let _ = stdout_reader.join();
-            let _ = stderr_reader.join();
-            return Err(Error::Stopped("user requested stop".into()));
-        }
-
-        match child.try_wait() {
-            Ok(Some(status)) => break status,
-            Ok(None) => thread::sleep(Duration::from_millis(100)),
-            Err(e) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                let _ = stdout_reader.join();
-                let _ = stderr_reader.join();
-                return Err(Error::ToolFailed(format!(
-                    "failed while waiting for {}: {}",
-                    display_name, e
-                )));
-            }
-        }
-    };
-
-    let stdout = stdout_reader.join().unwrap_or_default();
-    let stderr = stderr_reader.join().unwrap_or_default();
-    Ok(Output {
-        status,
-        stdout,
-        stderr,
-    })
 }

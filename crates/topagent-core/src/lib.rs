@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod cancel;
 pub mod channel;
+pub mod command_exec;
 pub mod context;
 pub mod error;
 pub mod external;
@@ -26,6 +27,7 @@ pub mod tools;
 pub use agent::{Agent, BashCommandClass, ExecutionStage};
 pub use cancel::CancellationToken;
 pub use channel::telegram::{ChannelError, TelegramAdapter, POLL_TIMEOUT_SECS};
+pub use command_exec::CommandSandboxPolicy;
 pub use context::ExecutionContext;
 pub use error::{Error, Result};
 pub use external::{ExternalTool, ExternalToolEffect, ExternalToolRegistry, ExternalToolResult};

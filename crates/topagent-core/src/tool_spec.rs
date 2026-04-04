@@ -57,7 +57,7 @@ impl ToolSpec {
     pub fn bash() -> Self {
         Self {
             name: "bash".to_string(),
-            description: "execute bash command locally in workspace (trusted local execution; output truncated at 64KB per stream)".to_string(),
+            description: "execute bash command locally in workspace (workspace sandbox when bwrap is available; network disabled; output truncated at 64KB per stream)".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {

@@ -1,67 +1,10 @@
+use crate::command_exec::{run_command, CommandSandboxPolicy};
 use crate::context::ToolContext;
-use crate::file_util::{format_command_output_with_limit, run_command_with_cancellation};
+use crate::file_util::format_command_output_with_limit;
 use crate::secrets;
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
-use std::process::{Command, Stdio};
-use std::sync::OnceLock;
-use tracing::warn;
-
-/// Paths the sandbox allows read-only access to.
-const BWRAP_RO_BIND_CANDIDATES: &[&str] = &[
-    "/usr",
-    "/bin",
-    "/lib",
-    "/lib64",
-    "/etc",
-    "/nix",
-    "/run/current-system",
-];
-
-/// Cached bwrap probe result: availability flag + which bind paths exist.
-struct BwrapProbe {
-    available: bool,
-    ro_binds: Vec<&'static str>,
-}
-
-static BWRAP_PROBE: OnceLock<BwrapProbe> = OnceLock::new();
-
-fn bwrap_probe() -> &'static BwrapProbe {
-    BWRAP_PROBE.get_or_init(|| {
-        let available = Command::new("bwrap")
-            .args([
-                "--ro-bind",
-                "/usr",
-                "/usr",
-                "--dev",
-                "/dev",
-                "--proc",
-                "/proc",
-                "true",
-            ])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if !available {
-            warn!(
-                "bwrap unavailable (not installed or user namespaces restricted); \
-                 bash commands will run without filesystem sandboxing"
-            );
-        }
-        let ro_binds = BWRAP_RO_BIND_CANDIDATES
-            .iter()
-            .copied()
-            .filter(|p| std::path::Path::new(p).exists())
-            .collect();
-        BwrapProbe {
-            available,
-            ro_binds,
-        }
-    })
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BashArgs {
@@ -100,42 +43,14 @@ impl crate::tools::Tool for BashTool {
             return Ok(block_msg);
         }
 
-        let workspace = ctx.exec.workspace_root.to_string_lossy();
-        let probe = bwrap_probe();
-
-        let mut cmd = if probe.available {
-            let mut c = Command::new("bwrap");
-            for path in &probe.ro_binds {
-                c.args(["--ro-bind", path, path]);
-            }
-            // Writable workspace.
-            c.args(["--bind", &workspace, &workspace]);
-            // Writable /tmp.
-            c.args(["--tmpfs", "/tmp"]);
-            // Minimal /dev and /proc.
-            c.args(["--dev", "/dev"]);
-            c.args(["--proc", "/proc"]);
-            // Block network access.
-            c.arg("--unshare-net");
-            // Set working directory inside sandbox.
-            c.args(["--chdir", &workspace]);
-            // The command to run inside the sandbox.
-            c.args(["sh", "-c", &args.command]);
-            c
-        } else {
-            let mut c = Command::new("sh");
-            c.arg("-c")
-                .arg(&args.command)
-                .current_dir(&ctx.exec.workspace_root);
-            c
-        };
-
-        // Strip secret-bearing environment variables from child processes.
-        for var_name in secrets::SECRET_ENV_VARS {
-            cmd.env_remove(var_name);
-        }
-
-        let output = run_command_with_cancellation(&mut cmd, ctx.exec.cancel_token(), "command")?;
+        let output = run_command(
+            "sh",
+            &["-c".to_string(), args.command],
+            &ctx.exec.workspace_root,
+            ctx.exec.cancel_token(),
+            CommandSandboxPolicy::Workspace,
+            "command",
+        )?;
         Ok(format_command_output_with_limit(
             output,
             ctx.runtime.max_bash_output_bytes,

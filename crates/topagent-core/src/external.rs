@@ -1,12 +1,11 @@
+use crate::command_exec::{run_command, CommandSandboxPolicy};
 use crate::context::ToolContext;
-use crate::file_util::{format_command_output_with_limit, run_command_with_cancellation};
-use crate::secrets::SECRET_ENV_VARS;
+use crate::file_util::format_command_output_with_limit;
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::collections::HashMap;
-use std::process::Command;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -31,6 +30,8 @@ pub struct ExternalToolConfig {
     #[serde(default)]
     pub argv_template: Option<Vec<String>>,
     #[serde(default)]
+    pub sandbox: CommandSandboxPolicy,
+    #[serde(default)]
     pub effect: ExternalToolEffect,
 }
 
@@ -43,6 +44,8 @@ struct RawExternalToolConfig {
     argv_template: Option<Vec<String>>,
     #[serde(default)]
     args_template: Option<String>,
+    #[serde(default)]
+    sandbox: CommandSandboxPolicy,
     #[serde(default)]
     effect: ExternalToolEffect,
 }
@@ -61,6 +64,7 @@ impl ExternalTool {
                 description: description.to_string(),
                 command: command.to_string(),
                 argv_template: None,
+                sandbox: CommandSandboxPolicy::Host,
                 effect: ExternalToolEffect::ReadOnly,
             },
             input_schema: serde_json::json!({
@@ -96,16 +100,29 @@ impl ExternalTool {
         self
     }
 
+    pub fn with_sandbox_policy(mut self, sandbox: CommandSandboxPolicy) -> Self {
+        self.config.sandbox = sandbox;
+        self
+    }
+
     pub fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: self.config.name.clone(),
-            description: self.config.description.clone(),
+            description: format!(
+                "{} ({})",
+                self.config.description,
+                self.config.sandbox.description_suffix()
+            ),
             input_schema: self.input_schema.clone(),
         }
     }
 
     pub fn effect(&self) -> ExternalToolEffect {
         self.config.effect
+    }
+
+    pub fn sandbox_policy(&self) -> CommandSandboxPolicy {
+        self.config.sandbox
     }
 
     fn from_config(config: ExternalToolConfig) -> Result<Self> {
@@ -135,20 +152,15 @@ impl ExternalTool {
         })?;
         let resolved_argv = resolve_argv_template(argv_template, args, &self.config.name)?;
 
-        let mut cmd = Command::new(&self.config.command);
-        cmd.current_dir(&ctx.exec.workspace_root);
-
-        for part in resolved_argv {
-            cmd.arg(part);
-        }
-
-        for var_name in SECRET_ENV_VARS {
-            cmd.env_remove(var_name);
-        }
-
         let display_name = format!("external tool '{}'", self.config.name);
-        let output =
-            run_command_with_cancellation(&mut cmd, ctx.exec.cancel_token(), &display_name)?;
+        let output = run_command(
+            &self.config.command,
+            &resolved_argv,
+            &ctx.exec.workspace_root,
+            ctx.exec.cancel_token(),
+            self.config.sandbox,
+            &display_name,
+        )?;
 
         if !output.status.success() {
             let summary =
@@ -240,6 +252,7 @@ impl RawExternalToolConfig {
             description: self.description,
             command: self.command,
             argv_template,
+            sandbox: self.sandbox,
             effect: self.effect,
         })
     }
@@ -517,6 +530,10 @@ mod tests {
             specs[1].input_schema["required"],
             serde_json::json!(["path"])
         );
+        assert_eq!(
+            registry.get("tool1").unwrap().sandbox_policy(),
+            CommandSandboxPolicy::Host
+        );
     }
 
     #[test]
@@ -533,6 +550,21 @@ mod tests {
             tool.spec().input_schema["required"],
             serde_json::json!(["name"])
         );
+        assert_eq!(tool.sandbox_policy(), CommandSandboxPolicy::Host);
+    }
+
+    #[test]
+    fn test_external_tool_registry_supports_workspace_sandbox_opt_in() {
+        let mut registry = ExternalToolRegistry::new();
+        let json = r#"[
+            {"name": "repo_tool", "description": "repo-local", "command": "rg", "argv_template": ["TODO", "{path}"], "sandbox": "workspace"}
+        ]"#;
+
+        registry.load_from_str(json).unwrap();
+
+        let tool = registry.get("repo_tool").unwrap();
+        assert_eq!(tool.sandbox_policy(), CommandSandboxPolicy::Workspace);
+        assert!(tool.spec().description.contains("workspace sandbox"));
     }
 
     #[test]

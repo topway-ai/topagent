@@ -1,14 +1,12 @@
+use crate::command_exec::{run_command, CommandSandboxPolicy};
 use crate::error::Error;
 use crate::external::{resolve_argv_template, ExternalTool};
-use crate::file_util::run_command_with_cancellation;
-use crate::secrets::SECRET_ENV_VARS;
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::path::PathBuf;
-use std::process::Command;
 
 const TOOLS_DIR: &str = ".topagent/tools";
 
@@ -249,16 +247,14 @@ impl ToolGenesis {
         validate_manifest_interface(&manifest)?;
         let verification_argv = verification_command_argv(&manifest, &script_path, spec)?;
 
-        let mut cmd = Command::new("sh");
-        cmd.current_dir(&self.workspace_root);
-        for arg in verification_argv {
-            cmd.arg(arg);
-        }
-        for var_name in SECRET_ENV_VARS {
-            cmd.env_remove(var_name);
-        }
-
-        let output = run_command_with_cancellation(&mut cmd, None, "generated tool verification")?;
+        let output = run_command(
+            "sh",
+            &verification_argv,
+            &self.workspace_root,
+            None,
+            CommandSandboxPolicy::Workspace,
+            "generated tool verification",
+        )?;
 
         let exit_match = output.status.code() == Some(spec.expected_exit);
         let output_contains_match = if let Some(ref expected) = spec.expected_output_contains {
@@ -600,6 +596,7 @@ fn external_tool_from_manifest(manifest: &ToolManifest, script_path: &Path) -> E
     ExternalTool::new(&manifest.name, &manifest.description, "sh")
         .with_argv_template(full_argv)
         .with_input_schema(input_schema)
+        .with_sandbox_policy(CommandSandboxPolicy::Workspace)
 }
 
 mod generated_tools;
@@ -651,6 +648,8 @@ mod tests {
         let tools = genesis.load_verified_tools().unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].spec().name, "echo_hello");
+        assert_eq!(tools[0].sandbox_policy(), CommandSandboxPolicy::Workspace);
+        assert!(tools[0].spec().description.contains("workspace sandbox"));
     }
 
     #[test]
