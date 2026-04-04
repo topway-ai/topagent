@@ -1,7 +1,5 @@
 # Architecture
 
-For architecture-sensitive PR review, see [reviewing.md](reviewing.md).
-
 ## Project structure
 
 TopAgent is a Rust workspace with two crates:

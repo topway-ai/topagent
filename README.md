@@ -122,4 +122,4 @@ Workspace memory is separate from `TOPAGENT.md`:
 - [Overview](docs/overview.md) -- what TopAgent is, design goals, capabilities, limitations
 - [Architecture](docs/architecture.md) -- crate structure, modules, runtime flows
 - [Operations](docs/operations.md) -- install, service lifecycle, persistence, troubleshooting
-- [Reviewing Changes](docs/reviewing.md) -- how to review PRs for hot-path weight, boundary drift, and architecture hygiene
+- [Review Rules](REVIEW_RULES.md) -- short LLM preflight and post-change checks before meaningful code changes
