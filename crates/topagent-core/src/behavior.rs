@@ -161,10 +161,26 @@ pub struct GeneratedToolPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactionPolicy {
+    pub micro_trigger_messages: usize,
     pub max_messages_before_truncation: usize,
     pub keep_recent_divisor: usize,
+    pub max_compacted_trace_lines: usize,
+    pub max_recent_approval_decisions: usize,
+    pub max_recent_proof_of_work_anchors: usize,
+    pub max_failed_auto_compactions: usize,
     pub refresh_system_prompt_each_turn: bool,
     pub preserved_sections: &'static [&'static str],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RunStateSnapshot {
+    pub objective: Option<String>,
+    pub blockers: Vec<String>,
+    pub pending_approvals: Vec<String>,
+    pub recent_approval_decisions: Vec<String>,
+    pub active_files: Vec<String>,
+    pub proof_of_work_anchors: Vec<String>,
+    pub memory_context_loaded: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +196,7 @@ pub struct BehaviorPromptContext<'a> {
     pub project_instructions: Option<&'a str>,
     pub memory_context: Option<&'a str>,
     pub current_plan: Option<&'a Plan>,
+    pub run_state: Option<&'a RunStateSnapshot>,
     pub generated_tool_warnings: &'a [String],
     pub planning_required_now: bool,
     pub approval_mailbox_available: bool,
@@ -427,16 +444,27 @@ Use the update_plan tool to create a plan with concrete steps, then execute it."
                 reload_after_surface_mutation: true,
             },
             compaction: CompactionPolicy {
+                micro_trigger_messages: std::cmp::max(4, options.max_messages_before_truncation / 2),
                 max_messages_before_truncation: options.max_messages_before_truncation,
                 keep_recent_divisor: 2,
+                max_compacted_trace_lines: 8,
+                max_recent_approval_decisions: 3,
+                max_recent_proof_of_work_anchors: 4,
+                max_failed_auto_compactions: 2,
                 refresh_system_prompt_each_turn: true,
                 preserved_sections: &[
                     "behavior contract",
+                    "current objective",
                     "available tools",
                     "project instructions",
                     "workspace memory",
                     "generated tool warnings",
                     "current plan",
+                    "blockers",
+                    "pending approvals",
+                    "approval decisions",
+                    "active files",
+                    "proof-of-work anchors",
                 ],
             },
         }
@@ -849,6 +877,22 @@ Use the update_plan tool to create a plan with concrete steps, then execute it."
         )
     }
 
+    pub fn full_rebuild_recent_message_count(&self) -> usize {
+        std::cmp::max(
+            8,
+            self.compaction.max_messages_before_truncation
+                / (self.compaction.keep_recent_divisor * 4),
+        )
+    }
+
+    pub fn should_micro_compact(&self, message_count: usize) -> bool {
+        message_count >= self.compaction.micro_trigger_messages
+    }
+
+    pub fn should_auto_compact(&self, message_count: usize) -> bool {
+        message_count >= self.compaction.max_messages_before_truncation
+    }
+
     pub fn build_truncation_notice(&self, dropped_count: usize) -> String {
         format!(
             "[Previous {dropped_count} messages truncated due to context length. \
@@ -890,6 +934,10 @@ All file paths are relative to this workspace root.\n\n",
             prompt.push('\n');
         }
 
+        if let Some(run_state) = ctx.run_state {
+            self.render_run_state_section(&mut prompt, run_state);
+        }
+
         if !ctx.generated_tool_warnings.is_empty() {
             prompt.push_str("\n## Generated Tool Warnings\n\n");
             prompt.push_str(
@@ -922,6 +970,55 @@ All file paths are relative to this workspace root.\n\n",
         }
 
         prompt
+    }
+
+    fn render_run_state_section(&self, prompt: &mut String, run_state: &RunStateSnapshot) {
+        prompt.push_str("\n## Active Run State\n\n");
+
+        if let Some(objective) = &run_state.objective {
+            prompt.push_str(&format!("- Current objective: {objective}\n"));
+        }
+
+        if run_state.memory_context_loaded {
+            prompt.push_str("- Workspace memory briefing is loaded in this prompt.\n");
+        }
+
+        if run_state.blockers.is_empty() {
+            prompt.push_str("- Current blockers: none.\n");
+        } else {
+            prompt.push_str("- Current blockers:\n");
+            for blocker in &run_state.blockers {
+                prompt.push_str(&format!("  - {blocker}\n"));
+            }
+        }
+
+        if !run_state.pending_approvals.is_empty() {
+            prompt.push_str("- Pending approvals:\n");
+            for approval in &run_state.pending_approvals {
+                prompt.push_str(&format!("  - {approval}\n"));
+            }
+        }
+
+        if !run_state.recent_approval_decisions.is_empty() {
+            prompt.push_str("- Recent approval decisions still relevant to this run:\n");
+            for decision in &run_state.recent_approval_decisions {
+                prompt.push_str(&format!("  - {decision}\n"));
+            }
+        }
+
+        if !run_state.active_files.is_empty() {
+            prompt.push_str(&format!(
+                "- Active files / working set: {}\n",
+                run_state.active_files.join(", ")
+            ));
+        }
+
+        if !run_state.proof_of_work_anchors.is_empty() {
+            prompt.push_str("- Proof-of-work anchors:\n");
+            for anchor in &run_state.proof_of_work_anchors {
+                prompt.push_str(&format!("  - {anchor}\n"));
+            }
+        }
     }
 
     fn render_identity_section(&self, prompt: &mut String) {
@@ -1099,12 +1196,33 @@ All file paths are relative to this workspace root.\n\n",
     fn render_compaction_section(&self, prompt: &mut String) {
         prompt.push_str("## Compaction Preservation\n\n");
         prompt.push_str(&format!(
-            "- History truncates after {} non-system messages.\n",
+            "- Micro-compaction starts after {} non-system messages.\n",
+            self.compaction.micro_trigger_messages
+        ));
+        prompt.push_str(&format!(
+            "- Auto-compaction starts after {} non-system messages.\n",
             self.compaction.max_messages_before_truncation
         ));
         prompt.push_str(&format!(
             "- Keep roughly the most recent 1/{} of the history when truncating.\n",
             self.compaction.keep_recent_divisor
+        ));
+        prompt.push_str(&format!(
+            "- Full rebuild keeps roughly the last {} messages and rebuilds the rest from canonical runtime artifacts.\n",
+            self.full_rebuild_recent_message_count()
+        ));
+        prompt.push_str(&format!(
+            "- Compact at most {} older tool traces into the transcript summary.\n",
+            self.compaction.max_compacted_trace_lines
+        ));
+        prompt.push_str(&format!(
+            "- Preserve up to {} recent approval decisions and {} proof-of-work anchors explicitly.\n",
+            self.compaction.max_recent_approval_decisions,
+            self.compaction.max_recent_proof_of_work_anchors
+        ));
+        prompt.push_str(&format!(
+            "- Disable auto-compaction after {} consecutive failures and fall back to blunt truncation.\n",
+            self.compaction.max_failed_auto_compactions
         ));
         prompt.push_str(&format!(
             "- Refresh system prompt each turn: {}\n",
@@ -1195,6 +1313,7 @@ mod tests {
         assert!(!contract.planning.require_plan_by_default);
         assert!(contract.generated_tools.authoring_enabled);
         assert_eq!(contract.compaction.max_messages_before_truncation, 42);
+        assert_eq!(contract.compaction.micro_trigger_messages, 21);
     }
 
     #[test]
@@ -1342,16 +1461,28 @@ mod tests {
             project_instructions: Some("# Repo rules"),
             memory_context: Some("Treat memory as hints, not truth."),
             current_plan: Some(&plan),
+            run_state: Some(&RunStateSnapshot {
+                objective: Some("Fix the parser and keep tests passing".to_string()),
+                blockers: vec!["Approval denied for git commit".to_string()],
+                pending_approvals: vec!["apr-3 [pending] git commit: release".to_string()],
+                recent_approval_decisions: vec!["apr-2 [denied] delete generated tool".to_string()],
+                active_files: vec!["src/lib.rs".to_string()],
+                proof_of_work_anchors: vec!["verification: cargo test --lib (exit 0)".to_string()],
+                memory_context_loaded: true,
+            }),
             generated_tool_warnings: &["broken_tool: missing script.sh".to_string()],
             planning_required_now: true,
             approval_mailbox_available: true,
         });
 
         assert!(prompt.contains("## Product Identity"));
+        assert!(prompt.contains("## Active Run State"));
         assert!(prompt.contains("## Output Contract"));
         assert!(prompt.contains("## Memory Write Rules"));
         assert!(prompt.contains("## Generated-Tool Policy"));
         assert!(prompt.contains("## Compaction Preservation"));
+        assert!(prompt.contains("Fix the parser and keep tests passing"));
+        assert!(prompt.contains("apr-3 [pending] git commit: release"));
         assert!(prompt.contains("Current plan"));
         assert!(prompt.contains("broken_tool: missing script.sh"));
     }

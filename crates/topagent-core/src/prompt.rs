@@ -10,6 +10,7 @@ pub fn build_system_prompt(tools: &[ToolSpec], external_tools: &[ToolSpec]) -> S
         project_instructions: None,
         memory_context: None,
         current_plan: None,
+        run_state: None,
         generated_tool_warnings: &[],
         planning_required_now: false,
         approval_mailbox_available: false,

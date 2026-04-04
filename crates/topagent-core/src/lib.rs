@@ -4,6 +4,7 @@ pub mod behavior;
 pub mod cancel;
 pub mod channel;
 pub mod command_exec;
+pub mod compaction;
 pub mod context;
 pub mod error;
 pub mod external;
@@ -32,10 +33,14 @@ pub use approval::{
     ApprovalPolicy, ApprovalRequest, ApprovalRequestDraft, ApprovalResolveError, ApprovalState,
     ApprovalTriggerKind, ApprovalTriggerRule,
 };
-pub use behavior::{BashCommandClass, BehaviorContract, BehaviorPromptContext};
+pub use behavior::{BashCommandClass, BehaviorContract, BehaviorPromptContext, RunStateSnapshot};
 pub use cancel::CancellationToken;
 pub use channel::telegram::{ChannelError, TelegramAdapter, POLL_TIMEOUT_SECS};
 pub use command_exec::CommandSandboxPolicy;
+pub use compaction::{
+    CompactionError, CompactionLevel, CompactionOutcome, CompactionRuntimeState,
+    TranscriptCompactor,
+};
 pub use context::ExecutionContext;
 pub use error::{Error, Result};
 pub use external::{ExternalTool, ExternalToolEffect, ExternalToolRegistry, ExternalToolResult};
