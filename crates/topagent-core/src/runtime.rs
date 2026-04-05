@@ -9,9 +9,6 @@ pub struct RuntimeOptions {
     pub max_messages_before_truncation: usize,
     pub require_plan: bool,
     pub enable_generated_tool_authoring: bool,
-    pub research_model: Option<String>,
-    pub edit_model: Option<String>,
-    pub review_model: Option<String>,
 }
 
 impl Default for RuntimeOptions {
@@ -26,9 +23,6 @@ impl Default for RuntimeOptions {
             max_messages_before_truncation: 100,
             require_plan: true,
             enable_generated_tool_authoring: false,
-            research_model: None,
-            edit_model: None,
-            review_model: None,
         }
     }
 }
@@ -83,21 +77,6 @@ impl RuntimeOptions {
 
     pub fn with_generated_tool_authoring(mut self, enable_generated_tool_authoring: bool) -> Self {
         self.enable_generated_tool_authoring = enable_generated_tool_authoring;
-        self
-    }
-
-    pub fn with_research_model(mut self, model: String) -> Self {
-        self.research_model = Some(model);
-        self
-    }
-
-    pub fn with_edit_model(mut self, model: String) -> Self {
-        self.edit_model = Some(model);
-        self
-    }
-
-    pub fn with_review_model(mut self, model: String) -> Self {
-        self.review_model = Some(model);
         self
     }
 }

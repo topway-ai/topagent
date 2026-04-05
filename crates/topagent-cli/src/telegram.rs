@@ -1,15 +1,14 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 use topagent_core::{
-    context::ExecutionContext, create_provider, model::ModelRoute, tools::default_tools, Agent,
-    ApprovalEntry, ApprovalMailbox, ApprovalMailboxMode, CancellationToken, Message,
-    ProgressCallback, ProgressUpdate, Role, RuntimeOptions, TelegramAdapter, POLL_TIMEOUT_SECS,
+    context::ExecutionContext, model::ModelRoute, Agent, ApprovalEntry, ApprovalMailbox,
+    ApprovalMailboxMode, CancellationToken, Message, ProgressCallback, ProgressUpdate, Role,
+    RuntimeOptions, TelegramAdapter, POLL_TIMEOUT_SECS,
 };
 use tracing::{error, info, warn};
 
@@ -17,9 +16,9 @@ use crate::config::*;
 use crate::managed_files::write_managed_file;
 use crate::memory::WorkspaceMemory;
 use crate::progress::LiveProgress;
+use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
 
 const TELEGRAM_HISTORY_VERSION: u32 = 1;
-const TELEGRAM_CHAT_SETTINGS_VERSION: u32 = 1;
 const MAX_PERSISTED_TRANSCRIPT_MESSAGES: usize = 100;
 
 pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<()> {
@@ -63,8 +62,8 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
     })?;
 
     info!(
-        "starting Telegram mode | provider: {} | model: {} | workspace: {}",
-        route.provider_id, route.model_id, workspace_label
+        "starting Telegram mode | model: {} | workspace: {}",
+        route.model_id, workspace_label
     );
     info!(
         "bot: @{} (id: {}) | private text chats only | send /start in a private chat",
@@ -72,7 +71,6 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
         bot_info.id,
     );
 
-    let provider_label = route.provider_id.clone();
     let model_label = route.model_id.clone();
     let mut session_manager = ChatSessionManager::new(
         route,
@@ -127,8 +125,7 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                     info!("received from chat {}: {}", chat_id, text);
 
                     if text == "/start" || text == "/help" {
-                        let tool_authoring = if session_manager.chat_tool_authoring_enabled(chat_id)
-                        {
+                        let tool_authoring = if session_manager.tool_authoring_enabled() {
                             "on"
                         } else {
                             "off"
@@ -136,7 +133,7 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                         let reply = format!(
                             "TopAgent\n\n\
                              Workspace: {}\n\
-                             Provider: {} | Model: {}\n\
+                             Model: {}\n\
                              Tool authoring: {}\n\
                              Mode: private text chats only\n\n\
                              Commands:\n\
@@ -145,10 +142,9 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                              /approvals - list pending approvals for this chat\n\
                              /approve <id> - approve a pending action\n\
                              /deny <id> - deny a pending action\n\
-                             /reset - clear this chat's saved transcript\n\
-                             /tool_authoring on|off - enable or disable generated-tool authoring for this chat\n\n\
+                             /reset - clear this chat's saved transcript\n\n\
                              Send a plain text message to start a task.",
-                            workspace_label, provider_label, model_label, tool_authoring
+                            workspace_label, model_label, tool_authoring
                         );
                         send_telegram(&adapter, chat_id, vec![reply], None);
                         continue;
@@ -192,47 +188,6 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                             session_manager.reset_chat(chat_id);
                             "Saved chat transcript cleared for this chat. Curated workspace memory was left unchanged."
                                 .to_string()
-                        };
-                        send_telegram(&adapter, chat_id, vec![reply], None);
-                        continue;
-                    }
-
-                    if let Some(argument) = text.strip_prefix("/tool_authoring") {
-                        let argument = argument.trim();
-                        let reply = match argument {
-                            "" => format!(
-                                "Tool authoring is currently {} for this chat. Use /tool_authoring on or /tool_authoring off.",
-                                if session_manager.chat_tool_authoring_enabled(chat_id) {
-                                    "on"
-                                } else {
-                                    "off"
-                                }
-                            ),
-                            "on" | "off" => {
-                                let enabled = argument == "on";
-                                match session_manager.set_chat_tool_authoring(chat_id, enabled) {
-                                    Ok(()) => {
-                                        if session_manager.is_task_running(chat_id) {
-                                            format!(
-                                                "Tool authoring is now {} for this chat. The current task is still running with its previous setting; the change will apply to the next task.",
-                                                argument
-                                            )
-                                        } else {
-                                            format!(
-                                                "Tool authoring is now {} for this chat.",
-                                                argument
-                                            )
-                                        }
-                                    }
-                                    Err(err) => format!(
-                                        "Failed to update tool authoring for this chat: {}",
-                                        err
-                                    ),
-                                }
-                            }
-                            _ => {
-                                "Usage: /tool_authoring on or /tool_authoring off".to_string()
-                            }
                         };
                         send_telegram(&adapter, chat_id, vec![reply], None);
                         continue;
@@ -444,64 +399,6 @@ impl ChatHistoryStore {
     }
 }
 
-#[derive(Debug, Clone)]
-struct ChatSettingsStore {
-    settings_dir: PathBuf,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedChatSettings {
-    version: u32,
-    tool_authoring_enabled: bool,
-}
-
-impl ChatSettingsStore {
-    fn new(workspace_root: PathBuf) -> Self {
-        Self {
-            settings_dir: workspace_root.join(".topagent").join("telegram-settings"),
-        }
-    }
-
-    fn path_for_chat(&self, chat_id: i64) -> PathBuf {
-        self.settings_dir.join(format!("chat-{chat_id}.json"))
-    }
-
-    fn load_tool_authoring(&self, chat_id: i64) -> Result<Option<bool>> {
-        let path = self.path_for_chat(chat_id);
-        if !path.exists() {
-            return Ok(None);
-        }
-
-        let contents = std::fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        let settings: PersistedChatSettings = serde_json::from_str(&contents)
-            .with_context(|| format!("failed to parse {}", path.display()))?;
-        if settings.version != TELEGRAM_CHAT_SETTINGS_VERSION {
-            return Err(anyhow::anyhow!(
-                "unsupported Telegram chat settings version {} in {}",
-                settings.version,
-                path.display()
-            ));
-        }
-
-        Ok(Some(settings.tool_authoring_enabled))
-    }
-
-    fn save_tool_authoring(&self, chat_id: i64, enabled: bool) -> Result<PathBuf> {
-        std::fs::create_dir_all(&self.settings_dir)
-            .with_context(|| format!("failed to create {}", self.settings_dir.display()))?;
-        let path = self.path_for_chat(chat_id);
-        let settings = PersistedChatSettings {
-            version: TELEGRAM_CHAT_SETTINGS_VERSION,
-            tool_authoring_enabled: enabled,
-        };
-        let contents = serde_json::to_string_pretty(&settings)
-            .with_context(|| format!("failed to encode {}", path.display()))?;
-        write_managed_file(&path, &contents, true)?;
-        Ok(path)
-    }
-}
-
 use anyhow::Context;
 
 // ── Session manager ──
@@ -511,8 +408,6 @@ pub(crate) struct ChatSessionManager {
     api_key: String,
     options: RuntimeOptions,
     history_store: ChatHistoryStore,
-    settings_store: ChatSettingsStore,
-    tool_authoring_cache: RefCell<HashMap<i64, bool>>,
     memory: WorkspaceMemory,
     secrets: topagent_core::SecretRegistry,
     pub sessions: HashMap<i64, RunningChatTask>,
@@ -535,29 +430,13 @@ impl ChatSessionManager {
         secrets: topagent_core::SecretRegistry,
     ) -> Self {
         let (completed_tx, completed_rx) = mpsc::channel();
-        let memory = WorkspaceMemory::new(workspace_root.clone());
-        if let Err(err) = memory.ensure_layout() {
-            warn!(
-                "failed to initialize workspace memory layout in {}: {}",
-                workspace_root.display(),
-                err
-            );
-        }
-        if let Err(err) = memory.consolidate_memory_if_needed() {
-            warn!(
-                "failed to consolidate workspace memory index in {}: {}",
-                workspace_root.display(),
-                err
-            );
-        }
+        let memory = prepare_workspace_memory(workspace_root.clone());
 
         Self {
             route,
             api_key,
             options,
             history_store: ChatHistoryStore::new(workspace_root.clone()),
-            settings_store: ChatSettingsStore::new(workspace_root),
-            tool_authoring_cache: RefCell::new(HashMap::new()),
             memory,
             secrets,
             sessions: HashMap::new(),
@@ -566,72 +445,16 @@ impl ChatSessionManager {
         }
     }
 
-    #[cfg(test)]
-    pub fn create_agent(&self) -> Agent {
-        self.create_agent_for_chat(0)
+    fn create_agent(&self) -> Agent {
+        build_agent(&self.route, &self.api_key, self.options.clone())
     }
 
-    fn create_agent_for_chat(&self, chat_id: i64) -> Agent {
-        let tools = default_tools();
-        let options = self.options_for_chat(chat_id);
-        let provider = create_provider(
-            &self.route,
-            &self.api_key,
-            tools.specs(),
-            options.provider_timeout_secs,
-        )
-        .expect("failed to create provider");
-        Agent::with_route(provider, self.route.clone(), tools.into_inner(), options)
+    fn tool_authoring_enabled(&self) -> bool {
+        self.options.enable_generated_tool_authoring
     }
 
-    fn options_for_chat(&self, chat_id: i64) -> RuntimeOptions {
-        self.options
-            .clone()
-            .with_generated_tool_authoring(self.chat_tool_authoring_enabled(chat_id))
-    }
-
-    fn chat_tool_authoring_enabled(&self, chat_id: i64) -> bool {
-        if let Some(enabled) = self.tool_authoring_cache.borrow().get(&chat_id).copied() {
-            return enabled;
-        }
-
-        let enabled = match self.settings_store.load_tool_authoring(chat_id) {
-            Ok(Some(enabled)) => enabled,
-            Ok(None) => self.options.enable_generated_tool_authoring,
-            Err(err) => {
-                warn!(
-                    "failed to load Telegram chat settings for chat {} from {}: {}",
-                    chat_id,
-                    self.settings_store.path_for_chat(chat_id).display(),
-                    err
-                );
-                self.options.enable_generated_tool_authoring
-            }
-        };
-        self.tool_authoring_cache
-            .borrow_mut()
-            .insert(chat_id, enabled);
-        enabled
-    }
-
-    fn set_chat_tool_authoring(&mut self, chat_id: i64, enabled: bool) -> Result<()> {
-        self.settings_store.save_tool_authoring(chat_id, enabled)?;
-        self.tool_authoring_cache
-            .borrow_mut()
-            .insert(chat_id, enabled);
-        Ok(())
-    }
-
-    fn build_memory_context(&self, chat_id: i64, instruction: &str) -> Option<String> {
-        if let Err(err) = self.memory.consolidate_memory_if_needed() {
-            warn!(
-                "failed to consolidate workspace memory index in {}: {}",
-                self.history_store.history_dir.display(),
-                err
-            );
-        }
-
-        let transcript = match self.history_store.load(chat_id) {
+    fn load_redacted_transcript(&self, chat_id: i64) -> Vec<Message> {
+        match self.history_store.load(chat_id) {
             Ok(messages) => messages
                 .into_iter()
                 .map(|message| message.redact_secrets(&self.secrets))
@@ -645,19 +468,6 @@ impl ChatSessionManager {
                 );
                 Vec::new()
             }
-        };
-
-        match self.memory.build_prompt(instruction, Some(&transcript)) {
-            Ok(memory_prompt) => memory_prompt.prompt,
-            Err(err) => {
-                warn!(
-                    "failed to build workspace memory context for chat {} in {}: {}",
-                    chat_id,
-                    self.history_store.path_for_chat(chat_id).display(),
-                    err
-                );
-                None
-            }
         }
     }
 
@@ -667,11 +477,8 @@ impl ChatSessionManager {
         chat_id: i64,
         instruction: &str,
     ) -> ExecutionContext {
-        let mut run_ctx = ctx.clone();
-        if let Some(memory_context) = self.build_memory_context(chat_id, instruction) {
-            run_ctx = run_ctx.with_memory_context(memory_context);
-        }
-        run_ctx
+        let transcript = self.load_redacted_transcript(chat_id);
+        prepare_run_context(ctx, &self.memory, instruction, Some(&transcript))
     }
 
     #[cfg(test)]
@@ -819,7 +626,7 @@ impl ChatSessionManager {
         }
 
         let heartbeat_interval = Duration::from_secs(self.options.progress_heartbeat_secs);
-        let mut agent = self.create_agent_for_chat(chat_id);
+        let mut agent = self.create_agent();
 
         let cancel_token = CancellationToken::new();
         let approval_mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Wait);
@@ -1117,9 +924,12 @@ mod tests {
         );
 
         let restarted_manager = test_manager(workspace.path().to_path_buf());
-        let memory_context = restarted_manager
-            .build_memory_context(chat_id, "What was the maple phrase I mentioned earlier?")
-            .unwrap();
+        let run_ctx = restarted_manager.build_run_context(
+            &ExecutionContext::new(workspace.path().to_path_buf()),
+            chat_id,
+            "What was the maple phrase I mentioned earlier?",
+        );
+        let memory_context = run_ctx.memory_context().unwrap();
 
         assert!(memory_context.contains("maple comet"));
         assert!(!memory_context.contains("cedar echo"));
@@ -1259,62 +1069,31 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_authoring_setting_persists_per_chat() {
+    fn test_create_agent_respects_global_tool_authoring_setting() {
         let workspace = TempDir::new().unwrap();
-        let chat_id = 4242;
-        let mut manager = test_manager(workspace.path().to_path_buf());
-
-        assert!(!manager.chat_tool_authoring_enabled(chat_id));
-        manager.set_chat_tool_authoring(chat_id, true).unwrap();
-        assert!(manager.chat_tool_authoring_enabled(chat_id));
-        assert!(!manager.chat_tool_authoring_enabled(chat_id + 1));
-
-        let restarted_manager = test_manager(workspace.path().to_path_buf());
-        assert!(restarted_manager.chat_tool_authoring_enabled(chat_id));
-        assert!(!restarted_manager.chat_tool_authoring_enabled(chat_id + 1));
-
-        let settings_path = workspace
-            .path()
-            .join(".topagent")
-            .join("telegram-settings")
-            .join("chat-4242.json");
-        assert!(settings_path.is_file());
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&settings_path)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777;
-            assert_eq!(mode, 0o600);
-        }
-    }
-
-    #[test]
-    fn test_create_agent_for_chat_respects_tool_authoring_setting() {
-        let workspace = TempDir::new().unwrap();
-        let chat_id = 7;
-        let mut manager = test_manager(workspace.path().to_path_buf());
-
-        let disabled_specs = manager.create_agent_for_chat(chat_id).tool_specs();
+        let disabled_manager = test_manager(workspace.path().to_path_buf());
+        let disabled_specs = disabled_manager.create_agent().tool_specs();
         assert!(!disabled_specs.iter().any(|spec| spec.name == "create_tool"));
 
-        manager.set_chat_tool_authoring(chat_id, true).unwrap();
-        let enabled_specs = manager.create_agent_for_chat(chat_id).tool_specs();
+        let enabled_manager = ChatSessionManager::new(
+            ModelRoute::openrouter("test-model"),
+            "test-key".to_string(),
+            RuntimeOptions::default().with_generated_tool_authoring(true),
+            workspace.path().to_path_buf(),
+            topagent_core::SecretRegistry::new(),
+        );
+        let enabled_specs = enabled_manager.create_agent().tool_specs();
         assert!(enabled_specs.iter().any(|spec| spec.name == "create_tool"));
         assert!(enabled_specs.iter().any(|spec| spec.name == "repair_tool"));
     }
 
     #[test]
-    fn test_reset_chat_preserves_tool_authoring_setting() {
+    fn test_reset_chat_does_not_create_tool_authoring_settings_state() {
         let workspace = TempDir::new().unwrap();
         let chat_id = 3003;
         let mut manager = test_manager(workspace.path().to_path_buf());
-        manager.set_chat_tool_authoring(chat_id, true).unwrap();
 
-        let mut agent = manager.create_agent_for_chat(chat_id);
+        let mut agent = manager.create_agent();
         agent.restore_conversation_messages(vec![
             Message::user("Remember the answer is 17."),
             Message::assistant("Stored."),
@@ -1332,12 +1111,11 @@ mod tests {
             .join("telegram-settings")
             .join("chat-3003.json");
         assert!(history_path.is_file());
-        assert!(settings_path.is_file());
+        assert!(!settings_path.exists());
 
         manager.reset_chat(chat_id);
 
         assert!(!history_path.exists());
-        assert!(settings_path.exists());
-        assert!(manager.chat_tool_authoring_enabled(chat_id));
+        assert!(!settings_path.exists());
     }
 }

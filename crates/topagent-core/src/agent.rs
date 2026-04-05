@@ -1,28 +1,22 @@
 use crate::approval::ApprovalCheck;
-use crate::behavior::{
-    BashCommandClass, BehaviorContract, BehaviorPromptContext, PreExecutionState, RunStateSnapshot,
-};
+use crate::behavior::{BashCommandClass, BehaviorContract, PreExecutionState};
 use crate::command_exec::CommandSandboxPolicy;
 use crate::compaction::{CompactionRuntimeState, TranscriptCompactor};
 use crate::context::{ExecutionContext, ToolContext};
 use crate::external::{ExternalToolEffect, ExternalToolRegistry};
-use crate::hooks::HookRegistry;
 use crate::model::ModelRoute;
 use crate::plan::{self, Plan};
 use crate::progress::{ProgressCallback, ProgressUpdate};
 use crate::project::get_project_instructions_or_error;
+use crate::prompt::BehaviorPromptContext;
+use crate::run_state::AgentRunState;
 use crate::runtime::RuntimeOptions;
 use crate::session::Session;
-use crate::task_result::{TaskEvidence, TaskResult, VerificationCommand};
-use crate::tool_genesis::{
-    CreateToolTool, DeleteGeneratedToolTool, ListGeneratedToolsTool, RepairToolTool, ToolGenesis,
-};
+use crate::tool_genesis::{load_generated_tool_inventory, register_generated_tool_authoring_tools};
 use crate::tools::{
     ManageOperatorPreferenceTool, SaveLessonTool, SavePlanTool, Tool, ToolRegistry, UpdatePlanTool,
 };
 use crate::{Error, Message, Provider, ProviderResponse, Result, ToolSpec};
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -56,11 +50,7 @@ pub struct Agent {
     options: RuntimeOptions,
     behavior: BehaviorContract,
     plan: Arc<Mutex<Plan>>,
-    hooks: HookRegistry,
-    current_objective: Option<String>,
-    changed_files: RefCell<Vec<String>>,
-    active_files: RefCell<Vec<String>>,
-    bash_history: RefCell<Vec<(String, String, i32)>>,
+    run_state: AgentRunState,
     planning_gate_active: bool,
     planning_required_for_task: bool,
     task_mode: plan::TaskMode,
@@ -69,18 +59,10 @@ pub struct Agent {
     planning_escalated: bool,
     resolved_route: ModelRoute,
     execution_stage: ExecutionStage,
-    external_tool_ran: RefCell<bool>,
-    run_baseline: RefCell<Option<RunBaseline>>,
     progress_callback: Option<ProgressCallback>,
     planning_block_count: usize,
     compaction_state: CompactionRuntimeState,
     generated_tool_warnings: Vec<String>,
-}
-
-struct RunBaseline {
-    pre_existing_dirty: Vec<String>,
-    pre_existing_hashes: HashMap<String, String>,
-    pre_existing_unattributed: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -142,10 +124,7 @@ impl Agent {
         registry.add(Box::new(ManageOperatorPreferenceTool::new()));
 
         if behavior.generated_tools.authoring_enabled {
-            registry.add(Box::new(CreateToolTool::new()));
-            registry.add(Box::new(RepairToolTool::new()));
-            registry.add(Box::new(ListGeneratedToolsTool::new()));
-            registry.add(Box::new(DeleteGeneratedToolTool::new()));
+            register_generated_tool_authoring_tools(&mut registry);
         }
 
         Self {
@@ -156,19 +135,13 @@ impl Agent {
             options,
             behavior,
             plan,
-            hooks: HookRegistry::new(),
-            current_objective: None,
-            changed_files: RefCell::new(Vec::new()),
-            active_files: RefCell::new(Vec::new()),
-            bash_history: RefCell::new(Vec::new()),
+            run_state: AgentRunState::default(),
             planning_gate_active: false,
             planning_required_for_task: false,
             task_mode: plan::TaskMode::PlanAndExecute,
             planning_escalated: false,
             resolved_route: route,
             execution_stage: ExecutionStage::Research,
-            external_tool_ran: RefCell::new(false),
-            run_baseline: RefCell::new(None),
             progress_callback: None,
             planning_block_count: 0,
             compaction_state: CompactionRuntimeState::default(),
@@ -178,14 +151,6 @@ impl Agent {
 
     pub fn plan(&self) -> Arc<Mutex<Plan>> {
         self.plan.clone()
-    }
-
-    pub fn hooks(&self) -> &HookRegistry {
-        &self.hooks
-    }
-
-    pub fn hooks_mut(&mut self) -> &mut HookRegistry {
-        &mut self.hooks
     }
 
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
@@ -201,7 +166,7 @@ impl Agent {
     }
 
     pub fn changed_files(&self) -> Vec<String> {
-        self.changed_files.borrow().clone()
+        self.run_state.changed_files()
     }
 
     pub fn conversation_messages(&self) -> Vec<Message> {
@@ -294,7 +259,11 @@ impl Agent {
             return;
         }
 
-        let snapshot = self.build_run_state_snapshot(ctx, self.plan_exists());
+        let snapshot = self.run_state.build_snapshot(
+            &self.behavior,
+            ctx,
+            self.planning_gate_active && !self.plan_exists(),
+        );
         let compactor = TranscriptCompactor::new(&self.behavior.compaction);
 
         if self.behavior.should_auto_compact(message_count) && !self.compaction_state.auto_disabled
@@ -511,7 +480,7 @@ impl Agent {
     /// Activates the planning gate if multiple distinct files have been
     /// changed without any plan in place.
     fn maybe_escalate_to_planning(&mut self) {
-        let distinct_files = self.changed_files.borrow().len();
+        let distinct_files = self.run_state.changed_file_count();
         if self.behavior.should_escalate_to_planning(
             self.planning_gate_active,
             self.planning_escalated,
@@ -555,7 +524,7 @@ impl Agent {
         self.session.add_message(Message::tool_result(id, result));
     }
 
-    /// Shared preflight checks: pre-hooks, planning gate, pre-execution gate.
+    /// Shared preflight checks: planning gate, pre-execution gate, approval gate.
     /// Returns `None` if all pass, `Some(PreflightBlock)` if blocked.
     fn run_preflight(
         &mut self,
@@ -566,16 +535,6 @@ impl Agent {
         external_effect: Option<ExternalToolEffect>,
         external_sandbox: Option<CommandSandboxPolicy>,
     ) -> Result<Option<PreflightBlock>> {
-        let tool_ctx = ToolContext::new(ctx, &self.options);
-        if let Some(hooks) = self.hooks.get(name) {
-            if !hooks.run_pre_hooks(name, args, &tool_ctx) {
-                return Ok(Some(PreflightBlock {
-                    message: "error: tool blocked by pre-hook".into(),
-                    is_planning_block: false,
-                }));
-            }
-        }
-
         if let Some(block_msg) = self.check_planning_gate(name, bash_args, external_effect) {
             self.emit_progress(Self::blocked_progress(&block_msg));
             return Ok(Some(PreflightBlock {
@@ -636,8 +595,8 @@ impl Agent {
             return Ok(());
         }
 
-        // ── Preflight: hooks + gates ──
-        self.track_active_file(&name, &args);
+        // ── Preflight: gates ──
+        self.run_state.track_active_file(&name, &args);
         let bash_args = if name == "bash" { Some(&args) } else { None };
         if let Some(block) = self.run_preflight(ctx, &name, &args, bash_args, None, None)? {
             self.record_tool_result(id, name, args, block.message);
@@ -658,7 +617,7 @@ impl Agent {
         };
         self.emit_progress(self.tool_progress(&name, &args));
         self.check_cancelled(ctx)?;
-        let mut result = match tool.execute(args.clone(), &tool_ctx) {
+        let result = match tool.execute(args.clone(), &tool_ctx) {
             Ok(r) => r,
             Err(e) => {
                 self.record_tool_result(
@@ -682,15 +641,14 @@ impl Agent {
             };
             if let Some(cmd) = bash_cmd {
                 let exit_code = extract_exit_code(&result);
-                self.bash_history
-                    .borrow_mut()
-                    .push((cmd, result.clone(), exit_code));
+                self.run_state
+                    .record_bash_result(cmd, result.clone(), exit_code);
             }
             if matches!(
                 class,
                 BashCommandClass::MutationRisk | BashCommandClass::Verification
             ) {
-                let found_new_change = self.reconcile_changed_files(&ctx.workspace_root);
+                let found_new_change = self.run_state.reconcile_changed_files(&ctx.workspace_root);
                 if found_new_change {
                     execution_started_by_bash = true;
                 }
@@ -700,20 +658,15 @@ impl Agent {
             }
         }
 
-        // ── Post-hooks ──
-        if let Some(hooks) = self.hooks.get(&name) {
-            result = hooks.run_post_hooks(&name, &args, &result, &tool_ctx);
-        }
-
         if execution_started_by_bash {
             self.mark_execution_started();
         }
 
         // ── Track mutations ──
-        self.track_changed_file(&name, &args);
+        self.run_state.track_changed_file(&name, &args);
 
         if self.behavior.is_mutation_tool(&name) {
-            self.reconcile_changed_files(&ctx.workspace_root);
+            self.run_state.reconcile_changed_files(&ctx.workspace_root);
             self.mark_execution_started();
             self.maybe_escalate_to_planning();
         }
@@ -749,7 +702,7 @@ impl Agent {
         let external_effect = self.external_tools.get(&name).unwrap().effect();
         let external_sandbox = self.external_tools.get(&name).unwrap().sandbox_policy();
 
-        // ── Preflight: hooks + gates ──
+        // ── Preflight: gates ──
         if let Some(block) = self.run_preflight(
             ctx,
             &name,
@@ -771,9 +724,7 @@ impl Agent {
         let external_tool = self.external_tools.get(&name).unwrap();
         let result = external_tool.execute(&args, &tool_ctx);
         self.check_cancelled(ctx)?;
-        *self.external_tool_ran.borrow_mut() = true;
-
-        let found_new_change = self.reconcile_changed_files(&ctx.workspace_root);
+        let found_new_change = self.run_state.reconcile_changed_files(&ctx.workspace_root);
         if found_new_change && self.execution_stage == ExecutionStage::Research {
             self.execution_stage = ExecutionStage::Edit;
         }
@@ -804,160 +755,6 @@ impl Agent {
         };
         self.record_tool_result(id, name, args, result_str);
         Ok(())
-    }
-
-    fn track_changed_file(&self, tool_name: &str, args: &serde_json::Value) {
-        if tool_name == "write" || tool_name == "edit" {
-            if let Some(path) = args.get("path").and_then(|p| p.as_str()) {
-                self.record_changed_file(path.to_string());
-            }
-        }
-    }
-
-    fn track_active_file(&self, tool_name: &str, args: &serde_json::Value) {
-        let path = match tool_name {
-            "read" | "write" | "edit" => args.get("path").and_then(|p| p.as_str()),
-            _ => None,
-        };
-        let Some(path) = path else {
-            return;
-        };
-
-        let mut active = self.active_files.borrow_mut();
-        if let Some(existing) = active.iter().position(|entry| entry == path) {
-            let entry = active.remove(existing);
-            active.push(entry);
-            return;
-        }
-
-        active.push(path.to_string());
-        if active.len() > 12 {
-            let excess = active.len() - 12;
-            active.drain(0..excess);
-        }
-    }
-
-    fn record_changed_file(&self, path: String) {
-        if self.is_pre_existing_dirty(&path) {
-            return;
-        }
-        let mut changed = self.changed_files.borrow_mut();
-        if !changed.contains(&path) {
-            changed.push(path);
-        }
-    }
-
-    fn build_run_state_snapshot(
-        &self,
-        ctx: &ExecutionContext,
-        plan_exists: bool,
-    ) -> RunStateSnapshot {
-        let mut blockers = Vec::new();
-        if self.planning_gate_active && !plan_exists {
-            blockers
-                .push("Planning required before mutation-risk actions can continue.".to_string());
-        }
-
-        let mut pending_approvals = Vec::new();
-        let mut recent_approval_decisions = Vec::new();
-        if let Some(mailbox) = ctx.approval_mailbox() {
-            for entry in mailbox.pending() {
-                pending_approvals.push(entry.request.render_status_line(entry.state));
-            }
-
-            let mut resolved = mailbox
-                .list()
-                .into_iter()
-                .filter(|entry| entry.state != crate::approval::ApprovalState::Pending)
-                .collect::<Vec<_>>();
-            resolved.sort_by_key(|entry| entry.resolved_at.or(Some(entry.request.created_at)));
-
-            for entry in resolved
-                .into_iter()
-                .rev()
-                .take(self.behavior.compaction.max_recent_approval_decisions)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-            {
-                let mut line = entry.request.render_status_line(entry.state);
-                if let Some(note) = entry.decision_note {
-                    line.push_str(&format!(" ({note})"));
-                }
-                if matches!(
-                    entry.state,
-                    crate::approval::ApprovalState::Denied
-                        | crate::approval::ApprovalState::Expired
-                        | crate::approval::ApprovalState::Superseded
-                ) {
-                    blockers.push(format!(
-                        "Approval {}: {}",
-                        entry.state.label(),
-                        entry.request.short_summary
-                    ));
-                }
-                recent_approval_decisions.push(line);
-            }
-        }
-
-        let mut active_files = self.active_files.borrow().clone();
-        for changed in self.changed_files.borrow().iter() {
-            if !active_files.contains(changed) {
-                active_files.push(changed.clone());
-            }
-        }
-
-        let changed_files = self.changed_files.borrow().clone();
-        let mut proof_of_work_anchors = Vec::new();
-        if !changed_files.is_empty() {
-            proof_of_work_anchors.push(format!("changed files: {}", changed_files.join(", ")));
-        }
-
-        for (command, _output, exit_code) in self.bash_history.borrow().iter().rev() {
-            if !self.behavior.is_verification_command(command) {
-                continue;
-            }
-            proof_of_work_anchors.push(format!("verification: {} (exit {})", command, exit_code));
-            if proof_of_work_anchors.len()
-                >= self.behavior.compaction.max_recent_proof_of_work_anchors
-            {
-                break;
-            }
-        }
-        proof_of_work_anchors.reverse();
-
-        RunStateSnapshot {
-            objective: self.current_objective.clone(),
-            blockers,
-            pending_approvals,
-            recent_approval_decisions,
-            active_files,
-            proof_of_work_anchors,
-            memory_context_loaded: ctx.memory_context().is_some(),
-        }
-    }
-
-    pub fn get_route(&self) -> ModelRoute {
-        match self.execution_stage {
-            ExecutionStage::Edit => {
-                if let Some(ref model) = self.options.edit_model {
-                    return ModelRoute::openrouter(model);
-                }
-            }
-            ExecutionStage::Review => {
-                if let Some(ref model) = self.options.review_model {
-                    return ModelRoute::openrouter(model);
-                }
-            }
-            ExecutionStage::Research => {
-                if self.planning_gate_active {
-                    if let Some(ref model) = self.options.research_model {
-                        return ModelRoute::openrouter(model);
-                    }
-                }
-            }
-        }
-        self.resolved_route.clone()
     }
 
     pub fn set_execution_stage(&mut self, stage: ExecutionStage) {
@@ -1057,138 +854,6 @@ impl Agent {
         }
     }
 
-    fn compute_file_hash(path: &Path) -> Option<String> {
-        use std::collections::hash_map::DefaultHasher;
-        use std::fs::File;
-        use std::hash::{Hash, Hasher};
-        use std::io::Read;
-
-        let mut file = File::open(path).ok()?;
-        let mut contents = Vec::new();
-        file.read_to_end(&mut contents).ok()?;
-        let mut hasher = DefaultHasher::new();
-        contents.hash(&mut hasher);
-        Some(format!("{:x}", hasher.finish()))
-    }
-
-    fn capture_run_baseline(&self, workspace_root: &Path) {
-        let dirty = Self::list_dirty_files(workspace_root);
-        let mut hashes = HashMap::new();
-        let mut unattributed = Vec::new();
-
-        for file in &dirty {
-            let path = workspace_root.join(file);
-            if let Some(hash) = Self::compute_file_hash(&path) {
-                hashes.insert(file.clone(), hash);
-            } else {
-                unattributed.push(file.clone());
-            }
-        }
-
-        *self.run_baseline.borrow_mut() = Some(RunBaseline {
-            pre_existing_dirty: dirty,
-            pre_existing_hashes: hashes,
-            pre_existing_unattributed: unattributed,
-        });
-    }
-
-    fn reconcile_changed_files(&self, workspace_root: &Path) -> bool {
-        let baseline = self.run_baseline.borrow();
-        let pre_existing_dirty = baseline
-            .as_ref()
-            .map_or(vec![], |b| b.pre_existing_dirty.clone());
-        let pre_existing_hashes = baseline
-            .as_ref()
-            .map_or(HashMap::new(), |b| b.pre_existing_hashes.clone());
-        let current_dirty = Self::list_dirty_files(workspace_root);
-
-        let mut changed = self.changed_files.borrow_mut();
-        let mut found_new_change = false;
-
-        for file in current_dirty {
-            let was_pre_existing = pre_existing_dirty.contains(&file);
-
-            if was_pre_existing {
-                if let Some(baseline_hash) = pre_existing_hashes.get(&file) {
-                    let current_hash = Self::compute_file_hash(&workspace_root.join(&file));
-                    if current_hash.as_ref() != Some(baseline_hash) {
-                        if !changed.contains(&file) {
-                            changed.push(file.clone());
-                        }
-                        found_new_change = true;
-                    }
-                }
-            } else {
-                if !changed.contains(&file) {
-                    changed.push(file.clone());
-                }
-                found_new_change = true;
-            }
-        }
-
-        found_new_change
-    }
-
-    fn is_pre_existing_dirty(&self, path: &str) -> bool {
-        let baseline = self.run_baseline.borrow();
-        baseline
-            .as_ref()
-            .is_some_and(|b| b.pre_existing_dirty.iter().any(|file| file == path))
-    }
-
-    fn unattributed_pre_existing_dirty_files(&self, workspace_root: &Path) -> Vec<String> {
-        let baseline = self.run_baseline.borrow();
-        let Some(baseline) = baseline.as_ref() else {
-            return Vec::new();
-        };
-
-        if baseline.pre_existing_unattributed.is_empty() {
-            return Vec::new();
-        }
-
-        let current_dirty = Self::list_dirty_files(workspace_root);
-        baseline
-            .pre_existing_unattributed
-            .iter()
-            .filter(|file| current_dirty.contains(file))
-            .cloned()
-            .collect()
-    }
-
-    fn list_dirty_files(workspace_root: &Path) -> Vec<String> {
-        let mut dirty = Vec::new();
-
-        if let Ok(output) = std::process::Command::new("git")
-            .args(["diff", "--name-only", "HEAD"])
-            .current_dir(workspace_root)
-            .output()
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    dirty.push(trimmed.to_string());
-                }
-            }
-        }
-
-        if let Ok(output) = std::process::Command::new("git")
-            .args(["ls-files", "--others", "--exclude-standard"])
-            .current_dir(workspace_root)
-            .output()
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() && !dirty.contains(&trimmed.to_string()) {
-                    dirty.push(trimmed.to_string());
-                }
-            }
-        }
-
-        dirty
-    }
-
     pub fn classify_bash_command(cmd: &str) -> BashCommandClass {
         BehaviorContract::default().classify_bash_command(cmd)
     }
@@ -1231,18 +896,8 @@ impl Agent {
     }
 
     pub fn load_generated_tools_from_workspace(&mut self, workspace_root: &Path) -> Result<()> {
-        let genesis = ToolGenesis::new(workspace_root.to_path_buf());
-        let inventory = genesis.generated_tool_inventory()?;
-        self.generated_tool_warnings = inventory
-            .summaries
-            .iter()
-            .filter_map(|summary| {
-                summary
-                    .load_warning
-                    .as_ref()
-                    .map(|warning| format!("{}: {}", summary.name, warning))
-            })
-            .collect();
+        let inventory = load_generated_tool_inventory(workspace_root)?;
+        self.generated_tool_warnings = inventory.warning_lines();
         for tool in inventory.verified_tools {
             self.external_tools.register(tool);
         }
@@ -1306,7 +961,7 @@ impl Agent {
             self.session.fill_messages(&mut provider_msgs);
             let response = match self.provider.complete_with_cancel(
                 &provider_msgs,
-                &self.get_route(),
+                &self.resolved_route,
                 ctx.cancel_token(),
             ) {
                 Ok(r) => {
@@ -1374,7 +1029,12 @@ impl Agent {
                         }
 
                         self.session.add_message(msg);
-                        let final_response = self.build_proof_of_work(&text, &ctx.workspace_root);
+                        let final_response = self.run_state.build_proof_of_work(
+                            &self.behavior,
+                            &text,
+                            &ctx.workspace_root,
+                            &self.generated_tool_warnings,
+                        );
                         return Ok(final_response);
                     }
                     self.session.add_message(msg);
@@ -1421,13 +1081,8 @@ impl Agent {
 
     fn reset_run_state(&mut self, ctx: &ExecutionContext, instruction: &str) -> Result<()> {
         let workspace_root = &ctx.workspace_root;
-        self.current_objective = Some(instruction.to_string());
-        self.changed_files.borrow_mut().clear();
-        self.active_files.borrow_mut().clear();
-        self.bash_history.borrow_mut().clear();
-        *self.external_tool_ran.borrow_mut() = false;
+        self.run_state.reset(workspace_root, instruction);
         self.compaction_state = CompactionRuntimeState::default();
-        self.capture_run_baseline(workspace_root);
 
         self.planning_required_for_task = self.behavior.planning.require_plan_by_default
             && self.classify_task(instruction, ctx.cancel_token())?;
@@ -1453,7 +1108,11 @@ impl Agent {
             .filter(|plan| !plan.is_empty())
             .map(|plan| &**plan);
         let plan_exists = current_plan.is_some();
-        let run_state = self.build_run_state_snapshot(ctx, plan_exists);
+        let run_state = self.run_state.build_snapshot(
+            &self.behavior,
+            ctx,
+            self.planning_gate_active && !plan_exists,
+        );
 
         Ok(self.behavior.render_system_prompt(&BehaviorPromptContext {
             available_tools: &available_tools,
@@ -1466,147 +1125,6 @@ impl Agent {
             planning_required_now: self.planning_gate_active && !plan_exists,
             approval_mailbox_available: ctx.approval_mailbox().is_some(),
         }))
-    }
-
-    fn generated_tool_warning_lines(&self) -> &[String] {
-        &self.generated_tool_warnings
-    }
-
-    fn build_proof_of_work(&self, response: &str, workspace_root: &Path) -> String {
-        let files = self.changed_files.borrow().clone();
-        let unattributed_files = self.unattributed_pre_existing_dirty_files(workspace_root);
-        let baseline = self.run_baseline.borrow();
-        let pre_existing = baseline
-            .as_ref()
-            .map_or(vec![], |b| b.pre_existing_dirty.clone());
-        let labeled_files: Vec<String> = files
-            .iter()
-            .map(|f| {
-                if pre_existing.contains(f) {
-                    format!("{} (pre-existing dirty, changed again during this run)", f)
-                } else {
-                    f.clone()
-                }
-            })
-            .collect();
-
-        let diff_summary = if !files.is_empty() {
-            Self::generate_diff_summary(workspace_root, &files)
-        } else {
-            String::new()
-        };
-
-        let mut evidence = TaskEvidence {
-            files_changed: labeled_files,
-            diff_summary,
-            verification_commands_run: Vec::new(),
-            unresolved_issues: Vec::new(),
-            workspace_warnings: Vec::new(),
-        };
-
-        for (command, full_output, exit_code) in self.bash_history.borrow().iter() {
-            if self.behavior.is_verification_command(command) {
-                let succeeded = exit_code == &0;
-                evidence
-                    .verification_commands_run
-                    .push(VerificationCommand {
-                        command: command.clone(),
-                        output: full_output.clone(),
-                        exit_code: *exit_code,
-                        succeeded,
-                    });
-            }
-        }
-
-        if !files.is_empty() && evidence.verification_commands_run.is_empty() {
-            evidence
-                .unresolved_issues
-                .push("Files were modified but no verification commands were run".to_string());
-        }
-
-        if !unattributed_files.is_empty() {
-            let details = unattributed_files
-                .iter()
-                .map(|file| {
-                    format!(
-                        "{} (pre-existing dirty file; baseline unavailable, run attribution uncertain)",
-                        file
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ");
-            evidence
-                .unresolved_issues
-                .push(format!("Attribution uncertain: {}", details));
-        }
-
-        if !self.behavior.should_attach_proof_of_work(
-            evidence.files_changed.len(),
-            evidence.verification_commands_run.len(),
-            evidence.unresolved_issues.len(),
-            self.generated_tool_warning_lines().len(),
-        ) {
-            return response.to_string();
-        }
-
-        let task_result = TaskResult::new(response.to_string())
-            .with_files_changed(evidence.files_changed.clone())
-            .with_diff_summary(evidence.diff_summary.clone())
-            .with_verification_commands(evidence.verification_commands_run.clone())
-            .with_unresolved_issues(evidence.unresolved_issues.clone())
-            .with_workspace_warnings(self.generated_tool_warning_lines().to_vec());
-
-        task_result.format_proof_of_work()
-    }
-
-    fn generate_diff_summary(workspace_root: &Path, changed_files: &[String]) -> String {
-        if changed_files.is_empty() {
-            return String::new();
-        }
-        let mut summary_parts = Vec::new();
-        for file in changed_files {
-            // Check if file is untracked (new file)
-            let is_untracked = std::process::Command::new("git")
-                .args(["ls-files", "--others", "--exclude-standard", file])
-                .current_dir(workspace_root)
-                .output()
-                .map(|out| !String::from_utf8_lossy(&out.stdout).trim().is_empty())
-                .unwrap_or(false);
-
-            if is_untracked {
-                // For new files, show the content as added
-                if let Ok(content) = std::fs::read_to_string(workspace_root.join(file)) {
-                    let line_count = content.lines().count();
-                    summary_parts.push(format!("{}: {} lines added", file, line_count));
-                } else {
-                    summary_parts.push(format!("{}: (new file)", file));
-                }
-            } else {
-                // For modified files, show git diff stat
-                let output = std::process::Command::new("git")
-                    .args(["diff", "--stat", file])
-                    .current_dir(workspace_root)
-                    .output();
-
-                match output {
-                    Ok(out) => {
-                        let stdout = String::from_utf8_lossy(&out.stdout);
-                        let stderr = String::from_utf8_lossy(&out.stderr);
-                        if !stdout.trim().is_empty() {
-                            summary_parts.push(stdout.to_string());
-                        } else if !stderr.trim().is_empty() {
-                            summary_parts.push(format!("{}: (no diff)", file));
-                        } else {
-                            summary_parts.push(format!("{}: (unchanged)", file));
-                        }
-                    }
-                    Err(e) => {
-                        summary_parts.push(format!("{}: (diff unavailable: {})", file, e));
-                    }
-                }
-            }
-        }
-        summary_parts.join("\n")
     }
 }
 

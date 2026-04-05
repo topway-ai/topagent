@@ -21,24 +21,26 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 
 | Module | Responsibility |
 |--------|---------------|
-| `agent` | Agent struct, step loop, planning gates, tool dispatch, execution stages |
+| `agent` | Agent struct, step loop, planning gates, approval checks, tool dispatch, compaction orchestration |
+| `behavior` | Typed behavior contract, approval trigger mapping, and runtime policy decisions |
+| `approval` | Approval mailbox, request/state transitions, runtime approval enforcement objects |
+| `compaction` | Layered transcript compaction and prompt rebuild support |
+| `run_state` | In-run objective, changed/active file tracking, bash verification history, baseline attribution, proof-of-work assembly |
 | `session` | Conversation history management, truncation |
 | `message` | Message types (user, assistant, system, tool_request, tool_result) |
 | `provider` | Provider trait, response types |
 | `openrouter` | OpenRouter API implementation |
-| `provider_factory` | Create provider from route config |
-| `model` | ModelRoute, ProviderId |
+| `model` | ModelRoute |
 | `runtime` | RuntimeOptions (step limits, timeouts, truncation thresholds) |
 | `tools/` | Tool trait, ToolRegistry, built-in tools (read, write, edit, bash, git_*) |
-| `tool_genesis` | Workspace-local tool creation, repair, deletion, verification, loading, and generated-tool health scanning |
+| `tool_genesis` | Workspace-local generated-tool authoring, verification, runtime inventory loading, and generated-tool health scanning |
 | `tool_spec` | Tool specification (name, description, parameters) |
 | `context` | ExecutionContext (workspace root, cancel token, secrets), ToolContext |
 | `secrets` | SecretRegistry: value-based and pattern-based redaction |
 | `plan` | Plan struct, TodoItem, task modes |
 | `project` | Load `TOPAGENT.md` project instructions |
-| `prompt` | System prompt construction |
+| `prompt` | Policy-driven system prompt rendering from the behavior contract, run state, plan, memory, and tool surface |
 | `external` | Workspace external tool registry loaded from `.topagent/external-tools.json` |
-| `hooks` | Pre/post tool hooks |
 | `channel/` | Telegram adapter and channel error types |
 | `cancel` | CancellationToken for graceful shutdown |
 | `progress` | Progress update types for UI feedback |
@@ -52,8 +54,9 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 |--------|---------------|
 | `main` | CLI argument parsing (clap), command dispatch, one-shot runner |
 | `config` | CliParams struct, parameter validation, route/options construction |
+| `run_setup` | Shared agent/provider/context assembly for one-shot CLI and Telegram runs |
 | `telegram` | Telegram polling loop, ChatSessionManager, per-chat transcript persistence |
-| `memory` | Workspace memory index/topic loading, transcript evidence retrieval, lightweight consolidation |
+| `memory` | Workspace memory facade for index/topic loading, transcript evidence retrieval, and durable-memory consolidation |
 | `service` | systemd service install/status/start/stop/restart/uninstall |
 | `managed_files` | Managed file guards, env file I/O, safe file removal |
 | `progress` | LiveProgress: CLI and Telegram progress formatting |
@@ -71,12 +74,12 @@ CLI parses args
   -> create Agent with provider + tools + options
   -> agent.run(ctx, instruction)
      -> load TOPAGENT.md, workspace external tools, generated tools, generated-tool warnings
-     -> build system prompt (+ project instructions + workspace memory briefing + generated-tool warnings)
+     -> render policy-driven system prompt (+ project instructions + workspace memory briefing + generated-tool warnings + compact run-state artifacts)
      -> classify task complexity -> activate planning gate if non-trivial
      -> enter step loop:
         1. send conversation to LLM
         2. LLM returns text (final answer) or tool calls
-        3. tool calls: run preflight (hooks, planning gate, verification gate)
+        3. tool calls: run preflight (planning gate, verification gate, approval enforcement)
         4. execute tool, record result in session
         5. repeat until text response or max steps
      -> append proof-of-work (changed files, diff summary)
@@ -97,7 +100,6 @@ CLI parses args
         - /start, /help -> reply with config summary
         - /stop -> cancel running task for that chat
         - /reset -> clear persisted transcript for that chat
-        - /tool_authoring on|off -> persist generated-tool authoring mode for that chat
         - text -> start_message:
           a. load `.topagent/MEMORY.md` (always)
           b. load matching `.topagent/topics/*.md` files only if relevant
@@ -124,7 +126,7 @@ topagent install
   -> systemctl --user enable --now topagent-telegram.service
 ```
 
-### Secret and sandbox safety
+### Secret, approval, and sandbox safety
 
 Secrets are protected at multiple layers:
 
@@ -145,7 +147,9 @@ Generated tools use the same workspace sandbox policy as bash. Workspace externa
 
 6. **Reply redaction**: Telegram replies are scanned for secrets before sending
 
-7. **Prompt rules**: the system prompt instructs the LLM to never reveal credentials
+7. **Approval enforcement**: risky actions such as destructive bash commands, `git_commit`, host-sandbox external tools, and generated-tool deletion must pass the central approval gate before execution
+
+8. **Prompt rules**: the system prompt instructs the LLM to never reveal credentials
 
 ### Memory and persistence flow
 
@@ -165,9 +169,11 @@ TopAgent now uses three memory layers:
 
 `/reset` deletes only the per-chat transcript file. It does not touch `MEMORY.md`, topic files, plans, or lessons.
 
-Lightweight consolidation keeps the index practical:
+Curated consolidation keeps the index practical:
 
-- exact duplicate `MEMORY.md` entries are deduplicated
+- saved plans and lessons can promote into durable memory when they have future value
+- duplicate or conflicting durable entries are merged or pruned instead of accumulating forever
+- relative timestamps are normalized before durable promotion when TopAgent has enough evidence
 - missing or unreadable topic files are skipped during retrieval
 - the index load path caps injected bytes so startup memory stays cheap
 

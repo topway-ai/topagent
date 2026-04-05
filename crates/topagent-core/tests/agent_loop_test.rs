@@ -2364,36 +2364,6 @@ fn test_planning_gate_cleared_after_plan_creation() {
 }
 
 #[test]
-fn test_route_selection_follows_execution_stage() {
-    let (ctx, _temp) = make_test_context();
-    let options = RuntimeOptions::new()
-        .with_research_model("research-model".to_string())
-        .with_edit_model("edit-model".to_string())
-        .with_review_model("review-model".to_string());
-
-    let responses = vec![
-        ProviderResponse::ToolCall {
-            id: "1".into(),
-            name: "write".into(),
-            args: serde_json::json!({"path": "test.txt", "content": "content"}),
-        },
-        ProviderResponse::Message(Message::assistant("Done".to_string())),
-    ];
-    let provider = topagent_core::ScriptedProvider::new(responses);
-    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
-
-    let result = agent.run(&ctx, "write a file");
-    assert!(result.is_ok());
-
-    // After write operation, route should use edit model
-    let route = agent.get_route();
-    assert_eq!(
-        route.model_id, "edit-model",
-        "route should use edit model after entering edit stage"
-    );
-}
-
-#[test]
 fn test_agent_uses_configured_base_route_for_provider_calls() {
     let (ctx, _temp) = make_test_context();
     let route = ModelRoute::openrouter("custom/base-model");

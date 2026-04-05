@@ -1,6 +1,7 @@
 use crate::command_exec::{run_command, CommandSandboxPolicy};
 use crate::error::Error;
 use crate::external::{resolve_argv_template, ExternalTool};
+use crate::tools::ToolRegistry;
 use crate::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -428,6 +429,20 @@ pub struct GeneratedToolInventory {
     pub verified_tools: Vec<ExternalTool>,
 }
 
+impl GeneratedToolInventory {
+    pub fn warning_lines(&self) -> Vec<String> {
+        self.summaries
+            .iter()
+            .filter_map(|summary| {
+                summary
+                    .load_warning
+                    .as_ref()
+                    .map(|warning| format!("{}: {}", summary.name, warning))
+            })
+            .collect()
+    }
+}
+
 struct ScannedGeneratedTool {
     summary: GeneratedToolSummary,
     external_tool: Option<ExternalTool>,
@@ -605,6 +620,17 @@ pub use generated_tools::{
     CreateToolTool, DeleteGeneratedToolTool, ListGeneratedToolsTool, RepairToolTool,
 };
 
+pub fn register_generated_tool_authoring_tools(registry: &mut ToolRegistry) {
+    registry.add(Box::new(CreateToolTool::new()));
+    registry.add(Box::new(RepairToolTool::new()));
+    registry.add(Box::new(ListGeneratedToolsTool::new()));
+    registry.add(Box::new(DeleteGeneratedToolTool::new()));
+}
+
+pub fn load_generated_tool_inventory(workspace_root: &Path) -> Result<GeneratedToolInventory> {
+    ToolGenesis::new(workspace_root.to_path_buf()).generated_tool_inventory()
+}
+
 fn get_string(value: &serde_json::Value, key: &str) -> Result<String> {
     value
         .get(key)
@@ -618,8 +644,50 @@ mod tests {
     use super::*;
     use crate::context::{ExecutionContext, ToolContext};
     use crate::runtime::RuntimeOptions;
-    use crate::tools::Tool;
+    use crate::tools::{Tool, ToolRegistry};
     use tempfile::TempDir;
+
+    #[test]
+    fn test_generated_tool_inventory_warning_lines_only_surfaces_unavailable_tools() {
+        let inventory = GeneratedToolInventory {
+            summaries: vec![
+                GeneratedToolSummary {
+                    name: "good_tool".to_string(),
+                    description: "works".to_string(),
+                    verified: true,
+                    load_warning: None,
+                },
+                GeneratedToolSummary {
+                    name: "broken_tool".to_string(),
+                    description: "broken".to_string(),
+                    verified: false,
+                    load_warning: Some("missing script.sh".to_string()),
+                },
+            ],
+            verified_tools: Vec::new(),
+        };
+
+        assert_eq!(
+            inventory.warning_lines(),
+            vec!["broken_tool: missing script.sh".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_register_generated_tool_authoring_tools_adds_expected_specs() {
+        let mut registry = ToolRegistry::new();
+        register_generated_tool_authoring_tools(&mut registry);
+        let names = registry
+            .specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<Vec<_>>();
+
+        assert!(names.contains(&"create_tool".to_string()));
+        assert!(names.contains(&"repair_tool".to_string()));
+        assert!(names.contains(&"list_generated_tools".to_string()));
+        assert!(names.contains(&"delete_generated_tool".to_string()));
+    }
 
     #[test]
     fn test_tool_genesis_create_and_verify() {

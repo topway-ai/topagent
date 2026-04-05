@@ -4,6 +4,7 @@ mod config;
 mod managed_files;
 mod memory;
 mod progress;
+mod run_setup;
 mod service;
 mod telegram;
 
@@ -17,10 +18,9 @@ use std::sync::{
 };
 use std::time::Duration;
 use topagent_core::{
-    context::ExecutionContext, create_provider, tools::default_tools, Agent, ApprovalMailbox,
-    ApprovalMailboxMode, ApprovalRequest, CancellationToken, ProgressCallback, ProgressUpdate,
+    context::ExecutionContext, ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest,
+    CancellationToken, ProgressCallback, ProgressUpdate,
 };
-use tracing::warn;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
@@ -28,8 +28,8 @@ use crate::config::{
     build_route, build_runtime_options, require_openrouter_api_key, resolve_workspace_path,
     CliParams,
 };
-use crate::memory::WorkspaceMemory;
 use crate::progress::LiveProgress;
+use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
 use crate::service::{run_install, run_service_command, run_status, run_uninstall};
 use crate::telegram::run_telegram;
 
@@ -59,14 +59,6 @@ struct Cli {
         help = "OpenRouter API key (or OPENROUTER_API_KEY)"
     )]
     api_key: Option<String>,
-
-    #[arg(
-        long,
-        global = true,
-        default_value = "openrouter",
-        help = "Provider to use"
-    )]
-    provider: String,
 
     #[arg(
         long,
@@ -156,7 +148,6 @@ fn main() -> Result<()> {
     let instruction = cli.instruction;
     let params = CliParams {
         api_key: cli.api_key,
-        provider: cli.provider,
         model: cli.model,
         workspace: cli.workspace,
         max_steps: cli.max_steps,
@@ -214,42 +205,20 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
         .with_approval_mailbox(approval_mailbox);
     let options = build_runtime_options(params.max_steps, params.max_retries, params.timeout_secs)
         .with_generated_tool_authoring(params.generated_tool_authoring.unwrap_or(false));
-    let route = build_route(params.provider, params.model)?;
+    let route = build_route(params.model);
     let api_key = require_openrouter_api_key(params.api_key)?;
-    let workspace_memory = WorkspaceMemory::new(ctx.workspace_root.clone());
-
-    if let Err(err) = workspace_memory.consolidate_memory_if_needed() {
-        warn!("failed to consolidate workspace memory index: {}", err);
-    }
-    match workspace_memory.build_prompt(&instruction, None) {
-        Ok(memory_prompt) => {
-            if let Some(memory_context) = memory_prompt.prompt {
-                ctx = ctx.with_memory_context(memory_context);
-            }
-        }
-        Err(err) => {
-            warn!("failed to load workspace memory context: {}", err);
-        }
-    }
+    let workspace_memory = prepare_workspace_memory(ctx.workspace_root.clone());
+    ctx = prepare_run_context(&ctx, &workspace_memory, &instruction, None);
 
     info!(
-        "starting one-shot run | provider: {} | model: {} | workspace: {}",
-        route.provider_id,
+        "starting one-shot run | model: {} | workspace: {}",
         route.model_id,
         ctx.workspace_root.display()
     );
     info!("instruction: {}", instruction);
 
-    let tools = default_tools();
-    let provider = create_provider(
-        &route,
-        &api_key,
-        tools.specs(),
-        options.provider_timeout_secs,
-    )?;
-
     let heartbeat_interval = Duration::from_secs(options.progress_heartbeat_secs);
-    let mut agent = Agent::with_route(provider, route, tools.into_inner(), options);
+    let mut agent = build_agent(&route, &api_key, options);
     let progress = LiveProgress::for_cli(heartbeat_interval);
     let progress_callback = progress.callback();
     install_ctrlc_handler(cancel_token, progress_callback.clone())?;

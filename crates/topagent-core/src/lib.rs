@@ -9,7 +9,6 @@ pub mod context;
 pub mod error;
 pub mod external;
 pub mod file_util;
-pub mod hooks;
 pub mod message;
 pub mod model;
 pub mod openrouter;
@@ -18,7 +17,7 @@ pub mod progress;
 pub mod project;
 pub mod prompt;
 pub mod provider;
-pub mod provider_factory;
+mod run_state;
 pub mod runtime;
 pub mod secrets;
 pub mod session;
@@ -33,7 +32,7 @@ pub use approval::{
     ApprovalPolicy, ApprovalRequest, ApprovalRequestDraft, ApprovalResolveError, ApprovalState,
     ApprovalTriggerKind, ApprovalTriggerRule,
 };
-pub use behavior::{BashCommandClass, BehaviorContract, BehaviorPromptContext, RunStateSnapshot};
+pub use behavior::{BashCommandClass, BehaviorContract, RunStateSnapshot};
 pub use cancel::CancellationToken;
 pub use channel::telegram::{ChannelError, TelegramAdapter, POLL_TIMEOUT_SECS};
 pub use command_exec::CommandSandboxPolicy;
@@ -44,17 +43,16 @@ pub use compaction::{
 pub use context::ExecutionContext;
 pub use error::{Error, Result};
 pub use external::{ExternalTool, ExternalToolEffect, ExternalToolRegistry, ExternalToolResult};
-pub use hooks::{HookRegistry, ToolHooks};
 pub use message::{Content, Message, Role};
-pub use model::{ModelRoute, ProviderId};
+pub use model::ModelRoute;
 pub use openrouter::OpenRouterProvider;
 pub use plan::{Plan, TaskMode, TodoItem, TodoStatus};
 pub use progress::{ProgressCallback, ProgressKind, ProgressUpdate};
 pub use project::{
     get_project_instructions_or_error, load_project_instructions, ProjectInstructionResult,
 };
+pub use prompt::{BehaviorPromptContext, NO_PI_MD_NOTE, NO_PROJECT_INSTRUCTIONS_NOTE};
 pub use provider::{Provider, ProviderResponse, ScriptedProvider, ToolCallEntry};
-pub use provider_factory::create_provider;
 pub use runtime::RuntimeOptions;
 pub use secrets::SecretRegistry;
 pub use session::Session;

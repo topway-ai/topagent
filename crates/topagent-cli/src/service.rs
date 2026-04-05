@@ -7,7 +7,6 @@ use std::process::{Command, Output};
 use crate::config::*;
 use crate::managed_files::*;
 
-const TOPAGENT_PROVIDER_KEY: &str = "TOPAGENT_PROVIDER";
 const OPENROUTER_API_KEY_KEY: &str = "OPENROUTER_API_KEY";
 const TELEGRAM_BOT_TOKEN_KEY: &str = "TELEGRAM_BOT_TOKEN";
 
@@ -100,10 +99,9 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
         token,
         api_key,
         route: build_route_with_defaults(
-            params.provider,
             params.model,
             &TelegramModeDefaults::from_metadata(&existing_values),
-        )?,
+        ),
         workspace,
         options: build_runtime_options_with_defaults(
             params.max_steps,
@@ -459,13 +457,11 @@ fn render_status() -> Result<()> {
     if let Some(workspace) = env_values.get(TOPAGENT_WORKSPACE_KEY) {
         println!("Workspace: {}", workspace);
     }
-    if let Some(provider) = env_values.get(TOPAGENT_PROVIDER_KEY) {
-        let model = env_values
-            .get(TOPAGENT_MODEL_KEY)
-            .map(String::as_str)
-            .unwrap_or("(default)");
-        println!("Route: {} | {}", provider, model);
-    }
+    let model = env_values
+        .get(TOPAGENT_MODEL_KEY)
+        .map(String::as_str)
+        .unwrap_or("(default)");
+    println!("Model: {}", model);
     if let Some(enabled) = parse_env_bool(
         env_values
             .get(TOPAGENT_TOOL_AUTHORING_KEY)
@@ -722,7 +718,6 @@ fn render_service_env_file(config: &TelegramModeConfig) -> Result<String> {
         config.token.as_str(),
         config.api_key.as_str(),
         workspace.as_str(),
-        config.route.provider_id.as_str(),
         config.route.model_id.as_str(),
     ] {
         if value.contains('\n') {
@@ -738,7 +733,6 @@ fn render_service_env_file(config: &TelegramModeConfig) -> Result<String> {
 {token_key}={token}
 {api_key_key}={api_key}
 {workspace_key}={workspace}
-{provider_key}={provider}
 {model_key}={model}
 {max_steps_key}={max_steps}
 {max_retries_key}={max_retries}
@@ -751,8 +745,6 @@ fn render_service_env_file(config: &TelegramModeConfig) -> Result<String> {
         api_key = quote_env_value(&config.api_key),
         workspace_key = TOPAGENT_WORKSPACE_KEY,
         workspace = quote_env_value(&workspace),
-        provider_key = TOPAGENT_PROVIDER_KEY,
-        provider = quote_env_value(config.route.provider_id.as_str()),
         model_key = TOPAGENT_MODEL_KEY,
         model = quote_env_value(&config.route.model_id),
         max_steps_key = TOPAGENT_MAX_STEPS_KEY,

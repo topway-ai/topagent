@@ -58,7 +58,6 @@ TopAgent keeps Telegram memory in three layers:
 | `/help`  | Same as /start                     |
 | `/stop`  | Cancel the currently running task  |
 | `/reset` | Clear this chat's saved transcript |
-| `/tool_authoring on|off` | Enable or disable generated-tool authoring for this chat |
 
 ### Service management
 
@@ -79,7 +78,6 @@ See [docs/operations.md](docs/operations.md) for full operational details.
 | Flag                  | Default        | Description                        |
 |-----------------------|----------------|------------------------------------|
 | `--api-key`           | `$OPENROUTER_API_KEY` | OpenRouter API key            |
-| `--provider`          | `openrouter`   | LLM provider (OpenRouter only today) |
 | `--model`             | `minimax/minimax-m2.7` | Model identifier (OpenRouter format) |
 | `--workspace`         | current directory (one-shot) or auto-created (install) | Workspace path |
 | `--max-steps`         | `50`           | Maximum agent loop iterations      |

@@ -1,10 +1,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use topagent_core::{
-    model::{ModelRoute, ProviderId},
-    RuntimeOptions,
-};
+use topagent_core::{model::ModelRoute, RuntimeOptions};
 
 pub(crate) const TELEGRAM_SERVICE_UNIT_NAME: &str = "topagent-telegram.service";
 pub(crate) const TOPAGENT_SERVICE_MANAGED_KEY: &str = "TOPAGENT_SERVICE_MANAGED";
@@ -19,7 +16,6 @@ pub(crate) const TOPAGENT_TIMEOUT_SECS_KEY: &str = "TOPAGENT_TIMEOUT_SECS";
 #[derive(Debug, Clone)]
 pub(crate) struct CliParams {
     pub api_key: Option<String>,
-    pub provider: String,
     pub model: Option<String>,
     pub workspace: Option<PathBuf>,
     pub max_steps: Option<usize>,
@@ -235,18 +231,15 @@ pub(crate) fn require_telegram_token(token: Option<String>) -> Result<String> {
     Ok(token)
 }
 
-pub(crate) fn build_route(provider: String, model: Option<String>) -> Result<ModelRoute> {
-    let provider_id = ProviderId::parse(&provider).map_err(|e| anyhow::anyhow!("{}", e))?;
-    let base = ModelRoute::with_override(model.as_deref());
-    Ok(ModelRoute::new(provider_id, base.model_id))
+pub(crate) fn build_route(model: Option<String>) -> ModelRoute {
+    ModelRoute::with_override(model.as_deref())
 }
 
 pub(crate) fn build_route_with_defaults(
-    provider: String,
     model: Option<String>,
     defaults: &TelegramModeDefaults,
-) -> Result<ModelRoute> {
-    build_route(provider, model.or_else(|| defaults.model.clone()))
+) -> ModelRoute {
+    build_route(model.or_else(|| defaults.model.clone()))
 }
 
 pub(crate) fn resolve_telegram_mode_config(
@@ -257,7 +250,7 @@ pub(crate) fn resolve_telegram_mode_config(
     Ok(TelegramModeConfig {
         token: require_telegram_token(token)?,
         api_key: require_openrouter_api_key(params.api_key)?,
-        route: build_route_with_defaults(params.provider, params.model, &defaults)?,
+        route: build_route_with_defaults(params.model, &defaults),
         workspace: resolve_workspace_path(params.workspace.or_else(|| defaults.workspace.clone()))?,
         options: build_runtime_options_with_defaults(
             params.max_steps,
