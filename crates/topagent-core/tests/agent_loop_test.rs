@@ -1703,6 +1703,16 @@ fn test_safe_bash_allowed_before_plan() {
         Agent::classify_bash_command("find . -name '*.rs'"),
         BashCommandClass::ResearchSafe
     );
+    assert_eq!(
+        Agent::classify_bash_command("find . -type f 2>/dev/null | head -100"),
+        BashCommandClass::ResearchSafe
+    );
+    assert_eq!(
+        Agent::classify_bash_command(
+            "find /tmp/topclaw -type f -name '*.rs' -exec cat {} + 2>/dev/null | wc -l"
+        ),
+        BashCommandClass::ResearchSafe
+    );
 }
 
 #[test]
@@ -1775,6 +1785,10 @@ fn test_verification_bash_with_flags_allowed_before_plan() {
         Agent::classify_bash_command("make verify"),
         BashCommandClass::Verification
     );
+    assert_eq!(
+        Agent::classify_bash_command("cargo test 2>&1 | tail -20"),
+        BashCommandClass::Verification
+    );
 }
 
 #[test]
@@ -1784,6 +1798,10 @@ fn test_unknown_bash_blocked_before_plan() {
 
     assert_eq!(
         Agent::classify_bash_command("some_unknown_command"),
+        BashCommandClass::MutationRisk
+    );
+    assert_eq!(
+        Agent::classify_bash_command("find . -delete"),
         BashCommandClass::MutationRisk
     );
 }

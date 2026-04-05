@@ -391,7 +391,7 @@ Use the update_plan tool to create a plan with concrete steps, then execute it."
                     },
                     ApprovalTriggerRule {
                         kind: ApprovalTriggerKind::DestructiveShellMutation,
-                        label: "destructive shell mutation",
+                        label: "shell mutation",
                         enforcement: ApprovalEnforcement::RequiredWhenAvailable,
                         rationale: "shell mutations can bypass safer structured tools",
                     },
@@ -552,39 +552,178 @@ Use the update_plan tool to create a plan with concrete steps, then execute it."
         )
     }
 
-    pub fn classify_bash_command(&self, cmd: &str) -> BashCommandClass {
-        let trimmed = cmd.trim();
-        let lower = trimmed.to_lowercase();
+    fn is_research_safe_command(&self, cmd: &str) -> bool {
+        let lower = cmd.trim().to_lowercase();
+        self.tools
+            .research_safe_bash_prefixes
+            .iter()
+            .any(|prefix| lower.starts_with(prefix) || lower == prefix.trim_end_matches(' '))
+    }
 
-        if self.is_verification_command(trimmed) {
-            return BashCommandClass::Verification;
+    fn has_file_write_redirection(&self, cmd: &str) -> bool {
+        let mut chars = cmd.char_indices().peekable();
+        let mut in_single = false;
+        let mut in_double = false;
+        let mut escaped = false;
+
+        while let Some((_, ch)) = chars.next() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+
+            match ch {
+                '\\' if !in_single => {
+                    escaped = true;
+                }
+                '\'' if !in_double => {
+                    in_single = !in_single;
+                }
+                '"' if !in_single => {
+                    in_double = !in_double;
+                }
+                '>' if !in_single && !in_double => {
+                    if chars.peek().is_some_and(|(_, next)| *next == '>') {
+                        chars.next();
+                    }
+
+                    while chars.peek().is_some_and(|(_, next)| next.is_whitespace()) {
+                        chars.next();
+                    }
+
+                    let mut target = String::new();
+                    while let Some((_, next)) = chars.peek() {
+                        if next.is_whitespace() || matches!(next, '|' | ';') {
+                            break;
+                        }
+                        target.push(*next);
+                        chars.next();
+                    }
+
+                    if target.is_empty() || target.starts_with('&') || target == "/dev/null" {
+                        continue;
+                    }
+
+                    return true;
+                }
+                _ => {}
+            }
         }
 
-        if self
-            .mutation
-            .shell_write_tokens
-            .iter()
-            .any(|token| lower.contains(token))
+        false
+    }
+
+    fn contains_mutation_signal(&self, cmd: &str) -> bool {
+        let lower = cmd.trim().to_lowercase();
+        self.has_file_write_redirection(cmd)
             || self
                 .mutation
                 .destructive_shell_tokens
                 .iter()
                 .any(|token| lower.contains(token))
-            || (lower.contains("echo ") && lower.contains('>'))
-        {
+            || lower.contains(" -delete")
+    }
+
+    fn split_shell_segments<'a>(&self, cmd: &'a str) -> Vec<&'a str> {
+        let mut segments = Vec::new();
+        let mut start = 0;
+        let mut chars = cmd.char_indices().peekable();
+        let mut in_single = false;
+        let mut in_double = false;
+        let mut escaped = false;
+
+        while let Some((idx, ch)) = chars.next() {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+
+            match ch {
+                '\\' if !in_single => {
+                    escaped = true;
+                }
+                '\'' if !in_double => {
+                    in_single = !in_single;
+                }
+                '"' if !in_single => {
+                    in_double = !in_double;
+                }
+                ';' if !in_single && !in_double => {
+                    let segment = cmd[start..idx].trim();
+                    if !segment.is_empty() {
+                        segments.push(segment);
+                    }
+                    start = idx + ch.len_utf8();
+                }
+                '|' if !in_single && !in_double => {
+                    let is_double_pipe = chars.peek().is_some_and(|(_, next)| *next == '|');
+                    if is_double_pipe {
+                        let segment = cmd[start..idx].trim();
+                        if !segment.is_empty() {
+                            segments.push(segment);
+                        }
+                        let (_, next) = chars.next().expect("peeked pipe should exist");
+                        start = idx + ch.len_utf8() + next.len_utf8();
+                    } else {
+                        let segment = cmd[start..idx].trim();
+                        if !segment.is_empty() {
+                            segments.push(segment);
+                        }
+                        start = idx + ch.len_utf8();
+                    }
+                }
+                '&' if !in_single && !in_double => {
+                    if chars.peek().is_some_and(|(_, next)| *next == '&') {
+                        let segment = cmd[start..idx].trim();
+                        if !segment.is_empty() {
+                            segments.push(segment);
+                        }
+                        let (_, next) = chars.next().expect("peeked ampersand should exist");
+                        start = idx + ch.len_utf8() + next.len_utf8();
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let tail = cmd[start..].trim();
+        if !tail.is_empty() {
+            segments.push(tail);
+        }
+
+        segments
+    }
+
+    pub fn classify_bash_command(&self, cmd: &str) -> BashCommandClass {
+        let trimmed = cmd.trim();
+
+        if self.is_verification_command(trimmed) {
+            return BashCommandClass::Verification;
+        }
+
+        let mut saw_verification = false;
+        for segment in self.split_shell_segments(trimmed) {
+            if self.contains_mutation_signal(segment) {
+                return BashCommandClass::MutationRisk;
+            }
+
+            if self.is_verification_command(segment) {
+                saw_verification = true;
+                continue;
+            }
+
+            if self.is_research_safe_command(segment) {
+                continue;
+            }
+
             return BashCommandClass::MutationRisk;
         }
 
-        if self
-            .tools
-            .research_safe_bash_prefixes
-            .iter()
-            .any(|prefix| lower.starts_with(prefix) || lower == prefix.trim_end_matches(' '))
-        {
-            return BashCommandClass::ResearchSafe;
+        if saw_verification {
+            BashCommandClass::Verification
+        } else {
+            BashCommandClass::ResearchSafe
         }
-
-        BashCommandClass::MutationRisk
     }
 
     pub fn approval_request(
@@ -625,7 +764,8 @@ Use the update_plan tool to create a plan with concrete steps, then execute it."
                 command.trim().to_string(),
                 "May create, overwrite, move, or delete files outside structured edit tools."
                     .to_string(),
-                "Runs a filesystem-changing shell command directly in the workspace.".to_string(),
+                "Runs a filesystem-changing shell command directly through the shell."
+                    .to_string(),
                 Some(
                     "Rollback depends on the command; inspect git diff or restore affected files manually."
                         .to_string(),
@@ -1031,6 +1171,18 @@ mod tests {
             contract.classify_bash_command("echo hi > file.txt"),
             BashCommandClass::MutationRisk
         );
+        assert_eq!(
+            contract.classify_bash_command("find . -type f 2>/dev/null | head -20"),
+            BashCommandClass::ResearchSafe
+        );
+        assert_eq!(
+            contract.classify_bash_command("cargo test 2>&1 | tail -20"),
+            BashCommandClass::Verification
+        );
+        assert_eq!(
+            contract.classify_bash_command("find . -delete"),
+            BashCommandClass::MutationRisk
+        );
     }
 
     #[test]
@@ -1092,6 +1244,21 @@ mod tests {
             ApprovalTriggerKind::DestructiveShellMutation
         );
         assert!(request.exact_action.contains("touch risky.txt"));
+        assert!(request.expected_effect.contains("through the shell"));
+    }
+
+    #[test]
+    fn test_contract_skips_approval_for_read_only_bash_pipeline() {
+        let contract = BehaviorContract::default();
+        let request = contract.approval_request(
+            "bash",
+            &serde_json::json!({"command": "find . -type f 2>/dev/null | head -20"}),
+            Some("find . -type f 2>/dev/null | head -20"),
+            None,
+            None,
+        );
+
+        assert!(request.is_none());
     }
 
     #[test]

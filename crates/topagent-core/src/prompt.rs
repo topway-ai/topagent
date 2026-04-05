@@ -258,7 +258,9 @@ All file paths are relative to this workspace root.\n\n",
             self.mutation.mutation_tools.join(", ")
         ));
         prompt.push_str("- Prefer read before edit when exact content matters.\n");
-        prompt.push_str("- Treat redirected shell writes, pipes, and filesystem-changing shell commands as mutation-risk.\n");
+        prompt.push_str(
+            "- Treat file-writing redirections, explicit filesystem-changing shell commands, and unknown shell commands as mutation-risk; read-only pipelines remain research-safe or verification.\n",
+        );
         prompt.push_str(&format!(
             "- Generated-tool surface mutations: {}\n",
             self.mutation.generated_tool_surface_tools.join(", ")

@@ -29,7 +29,7 @@ impl ApprovalTriggerKind {
     pub fn label(self) -> &'static str {
         match self {
             Self::GitCommit => "git commit",
-            Self::DestructiveShellMutation => "destructive shell mutation",
+            Self::DestructiveShellMutation => "shell mutation",
             Self::HostExternalExecution => "host external tool execution",
             Self::GeneratedToolDeletion => "generated tool deletion",
         }
