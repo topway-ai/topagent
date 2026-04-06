@@ -308,6 +308,9 @@ Use the update_plan tool to create a plan with concrete steps, then execute it."
                     "delete_generated_tool",
                 ],
                 research_safe_bash_prefixes: &[
+                    "cd ",
+                    "pushd ",
+                    "popd",
                     "ls ",
                     "ls-",
                     "pwd",
@@ -1176,7 +1179,15 @@ mod tests {
             BashCommandClass::ResearchSafe
         );
         assert_eq!(
+            contract.classify_bash_command("cd /tmp/topagent && find . -type f | wc -l"),
+            BashCommandClass::ResearchSafe
+        );
+        assert_eq!(
             contract.classify_bash_command("cargo test 2>&1 | tail -20"),
+            BashCommandClass::Verification
+        );
+        assert_eq!(
+            contract.classify_bash_command("cd /tmp/topagent && cargo test 2>&1 | tail -20"),
             BashCommandClass::Verification
         );
         assert_eq!(
@@ -1254,6 +1265,16 @@ mod tests {
             "bash",
             &serde_json::json!({"command": "find . -type f 2>/dev/null | head -20"}),
             Some("find . -type f 2>/dev/null | head -20"),
+            None,
+            None,
+        );
+
+        assert!(request.is_none());
+
+        let request = contract.approval_request(
+            "bash",
+            &serde_json::json!({"command": "cd /tmp/topagent && find . -type f | wc -l"}),
+            Some("cd /tmp/topagent && find . -type f | wc -l"),
             None,
             None,
         );

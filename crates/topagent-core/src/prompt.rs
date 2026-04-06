@@ -249,6 +249,9 @@ All file paths are relative to this workspace root.\n\n",
         prompt.push_str(
             "- Bash commands are routed as research-safe, verification, or mutation-risk.\n\n",
         );
+        prompt.push_str(
+            "- For repository file or LOC counts, prefer tracked-file commands such as `git ls-files` or `rg --files` over ad hoc extension lists.\n\n",
+        );
     }
 
     fn render_mutation_section(&self, prompt: &mut String) {
@@ -432,5 +435,6 @@ mod tests {
         assert!(prompt.contains("apr-3 [pending] git commit: release"));
         assert!(prompt.contains("Current plan"));
         assert!(prompt.contains("broken_tool: missing script.sh"));
+        assert!(prompt.contains("git ls-files"));
     }
 }

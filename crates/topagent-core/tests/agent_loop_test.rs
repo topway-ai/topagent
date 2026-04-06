@@ -1713,6 +1713,10 @@ fn test_safe_bash_allowed_before_plan() {
         ),
         BashCommandClass::ResearchSafe
     );
+    assert_eq!(
+        Agent::classify_bash_command("cd /tmp/topclaw && find . -type f | wc -l"),
+        BashCommandClass::ResearchSafe
+    );
 }
 
 #[test]
@@ -1787,6 +1791,10 @@ fn test_verification_bash_with_flags_allowed_before_plan() {
     );
     assert_eq!(
         Agent::classify_bash_command("cargo test 2>&1 | tail -20"),
+        BashCommandClass::Verification
+    );
+    assert_eq!(
+        Agent::classify_bash_command("cd /tmp/topclaw && cargo test 2>&1 | tail -20"),
         BashCommandClass::Verification
     );
 }

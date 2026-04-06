@@ -5,6 +5,9 @@ use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
+use topagent_core::channel::telegram::{
+    TelegramInlineKeyboardButton, TelegramInlineKeyboardMarkup,
+};
 use topagent_core::{
     context::ExecutionContext, model::ModelRoute, Agent, ApprovalEntry, ApprovalMailbox,
     ApprovalMailboxMode, CancellationToken, Message, ProgressCallback, ProgressUpdate, Role,
@@ -20,6 +23,7 @@ use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memor
 
 const TELEGRAM_HISTORY_VERSION: u32 = 1;
 const MAX_PERSISTED_TRANSCRIPT_MESSAGES: usize = 100;
+const APPROVAL_CALLBACK_PREFIX: &str = "approval";
 
 pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<()> {
     let config =
@@ -86,7 +90,11 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
 
     loop {
         session_manager.collect_finished_tasks();
-        match adapter.get_updates(Some(offset), Some(POLL_TIMEOUT_SECS), Some(&["message"])) {
+        match adapter.get_updates(
+            Some(offset),
+            Some(POLL_TIMEOUT_SECS),
+            Some(&["message", "callback_query"]),
+        ) {
             Ok(updates) => {
                 if polling_retries > 0 {
                     info!(
@@ -97,8 +105,54 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                 }
                 polling_retries = 0;
                 for update in updates {
-                    let Some(msg) = &update.message else { continue };
                     offset = update.update_id + 1;
+
+                    if let Some(callback) = &update.callback_query {
+                        let Some(message) = &callback.message else {
+                            let _ = adapter.answer_callback_query(
+                                &callback.id,
+                                Some("This approval action is no longer available."),
+                            );
+                            continue;
+                        };
+
+                        let chat_id = message.chat.id;
+                        if message.chat.chat_type != "private" {
+                            let _ = adapter.answer_callback_query(
+                                &callback.id,
+                                Some("This bot supports private chats only."),
+                            );
+                            continue;
+                        }
+
+                        let Some(data) = callback.data.as_deref() else {
+                            let _ = adapter
+                                .answer_callback_query(&callback.id, Some("Unsupported action."));
+                            continue;
+                        };
+
+                        info!("received callback from chat {}: {}", chat_id, data);
+
+                        let Some((approve, id)) = parse_approval_callback_data(data) else {
+                            let _ = adapter
+                                .answer_callback_query(&callback.id, Some("Unsupported action."));
+                            continue;
+                        };
+
+                        match session_manager.resolve_approval_callback(chat_id, id, approve) {
+                            Ok(entry) => {
+                                let reply = format_approval_resolution(&entry, approve);
+                                let _ = adapter.answer_callback_query(&callback.id, Some(&reply));
+                                send_telegram(&adapter, chat_id, vec![reply], Some(&secrets));
+                            }
+                            Err(err) => {
+                                let _ = adapter.answer_callback_query(&callback.id, Some(&err));
+                            }
+                        }
+                        continue;
+                    }
+
+                    let Some(msg) = &update.message else { continue };
                     let chat_id = msg.chat.id;
                     let message_id = msg.message_id;
 
@@ -143,6 +197,7 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                              /approve <id> - approve a pending action\n\
                              /deny <id> - deny a pending action\n\
                              /reset - clear this chat's saved transcript\n\n\
+                             Approval requests include Approve/Deny buttons; slash commands remain available.\n\n\
                              Send a plain text message to start a task.",
                             workspace_label, model_label, tool_authoring
                         );
@@ -225,16 +280,83 @@ fn send_telegram(
     chunks: Vec<String>,
     secrets: Option<&topagent_core::SecretRegistry>,
 ) {
-    for chunk in chunks {
+    send_telegram_with_markup(adapter, chat_id, chunks, None, secrets);
+}
+
+fn send_telegram_with_markup(
+    adapter: &TelegramAdapter,
+    chat_id: i64,
+    chunks: Vec<String>,
+    reply_markup: Option<&TelegramInlineKeyboardMarkup>,
+    secrets: Option<&topagent_core::SecretRegistry>,
+) {
+    let last_index = chunks.len().saturating_sub(1);
+
+    for (index, chunk) in chunks.into_iter().enumerate() {
         // Last-mile secret redaction before the message reaches Telegram.
         let text = match secrets {
             Some(reg) => reg.redact(&chunk).into_owned(),
             None => chunk,
         };
-        if let Err(e) = adapter.send_message_to_chat(chat_id, &text) {
+        let result = if index == last_index {
+            adapter.send_message_to_chat_with_markup(chat_id, &text, reply_markup)
+        } else {
+            adapter.send_message_to_chat(chat_id, &text)
+        };
+        if let Err(e) = result {
             error!("failed to send message: {}", e);
         }
     }
+}
+
+fn approval_callback_data(approve: bool, request_id: &str) -> String {
+    format!(
+        "{APPROVAL_CALLBACK_PREFIX}:{}:{request_id}",
+        if approve { "approve" } else { "deny" }
+    )
+}
+
+fn parse_approval_callback_data(data: &str) -> Option<(bool, &str)> {
+    let mut parts = data.splitn(3, ':');
+    if parts.next()? != APPROVAL_CALLBACK_PREFIX {
+        return None;
+    }
+
+    let approve = match parts.next()? {
+        "approve" => true,
+        "deny" => false,
+        _ => return None,
+    };
+
+    let request_id = parts.next()?.trim();
+    if request_id.is_empty() {
+        return None;
+    }
+
+    Some((approve, request_id))
+}
+
+fn approval_reply_markup(request_id: &str) -> TelegramInlineKeyboardMarkup {
+    TelegramInlineKeyboardMarkup {
+        inline_keyboard: vec![vec![
+            TelegramInlineKeyboardButton {
+                text: "Approve".to_string(),
+                callback_data: approval_callback_data(true, request_id),
+            },
+            TelegramInlineKeyboardButton {
+                text: "Deny".to_string(),
+                callback_data: approval_callback_data(false, request_id),
+            },
+        ]],
+    }
+}
+
+fn format_approval_resolution(entry: &ApprovalEntry, approve: bool) -> String {
+    format!(
+        "Approval {} {}.",
+        entry.request.id,
+        if approve { "approved" } else { "denied" }
+    )
 }
 
 fn build_persisted_transcript(messages: &[Message], final_response: Option<&str>) -> Vec<Message> {
@@ -574,8 +696,33 @@ impl ChatSessionManager {
             reply.push_str(&approval.request.render_status_line(approval.state));
             reply.push('\n');
         }
-        reply.push_str("\nReply with /approve <id> or /deny <id>.");
+        reply.push_str(
+            "\nTap the buttons on the approval message, or reply with /approve <id> or /deny <id>.",
+        );
         reply
+    }
+
+    fn resolve_approval_request(
+        &self,
+        chat_id: i64,
+        id: &str,
+        approve: bool,
+        note: &str,
+    ) -> std::result::Result<ApprovalEntry, String> {
+        let Some(task) = self.sessions.get(&chat_id) else {
+            return Err("No task is currently running in this chat.".to_string());
+        };
+
+        let result = if approve {
+            task.approval_mailbox.approve(id, Some(note.to_string()))
+        } else {
+            task.approval_mailbox.deny(id, Some(note.to_string()))
+        };
+
+        match result {
+            Ok(entry) => Ok(entry),
+            Err(err) => Err(format!("Could not update approval {}: {}", id, err)),
+        }
     }
 
     fn resolve_approval_command(&self, chat_id: i64, argument: &str, approve: bool) -> String {
@@ -588,26 +735,20 @@ impl ChatSessionManager {
             };
         }
 
-        let Some(task) = self.sessions.get(&chat_id) else {
-            return "No task is currently running in this chat.".to_string();
-        };
-
-        let result = if approve {
-            task.approval_mailbox
-                .approve(id, Some("approved from Telegram".to_string()))
-        } else {
-            task.approval_mailbox
-                .deny(id, Some("denied from Telegram".to_string()))
-        };
-
-        match result {
-            Ok(entry) => format!(
-                "Approval {} {}.",
-                entry.request.id,
-                if approve { "approved" } else { "denied" }
-            ),
-            Err(err) => format!("Could not update approval {}: {}", id, err),
+        match self.resolve_approval_request(chat_id, id, approve, "resolved from Telegram command")
+        {
+            Ok(entry) => format_approval_resolution(&entry, approve),
+            Err(err) => err,
         }
+    }
+
+    fn resolve_approval_callback(
+        &self,
+        chat_id: i64,
+        id: &str,
+        approve: bool,
+    ) -> std::result::Result<ApprovalEntry, String> {
+        self.resolve_approval_request(chat_id, id, approve, "resolved from Telegram button")
     }
 
     fn start_message(
@@ -635,11 +776,18 @@ impl ChatSessionManager {
         approval_mailbox.set_notifier(Arc::new(move |request| {
             let mut message = request.render_details();
             message.push_str(&format!(
-                "\n\nReply with /approve {} or /deny {}.",
+                "\n\nTap Approve or Deny below, or reply with /approve {} or /deny {}.",
                 request.id, request.id
             ));
             let chunks = topagent_core::channel::telegram::chunk_text(&message, 4000);
-            send_telegram(&approval_adapter, chat_id, chunks, Some(&approval_secrets));
+            let reply_markup = approval_reply_markup(&request.id);
+            send_telegram_with_markup(
+                &approval_adapter,
+                chat_id,
+                chunks,
+                Some(&reply_markup),
+                Some(&approval_secrets),
+            );
         }));
         let run_ctx = self.build_run_context(
             &ctx.clone()
@@ -817,6 +965,7 @@ mod tests {
         let reply = manager.pending_approvals_reply(42);
         assert!(reply.contains("Pending approvals"));
         assert!(reply.contains("apr-1"));
+        assert!(reply.contains("Tap the buttons"));
         assert!(reply.contains("/approve <id>"));
     }
 
@@ -840,6 +989,62 @@ mod tests {
         assert_eq!(
             mailbox.get("apr-1").unwrap().state,
             topagent_core::ApprovalState::Approved
+        );
+    }
+
+    #[test]
+    fn test_resolve_approval_callback_updates_pending_request() {
+        let workspace = TempDir::new().unwrap();
+        let mut manager = test_manager(workspace.path().to_path_buf());
+        let mailbox = pending_approval_mailbox();
+
+        manager.sessions.insert(
+            42,
+            RunningChatTask {
+                cancel_token: CancellationToken::new(),
+                progress_callback: None,
+                approval_mailbox: mailbox.clone(),
+            },
+        );
+
+        let entry = manager
+            .resolve_approval_callback(42, "apr-1", false)
+            .unwrap();
+        assert_eq!(entry.state, topagent_core::ApprovalState::Denied);
+        assert_eq!(
+            mailbox.get("apr-1").unwrap().state,
+            topagent_core::ApprovalState::Denied
+        );
+    }
+
+    #[test]
+    fn test_parse_approval_callback_data_recognizes_buttons() {
+        assert_eq!(
+            parse_approval_callback_data("approval:approve:apr-7"),
+            Some((true, "apr-7"))
+        );
+        assert_eq!(
+            parse_approval_callback_data("approval:deny:apr-9"),
+            Some((false, "apr-9"))
+        );
+        assert_eq!(parse_approval_callback_data("approval:approve:"), None);
+        assert_eq!(parse_approval_callback_data("unknown:approve:apr-1"), None);
+    }
+
+    #[test]
+    fn test_approval_reply_markup_contains_approve_and_deny_buttons() {
+        let markup = approval_reply_markup("apr-5");
+        assert_eq!(markup.inline_keyboard.len(), 1);
+        assert_eq!(markup.inline_keyboard[0].len(), 2);
+        assert_eq!(markup.inline_keyboard[0][0].text, "Approve");
+        assert_eq!(
+            markup.inline_keyboard[0][0].callback_data,
+            "approval:approve:apr-5"
+        );
+        assert_eq!(markup.inline_keyboard[0][1].text, "Deny");
+        assert_eq!(
+            markup.inline_keyboard[0][1].callback_data,
+            "approval:deny:apr-5"
         );
     }
 

@@ -113,15 +113,27 @@ impl TelegramAdapter {
         chat_id: i64,
         text: &str,
     ) -> Result<TelegramMessage, ChannelError> {
+        self.send_message_to_chat_with_markup(chat_id, text, None)
+    }
+
+    pub fn send_message_to_chat_with_markup(
+        &self,
+        chat_id: i64,
+        text: &str,
+        reply_markup: Option<&TelegramInlineKeyboardMarkup>,
+    ) -> Result<TelegramMessage, ChannelError> {
         #[derive(Serialize)]
         struct SendMessageParams {
             chat_id: i64,
             text: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            reply_markup: Option<TelegramInlineKeyboardMarkup>,
         }
 
         let params = SendMessageParams {
             chat_id,
             text: text.to_string(),
+            reply_markup: reply_markup.cloned(),
         };
 
         self.send_with_retry(|| {
@@ -130,6 +142,33 @@ impl TelegramAdapter {
                 .json(&params)
                 .send()?
                 .json::<TelegramResponse<TelegramMessage>>()?
+                .into_result()
+        })
+    }
+
+    pub fn answer_callback_query(
+        &self,
+        callback_query_id: &str,
+        text: Option<&str>,
+    ) -> Result<bool, ChannelError> {
+        #[derive(Serialize)]
+        struct AnswerCallbackQueryParams {
+            callback_query_id: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            text: Option<String>,
+        }
+
+        let params = AnswerCallbackQueryParams {
+            callback_query_id: callback_query_id.to_string(),
+            text: text.map(ToString::to_string),
+        };
+
+        self.send_with_retry(|| {
+            self.send_client
+                .post(self.api_url("answerCallbackQuery"))
+                .json(&params)
+                .send()?
+                .json::<TelegramResponse<bool>>()?
                 .into_result()
         })
     }
@@ -181,9 +220,9 @@ impl TelegramAdapter {
 
     /// Retries a send/edit closure on transient HTTP errors with exponential backoff.
     /// Telegram API errors (malformed request, etc.) are not retried.
-    fn send_with_retry<F>(&self, f: F) -> Result<TelegramMessage, ChannelError>
+    fn send_with_retry<T, F>(&self, f: F) -> Result<T, ChannelError>
     where
-        F: Fn() -> Result<TelegramMessage, ChannelError>,
+        F: Fn() -> Result<T, ChannelError>,
     {
         for attempt in 0..=SEND_MAX_RETRIES {
             match f() {
@@ -227,6 +266,17 @@ impl<T> TelegramResponse<T> {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TelegramInlineKeyboardMarkup {
+    pub inline_keyboard: Vec<Vec<TelegramInlineKeyboardButton>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TelegramInlineKeyboardButton {
+    pub text: String,
+    pub callback_data: String,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TelegramUser {
     pub id: i64,
@@ -240,6 +290,8 @@ pub struct TelegramUpdate {
     pub update_id: i64,
     #[serde(rename = "message")]
     pub message: Option<TelegramMessage>,
+    #[serde(rename = "callback_query")]
+    pub callback_query: Option<TelegramCallbackQuery>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -247,6 +299,13 @@ pub struct TelegramMessage {
     pub message_id: i64,
     pub chat: TelegramChat,
     pub text: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TelegramCallbackQuery {
+    pub id: String,
+    pub message: Option<TelegramMessage>,
+    pub data: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -316,6 +375,29 @@ mod tests {
     #[test]
     fn test_send_client_timeout_is_short() {
         const { assert!(SEND_CLIENT_TIMEOUT_SECS <= 30) };
+    }
+
+    #[test]
+    fn test_inline_keyboard_markup_serializes_callback_buttons() {
+        let markup = TelegramInlineKeyboardMarkup {
+            inline_keyboard: vec![vec![
+                TelegramInlineKeyboardButton {
+                    text: "Approve".to_string(),
+                    callback_data: "approval:approve:apr-1".to_string(),
+                },
+                TelegramInlineKeyboardButton {
+                    text: "Deny".to_string(),
+                    callback_data: "approval:deny:apr-1".to_string(),
+                },
+            ]],
+        };
+
+        let value = serde_json::to_value(&markup).unwrap();
+        assert_eq!(
+            value["inline_keyboard"][0][0]["callback_data"],
+            "approval:approve:apr-1"
+        );
+        assert_eq!(value["inline_keyboard"][0][1]["text"], "Deny");
     }
 
     #[test]
