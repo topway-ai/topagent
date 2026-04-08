@@ -36,7 +36,7 @@ Press Ctrl-C once to request a graceful stop. Press again to force exit.
 topagent install
 ```
 
-This prompts for your OpenRouter API key and Telegram bot token (from [BotFather](https://t.me/BotFather)), then:
+This prompts for your OpenRouter API key, lets you pick an OpenRouter model (or type a custom model ID), and asks for your Telegram bot token (from [BotFather](https://t.me/BotFather)), then:
 
 - creates a workspace directory for the agent to operate in
 - writes a managed config file under `~/.config/topagent/`
@@ -63,13 +63,17 @@ TopAgent keeps Telegram memory in three layers:
 
 ```bash
 topagent status              # show setup and service health
+topagent model status        # show the configured OpenRouter model
+topagent model set <id>      # change the configured OpenRouter model
+topagent model list          # show cached starter models
+topagent model refresh       # refresh cached starter models
 topagent service start       # start the background service
 topagent service stop        # stop the background service
 topagent service restart     # restart the background service
 topagent uninstall           # remove service, config, and installed binary
 ```
 
-Re-running `topagent install` updates the config and restarts the service.
+Re-running `topagent install` still updates the config and restarts the service, but you no longer need it just to switch models.
 
 See [docs/operations.md](docs/operations.md) for full operational details.
 

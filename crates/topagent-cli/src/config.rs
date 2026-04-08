@@ -12,6 +12,12 @@ pub(crate) const TOPAGENT_MAX_STEPS_KEY: &str = "TOPAGENT_MAX_STEPS";
 pub(crate) const TOPAGENT_MAX_RETRIES_KEY: &str = "TOPAGENT_MAX_RETRIES";
 pub(crate) const TOPAGENT_TIMEOUT_SECS_KEY: &str = "TOPAGENT_TIMEOUT_SECS";
 
+fn normalize_nonempty_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
 /// Shared CLI parameters threaded through install, service, telegram, and one-shot paths.
 #[derive(Debug, Clone)]
 pub(crate) struct CliParams {
@@ -47,7 +53,7 @@ impl TelegramModeDefaults {
     pub(crate) fn from_metadata(values: &HashMap<String, String>) -> Self {
         Self {
             workspace: values.get(TOPAGENT_WORKSPACE_KEY).map(PathBuf::from),
-            model: values.get(TOPAGENT_MODEL_KEY).cloned(),
+            model: normalize_nonempty_string(values.get(TOPAGENT_MODEL_KEY).cloned()),
             max_steps: parse_optional_usize(values.get(TOPAGENT_MAX_STEPS_KEY).map(String::as_str)),
             max_retries: parse_optional_usize(
                 values.get(TOPAGENT_MAX_RETRIES_KEY).map(String::as_str),
@@ -64,10 +70,7 @@ impl TelegramModeDefaults {
     pub(crate) fn from_process_env() -> Self {
         Self {
             workspace: std::env::var_os(TOPAGENT_WORKSPACE_KEY).map(PathBuf::from),
-            model: std::env::var(TOPAGENT_MODEL_KEY)
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
+            model: normalize_nonempty_string(std::env::var(TOPAGENT_MODEL_KEY).ok()),
             max_steps: parse_optional_usize(std::env::var(TOPAGENT_MAX_STEPS_KEY).ok().as_deref()),
             max_retries: parse_optional_usize(
                 std::env::var(TOPAGENT_MAX_RETRIES_KEY).ok().as_deref(),
@@ -154,6 +157,25 @@ pub(crate) fn parse_optional_u64(value: Option<&str>) -> Option<u64> {
         .and_then(|value| value.parse().ok())
 }
 
+pub(crate) fn resolve_config_home() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
+        let path = PathBuf::from(path);
+        if !path.as_os_str().is_empty() {
+            return Ok(path);
+        }
+    }
+
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| !path.as_os_str().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Could not determine your config directory. Set XDG_CONFIG_HOME or HOME first."
+            )
+        })?;
+    Ok(home.join(".config"))
+}
+
 pub(crate) fn resolve_workspace_path(workspace: Option<PathBuf>) -> Result<PathBuf> {
     resolve_workspace_path_with_current_dir(workspace, std::env::current_dir())
 }
@@ -231,15 +253,38 @@ pub(crate) fn require_telegram_token(token: Option<String>) -> Result<String> {
     Ok(token)
 }
 
+pub(crate) fn resolve_model_override(
+    explicit_model: Option<String>,
+    selected_model: Option<String>,
+    persisted_model: Option<String>,
+) -> Option<String> {
+    normalize_nonempty_string(explicit_model)
+        .or_else(|| normalize_nonempty_string(selected_model))
+        .or_else(|| normalize_nonempty_string(persisted_model))
+}
+
 pub(crate) fn build_route(model: Option<String>) -> ModelRoute {
-    ModelRoute::with_override(model.as_deref())
+    let normalized = normalize_nonempty_string(model);
+    ModelRoute::with_override(normalized.as_deref())
 }
 
 pub(crate) fn build_route_with_defaults(
     model: Option<String>,
     defaults: &TelegramModeDefaults,
 ) -> ModelRoute {
-    build_route(model.or_else(|| defaults.model.clone()))
+    build_route(resolve_model_override(model, None, defaults.model.clone()))
+}
+
+pub(crate) fn build_route_with_install_selection(
+    explicit_model: Option<String>,
+    selected_model: Option<String>,
+    defaults: &TelegramModeDefaults,
+) -> ModelRoute {
+    build_route(resolve_model_override(
+        explicit_model,
+        selected_model,
+        defaults.model.clone(),
+    ))
 }
 
 pub(crate) fn resolve_telegram_mode_config(
@@ -338,5 +383,66 @@ mod tests {
         assert_eq!(parse_env_bool(Some("off")), Some(false));
         assert_eq!(parse_env_bool(Some("unknown")), None);
         assert_eq!(parse_env_bool(None), None);
+    }
+
+    #[test]
+    fn test_resolve_model_override_prefers_explicit_then_selected_then_persisted() {
+        assert_eq!(
+            resolve_model_override(
+                Some(" explicit/model ".to_string()),
+                Some("selected/model".to_string()),
+                Some("persisted/model".to_string()),
+            ),
+            Some("explicit/model".to_string())
+        );
+        assert_eq!(
+            resolve_model_override(
+                Some("   ".to_string()),
+                Some(" selected/model ".to_string()),
+                Some("persisted/model".to_string()),
+            ),
+            Some("selected/model".to_string())
+        );
+        assert_eq!(
+            resolve_model_override(None, None, Some(" persisted/model ".to_string())),
+            Some("persisted/model".to_string())
+        );
+        assert_eq!(resolve_model_override(None, None, None), None);
+    }
+
+    #[test]
+    fn test_build_route_with_install_selection_falls_back_cleanly() {
+        let defaults = TelegramModeDefaults {
+            model: Some("persisted/model".to_string()),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            build_route_with_install_selection(
+                Some(" explicit/model ".to_string()),
+                Some("selected/model".to_string()),
+                &defaults,
+            )
+            .model_id,
+            "explicit/model"
+        );
+        assert_eq!(
+            build_route_with_install_selection(
+                None,
+                Some(" selected/model ".to_string()),
+                &defaults
+            )
+            .model_id,
+            "selected/model"
+        );
+        assert_eq!(
+            build_route_with_install_selection(None, None, &defaults).model_id,
+            "persisted/model"
+        );
+        assert_eq!(
+            build_route_with_install_selection(None, None, &TelegramModeDefaults::default())
+                .model_id,
+            "minimax/minimax-m2.7"
+        );
     }
 }

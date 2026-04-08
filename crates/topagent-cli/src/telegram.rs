@@ -1,6 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -16,7 +17,7 @@ use topagent_core::{
 use tracing::{error, info, warn};
 
 use crate::config::*;
-use crate::managed_files::write_managed_file;
+use crate::managed_files::{read_managed_env_metadata, write_managed_file};
 use crate::memory::WorkspaceMemory;
 use crate::progress::LiveProgress;
 use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
@@ -75,7 +76,6 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
         bot_info.id,
     );
 
-    let model_label = route.model_id.clone();
     let mut session_manager = ChatSessionManager::new(
         route,
         api_key,
@@ -184,6 +184,7 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                         } else {
                             "off"
                         };
+                        let model_label = session_manager.model_label_for_help();
                         let reply = format!(
                             "TopAgent\n\n\
                              Workspace: {}\n\
@@ -575,6 +576,10 @@ impl ChatSessionManager {
         self.options.enable_generated_tool_authoring
     }
 
+    fn model_label_for_help(&self) -> String {
+        current_model_label_for_help(&self.route)
+    }
+
     fn load_redacted_transcript(&self, chat_id: i64) -> Vec<Message> {
         match self.history_store.load(chat_id) {
             Ok(messages) => messages
@@ -871,6 +876,25 @@ impl ChatSessionManager {
     }
 }
 
+fn current_model_label_for_help(active_route: &ModelRoute) -> String {
+    let managed_env_path = crate::service::service_paths()
+        .ok()
+        .map(|paths| paths.env_path);
+    current_model_label_for_help_from_env_path(active_route, managed_env_path.as_deref())
+}
+
+fn current_model_label_for_help_from_env_path(
+    active_route: &ModelRoute,
+    env_path: Option<&Path>,
+) -> String {
+    env_path
+        .and_then(|path| read_managed_env_metadata(path).ok())
+        .and_then(|values| values.get(TOPAGENT_MODEL_KEY).cloned())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| active_route.model_id.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -946,6 +970,37 @@ mod tests {
         let workspace = TempDir::new().unwrap();
         let mut manager = test_manager(workspace.path().to_path_buf());
         assert!(!manager.stop_chat(42));
+    }
+
+    #[test]
+    fn test_help_model_label_prefers_managed_env_model() {
+        let workspace = TempDir::new().unwrap();
+        let env_path = workspace.path().join("topagent-telegram.env");
+        std::fs::write(
+            &env_path,
+            "# Managed by TopAgent. Safe to remove with `topagent uninstall`.\nTOPAGENT_MODEL=\"qwen/qwen3.6-plus:free\"\n",
+        )
+        .unwrap();
+
+        let label = current_model_label_for_help_from_env_path(
+            &ModelRoute::openrouter("minimax/minimax-m2.7"),
+            Some(&env_path),
+        );
+
+        assert_eq!(label, "qwen/qwen3.6-plus:free");
+    }
+
+    #[test]
+    fn test_help_model_label_falls_back_to_active_route_when_env_is_missing() {
+        let workspace = TempDir::new().unwrap();
+        let missing_env = workspace.path().join("missing.env");
+
+        let label = current_model_label_for_help_from_env_path(
+            &ModelRoute::openrouter("anthropic/claude-sonnet-4.6"),
+            Some(&missing_env),
+        );
+
+        assert_eq!(label, "anthropic/claude-sonnet-4.6");
     }
 
     #[test]

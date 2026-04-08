@@ -70,6 +70,13 @@ impl ServiceHarness {
         self.install_dir.join("workspace")
     }
 
+    fn cache_path(&self) -> PathBuf {
+        self.config_home
+            .join("topagent")
+            .join("cache")
+            .join("openrouter-models.json")
+    }
+
     fn command(&self) -> Command {
         let mut cmd = Command::new(&self.binary_path);
         cmd.current_dir(&self.home)
@@ -78,6 +85,7 @@ impl ServiceHarness {
             .env("HOME", &self.home)
             .env("XDG_CONFIG_HOME", &self.config_home)
             .env("FAKE_SYSTEMCTL_ROOT", &self.systemctl_root)
+            .env("TOPAGENT_DISABLE_OPENROUTER_MODEL_FETCH", "1")
             .env(
                 "PATH",
                 format!(
@@ -142,6 +150,10 @@ case "$cmd" in
     ;;
   restart)
     echo "restart $*" >> "$calls"
+    if [[ "${FAKE_SYSTEMCTL_FAIL_RESTART:-}" == "1" ]]; then
+      echo "simulated restart failure" >&2
+      exit 1
+    fi
     echo "active" > "$active_file"
     echo "success" > "$result_file"
     echo "0" > "$exec_file"
@@ -215,12 +227,13 @@ fn test_install_prompts_creates_install_adjacent_workspace_and_starts_service() 
     let assert = harness
         .command()
         .arg("install")
-        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
 
     assert!(stdout.contains("OpenRouter API key:"));
+    assert!(stdout.contains("OpenRouter model:"));
     assert!(stdout.contains("Telegram bot token:"));
     assert!(stdout.contains("TopAgent installed."));
     assert!(stdout.contains(&harness.workspace_path().display().to_string()));
@@ -276,14 +289,14 @@ fn test_install_reuses_existing_config_when_prompt_is_left_blank() {
     harness
         .command()
         .arg("install")
-        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
         .assert()
         .success();
 
     let assert = harness
         .command()
         .arg("install")
-        .write_stdin("\n\n")
+        .write_stdin("\n\n\n")
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
@@ -310,7 +323,7 @@ fn test_install_persists_explicit_tool_authoring_mode() {
     harness
         .command()
         .args(["--tool-authoring", "on", "install"])
-        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
         .assert()
         .success();
 
@@ -344,14 +357,14 @@ fn test_reinstall_preserves_existing_model_and_runtime_settings_when_flags_are_o
             "on",
             "install",
         ])
-        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
         .assert()
         .success();
 
     harness
         .command()
         .arg("install")
-        .write_stdin("\n\n")
+        .write_stdin("\n\n\n")
         .assert()
         .success();
 
@@ -369,7 +382,7 @@ fn test_status_reports_setup_and_service_health_after_install() {
     harness
         .command()
         .arg("install")
-        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
         .assert()
         .success();
 
@@ -396,7 +409,7 @@ fn test_status_reports_unhealthy_hint_when_service_is_installed_but_failed() {
     harness
         .command()
         .arg("install")
-        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
         .assert()
         .success();
 
@@ -419,12 +432,159 @@ fn test_status_reports_unhealthy_hint_when_service_is_installed_but_failed() {
 }
 
 #[test]
+fn test_model_status_reports_configured_model() {
+    let harness = ServiceHarness::new();
+    harness
+        .command()
+        .args(["--model", "qwen/qwen3.6-plus:free", "install"])
+        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .assert()
+        .success();
+
+    let output = harness
+        .command()
+        .args(["model", "status"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "model status should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Configured model: qwen/qwen3.6-plus:free"));
+    assert!(stdout.contains("Setup installed: yes"));
+    assert!(stdout.contains("Service installed: yes"));
+}
+
+#[test]
+fn test_model_set_preserves_other_env_values_restarts_service_and_updates_status() {
+    let harness = ServiceHarness::new();
+    harness
+        .command()
+        .args(["--model", "minimax/minimax-m2.7", "install"])
+        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .assert()
+        .success();
+
+    let output = harness
+        .command()
+        .args(["model", "set", "qwen/qwen3.6-plus:free"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "model set should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("TopAgent model updated."));
+    assert!(stdout.contains("Previous model: minimax/minimax-m2.7"));
+    assert!(stdout.contains("Configured model: qwen/qwen3.6-plus:free"));
+    assert!(stdout.contains("Service restart: yes"));
+
+    let env = fs::read_to_string(harness.env_path()).unwrap();
+    assert!(env.contains("OPENROUTER_API_KEY=\"test-openrouter-key\""));
+    assert!(env.contains("TELEGRAM_BOT_TOKEN=\"123456:abcdef\""));
+    assert!(env.contains("TOPAGENT_MODEL=\"qwen/qwen3.6-plus:free\""));
+    assert!(env.contains("TOPAGENT_MAX_STEPS=\"50\""));
+
+    let status = harness.command().arg("status").output().unwrap();
+    assert!(status.status.success());
+    let status_stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(status_stdout.contains("Model: qwen/qwen3.6-plus:free"));
+
+    let calls = harness.calls_log();
+    assert!(calls.contains("restart topagent-telegram.service"));
+}
+
+#[test]
+fn test_model_set_surfaces_restart_failure_after_updating_env() {
+    let harness = ServiceHarness::new();
+    harness
+        .command()
+        .args(["--model", "minimax/minimax-m2.7", "install"])
+        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .assert()
+        .success();
+
+    let output = harness
+        .command()
+        .env("FAKE_SYSTEMCTL_FAIL_RESTART", "1")
+        .args(["model", "set", "qwen/qwen3.6-plus:free"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(
+        "Updated the configured model from minimax/minimax-m2.7 to qwen/qwen3.6-plus:free"
+    ));
+    assert!(stderr.contains("failed to restart the TopAgent Telegram service"));
+
+    let env = fs::read_to_string(harness.env_path()).unwrap();
+    assert!(env.contains("TOPAGENT_MODEL=\"qwen/qwen3.6-plus:free\""));
+}
+
+#[test]
+fn test_model_list_marks_current_model_when_cache_exists() {
+    let harness = ServiceHarness::new();
+    harness
+        .command()
+        .args(["--model", "qwen/qwen3.6-plus", "install"])
+        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .assert()
+        .success();
+
+    fs::create_dir_all(harness.cache_path().parent().unwrap()).unwrap();
+    fs::write(
+        harness.cache_path(),
+        r#"{
+  "updated_at_unix_secs": 4102444800,
+  "models": [
+    "qwen/qwen3.6-plus",
+    "anthropic/claude-sonnet-4.6"
+  ]
+}"#,
+    )
+    .unwrap();
+
+    let output = harness.command().args(["model", "list"]).output().unwrap();
+    assert!(
+        output.status.success(),
+        "model list should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("qwen/qwen3.6-plus (current)"));
+    assert!(stdout.contains("anthropic/claude-sonnet-4.6"));
+}
+
+#[test]
+fn test_model_list_without_cache_prints_refresh_hint() {
+    let harness = ServiceHarness::new();
+    let output = harness.command().args(["model", "list"]).output().unwrap();
+    assert!(
+        output.status.success(),
+        "model list should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("No cached OpenRouter model list found."));
+    assert!(stdout.contains("topagent model refresh"));
+}
+
+#[test]
 fn test_uninstall_stops_service_removes_managed_files_and_preserves_workspace() {
     let harness = ServiceHarness::new();
     harness
         .command()
         .arg("install")
-        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
         .assert()
         .success();
 
@@ -459,7 +619,7 @@ fn test_service_start_stop_and_restart_control_the_installed_service() {
     harness
         .command()
         .arg("install")
-        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
         .assert()
         .success();
 

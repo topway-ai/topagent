@@ -6,9 +6,15 @@ use std::process::{Command, Output};
 
 use crate::config::*;
 use crate::managed_files::*;
+use crate::openrouter_models::{
+    discover_install_openrouter_models, fetch_openrouter_top_models, humanize_age,
+    load_cached_openrouter_models, openrouter_model_cache_path, save_cached_openrouter_models,
+    OpenRouterCatalogSource,
+};
 
 const OPENROUTER_API_KEY_KEY: &str = "OPENROUTER_API_KEY";
 const TELEGRAM_BOT_TOKEN_KEY: &str = "TELEGRAM_BOT_TOKEN";
+const CUSTOM_MODEL_OPTION_LABEL: &str = "Custom model ID (type manually)";
 
 #[derive(Debug, Clone)]
 pub(crate) struct ServicePaths {
@@ -48,6 +54,14 @@ struct InstallRoot {
     root: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+struct InstallModelPrompt {
+    models: Vec<String>,
+    default_model: String,
+    source: OpenRouterCatalogSource,
+    live_error: Option<String>,
+}
+
 // ── Service command dispatch ──
 
 pub(crate) fn run_service_command(
@@ -64,6 +78,15 @@ pub(crate) fn run_service_command(
     }
 }
 
+pub(crate) fn run_model_command(command: crate::ModelCommands, params: CliParams) -> Result<()> {
+    match command {
+        crate::ModelCommands::Status => run_model_status(),
+        crate::ModelCommands::Set { model_id } => run_model_set(model_id),
+        crate::ModelCommands::List => run_model_list(),
+        crate::ModelCommands::Refresh => run_model_refresh(params),
+    }
+}
+
 // ── Install ──
 
 pub(crate) fn run_install(params: CliParams) -> Result<()> {
@@ -72,6 +95,7 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
     assert_managed_or_absent(&paths.unit_path, "service unit")?;
     assert_managed_or_absent(&paths.env_path, "service env file")?;
     let existing_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
+    let defaults = TelegramModeDefaults::from_metadata(&existing_values);
     let workspace = resolve_install_workspace_path(params.workspace, &existing_values)?;
 
     println!("TopAgent setup");
@@ -87,6 +111,18 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
         }),
         require_openrouter_api_key,
     )?;
+    let selected_model = if resolve_model_override(params.model.clone(), None, None).is_some() {
+        println!(
+            "OpenRouter model: {} (--model)",
+            build_route(params.model.clone()).model_id
+        );
+        None
+    } else {
+        Some(prompt_for_install_model(
+            Some(api_key.as_str()),
+            defaults.model.clone(),
+        )?)
+    };
     let token = prompt_for_install_value(
         "Telegram bot token",
         existing_values
@@ -98,17 +134,14 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
     let config = TelegramModeConfig {
         token,
         api_key,
-        route: build_route_with_defaults(
-            params.model,
-            &TelegramModeDefaults::from_metadata(&existing_values),
-        ),
+        route: build_route_with_install_selection(params.model, selected_model, &defaults),
         workspace,
         options: build_runtime_options_with_defaults(
             params.max_steps,
             params.max_retries,
             params.timeout_secs,
             params.generated_tool_authoring,
-            &TelegramModeDefaults::from_metadata(&existing_values),
+            &defaults,
         ),
     };
     install_service_with_config(&config, &paths)?;
@@ -265,23 +298,165 @@ fn prompt_for_install_value(
     }
 }
 
-fn resolve_config_home() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
-        let path = PathBuf::from(path);
-        if !path.as_os_str().is_empty() {
-            return Ok(path);
+fn prompt_for_install_model(
+    api_key: Option<&str>,
+    existing_model: Option<String>,
+) -> Result<String> {
+    let prompt = build_install_model_prompt(api_key, existing_model)?;
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+    let mut output = io::stdout();
+    prompt_for_install_model_with_io(&mut input, &mut output, &prompt)
+}
+
+fn build_install_model_prompt(
+    api_key: Option<&str>,
+    existing_model: Option<String>,
+) -> Result<InstallModelPrompt> {
+    let cache_path = openrouter_model_cache_path()?;
+    let discovered = discover_install_openrouter_models(&cache_path, api_key)?;
+    let default_model = existing_model.unwrap_or_else(|| build_route(None).model_id);
+    Ok(InstallModelPrompt {
+        models: discovered.models,
+        default_model,
+        source: discovered.source,
+        live_error: discovered.live_error,
+    })
+}
+
+fn prompt_for_install_model_with_io<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    prompt: &InstallModelPrompt,
+) -> Result<String> {
+    print_install_model_source(output, &prompt.source, prompt.live_error.as_deref())?;
+    writeln!(output, "OpenRouter model:").context("failed to write installer output")?;
+    for (index, model) in prompt.models.iter().enumerate() {
+        let marker = if *model == prompt.default_model {
+            " [default]"
+        } else {
+            ""
+        };
+        writeln!(output, "  {}. {}{}", index + 1, model, marker)
+            .context("failed to write installer output")?;
+    }
+    writeln!(
+        output,
+        "  {}. {}",
+        prompt.models.len() + 1,
+        CUSTOM_MODEL_OPTION_LABEL
+    )
+    .context("failed to write installer output")?;
+
+    loop {
+        write!(
+            output,
+            "Select OpenRouter model [press Enter to keep {}]: ",
+            prompt.default_model
+        )
+        .context("failed to write installer output")?;
+        output.flush().context("failed to flush stdout")?;
+
+        let line = read_install_input_line(input)?;
+        let candidate = line.trim();
+        if candidate.is_empty() {
+            return Ok(prompt.default_model.clone());
+        }
+
+        let Ok(choice) = candidate.parse::<usize>() else {
+            writeln!(output, "Enter a number from the menu above.")
+                .context("failed to write installer output")?;
+            continue;
+        };
+
+        if (1..=prompt.models.len()).contains(&choice) {
+            return Ok(prompt.models[choice - 1].clone());
+        }
+        if choice == prompt.models.len() + 1 {
+            return prompt_for_custom_model_with_io(input, output);
+        }
+
+        writeln!(output, "Enter a number from the menu above.")
+            .context("failed to write installer output")?;
+    }
+}
+
+fn prompt_for_custom_model_with_io<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+) -> Result<String> {
+    loop {
+        write!(output, "Custom OpenRouter model ID: ")
+            .context("failed to write installer output")?;
+        output.flush().context("failed to flush stdout")?;
+
+        let line = read_install_input_line(input)?;
+        let candidate = line.trim();
+        if candidate.is_empty() {
+            writeln!(output, "Model ID cannot be empty.")
+                .context("failed to write installer output")?;
+            continue;
+        }
+        return Ok(candidate.to_string());
+    }
+}
+
+fn print_install_model_source<W: Write>(
+    output: &mut W,
+    source: &OpenRouterCatalogSource,
+    live_error: Option<&str>,
+) -> Result<()> {
+    match source {
+        OpenRouterCatalogSource::Live => {
+            writeln!(output, "Fetched current top OpenRouter models.")
+                .context("failed to write installer output")?;
+        }
+        OpenRouterCatalogSource::Cache { age_secs } => {
+            if let Some(err) = live_error {
+                writeln!(
+                    output,
+                    "Live OpenRouter model lookup failed ({}). Using cached models from {} ago.",
+                    err,
+                    humanize_age(*age_secs)
+                )
+                .context("failed to write installer output")?;
+            } else {
+                writeln!(
+                    output,
+                    "Using cached OpenRouter models from {} ago.",
+                    humanize_age(*age_secs)
+                )
+                .context("failed to write installer output")?;
+            }
+        }
+        OpenRouterCatalogSource::CuratedFallback => {
+            if let Some(err) = live_error {
+                writeln!(
+                    output,
+                    "Live OpenRouter model lookup failed ({}). Using a starter model list.",
+                    err
+                )
+                .context("failed to write installer output")?;
+            } else {
+                writeln!(output, "Using a starter OpenRouter model list.")
+                    .context("failed to write installer output")?;
+            }
         }
     }
+    Ok(())
+}
 
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Could not determine your config directory. Set XDG_CONFIG_HOME or HOME first."
-            )
-        })?;
-    Ok(home.join(".config"))
+fn read_install_input_line<R: BufRead>(input: &mut R) -> Result<String> {
+    let mut line = String::new();
+    let read = input
+        .read_line(&mut line)
+        .context("failed to read installer input")?;
+    if read == 0 {
+        return Err(anyhow::anyhow!(
+            "Installer input ended unexpectedly. Re-run `topagent install` in an interactive shell."
+        ));
+    }
+    Ok(line)
 }
 
 pub(crate) fn service_paths() -> Result<ServicePaths> {
@@ -405,6 +580,164 @@ fn install_service_with_config(config: &TelegramModeConfig, paths: &ServicePaths
     )?;
 
     Ok(())
+}
+
+// ── Model commands ──
+
+fn run_model_status() -> Result<()> {
+    let paths = service_paths()?;
+    let env_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
+    let setup_installed = paths.env_path.exists() && is_topagent_managed_file(&paths.env_path)?;
+    let service_installed = is_service_installed(&paths)?;
+    let cache_path = openrouter_model_cache_path()?;
+    let cached = load_cached_openrouter_models(&cache_path)?;
+
+    println!("TopAgent model status");
+    println!(
+        "Configured model: {}",
+        current_configured_model(&env_values)
+    );
+    println!(
+        "Setup installed: {}",
+        yes_no(setup_installed || service_installed)
+    );
+    println!("Service installed: {}", yes_no(service_installed));
+    println!("Config file: {}", paths.env_path.display());
+
+    if let Some(cached) = cached {
+        println!(
+            "Cached models: {} (updated {} ago)",
+            cached.models.len(),
+            humanize_age(cached.age_secs)
+        );
+    } else {
+        println!("Cached models: none");
+        println!("Hint: run `topagent model refresh` to fetch current top models.");
+    }
+
+    Ok(())
+}
+
+fn run_model_set(model_id: String) -> Result<()> {
+    let model_id = model_id.trim().to_string();
+    if model_id.is_empty() {
+        return Err(anyhow::anyhow!("OpenRouter model ID cannot be empty."));
+    }
+
+    let paths = service_paths()?;
+    if !paths.env_path.exists() {
+        return Err(anyhow::anyhow!(
+            "TopAgent is not installed yet. Run `topagent install` first."
+        ));
+    }
+    assert_managed_or_absent(&paths.env_path, "service env file")?;
+
+    let mut values = read_managed_env_metadata(&paths.env_path)?;
+    let previous_model = current_configured_model(&values);
+    values.insert(TOPAGENT_MODEL_KEY.to_string(), model_id.clone());
+    write_managed_env_values(&paths.env_path, &values)?;
+
+    let service_installed = is_service_installed(&paths)?;
+    if service_installed {
+        if let Err(err) = run_service_restart() {
+            return Err(anyhow::anyhow!(
+                "Updated the configured model from {} to {} in {}, but failed to restart the TopAgent Telegram service. {}",
+                previous_model,
+                model_id,
+                paths.env_path.display(),
+                err
+            ));
+        }
+    }
+
+    println!("TopAgent model updated.");
+    println!("Previous model: {}", previous_model);
+    println!("Configured model: {}", model_id);
+    println!("Config file: {}", paths.env_path.display());
+    println!(
+        "Service restart: {}",
+        if service_installed {
+            "yes"
+        } else {
+            "not needed (service not installed)"
+        }
+    );
+
+    Ok(())
+}
+
+fn run_model_list() -> Result<()> {
+    let paths = service_paths()?;
+    let env_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
+    let cache_path = openrouter_model_cache_path()?;
+    let current_model = current_configured_model(&env_values);
+    let Some(cached) = load_cached_openrouter_models(&cache_path)? else {
+        println!("TopAgent model list");
+        println!("Current model: {}", current_model);
+        println!("No cached OpenRouter model list found.");
+        println!("Run `topagent model refresh` to fetch the current top models.");
+        return Ok(());
+    };
+
+    println!("TopAgent model list");
+    println!(
+        "Cached top models: {} (updated {} ago)",
+        cached.models.len(),
+        humanize_age(cached.age_secs)
+    );
+    for model in &cached.models {
+        let marker = if *model == current_model {
+            " (current)"
+        } else {
+            ""
+        };
+        println!("  {}{}", model, marker);
+    }
+    if !cached.models.iter().any(|model| model == &current_model) {
+        println!("Current model: {} (not in cached list)", current_model);
+    }
+
+    Ok(())
+}
+
+fn run_model_refresh(params: CliParams) -> Result<()> {
+    let paths = service_paths()?;
+    let env_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
+    let cache_path = openrouter_model_cache_path()?;
+    let api_key = trim_nonempty(params.api_key)
+        .or_else(|| trim_nonempty(std::env::var(OPENROUTER_API_KEY_KEY).ok()))
+        .or_else(|| {
+            env_values
+                .get(OPENROUTER_API_KEY_KEY)
+                .map(String::to_string)
+                .and_then(|value| trim_nonempty(Some(value)))
+        });
+
+    match fetch_openrouter_top_models(api_key.as_deref()) {
+        Ok(models) => {
+            save_cached_openrouter_models(&cache_path, &models)?;
+            println!("Refreshed OpenRouter model cache.");
+            println!("Models cached: {}", models.len());
+            println!("Cache file: {}", cache_path.display());
+            Ok(())
+        }
+        Err(err) => {
+            if let Some(cached) = load_cached_openrouter_models(&cache_path)? {
+                println!(
+                    "Live OpenRouter model refresh failed ({}). Keeping cached models from {} ago.",
+                    err,
+                    humanize_age(cached.age_secs)
+                );
+                println!("Cache file: {}", cache_path.display());
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!(
+                    "Failed to refresh the OpenRouter model cache. {}",
+                    err
+                ))
+            }
+        }
+    }
 }
 
 // ── Status ──
@@ -764,6 +1097,33 @@ fn render_service_env_file(config: &TelegramModeConfig) -> Result<String> {
     ))
 }
 
+fn write_managed_env_values(path: &Path, values: &HashMap<String, String>) -> Result<()> {
+    let contents = render_managed_env_values(values)?;
+    write_managed_file(path, &contents, true)
+}
+
+fn render_managed_env_values(values: &HashMap<String, String>) -> Result<String> {
+    let mut entries: Vec<_> = values.iter().collect();
+    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+
+    let mut rendered = String::new();
+    rendered.push_str(TOPAGENT_MANAGED_HEADER);
+    rendered.push('\n');
+    for (key, value) in entries {
+        if key.contains('\n') || value.contains('\n') {
+            return Err(anyhow::anyhow!(
+                "Service configuration contains a newline, which cannot be written safely."
+            ));
+        }
+        rendered.push_str(key);
+        rendered.push('=');
+        rendered.push_str(&quote_env_value(value));
+        rendered.push('\n');
+    }
+
+    Ok(rendered)
+}
+
 fn quote_env_value(value: &str) -> String {
     let mut quoted = String::from("\"");
     for ch in value.chars() {
@@ -799,6 +1159,33 @@ fn escape_systemd_value(value: &str) -> String {
     }
     escaped.push('"');
     escaped
+}
+
+fn trim_nonempty(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn current_configured_model(values: &HashMap<String, String>) -> String {
+    values
+        .get(TOPAGENT_MODEL_KEY)
+        .map(String::to_string)
+        .and_then(|value| trim_nonempty(Some(value)))
+        .unwrap_or_else(|| build_route(None).model_id)
+}
+
+fn is_service_installed(paths: &ServicePaths) -> Result<bool> {
+    let systemd_available = ensure_systemd_user_available();
+    if systemd_available.is_ok() {
+        if let Ok(snapshot) = load_service_status_snapshot() {
+            if let Some(load_state) = snapshot.load_state.as_deref() {
+                return Ok(load_state != "not-found");
+            }
+        }
+    }
+
+    Ok(paths.unit_path.exists())
 }
 
 // ── systemd interface ──
@@ -928,6 +1315,7 @@ fn yes_no(value: bool) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
     use tempfile::TempDir;
 
     #[test]
@@ -1038,5 +1426,68 @@ mod tests {
             ))
         );
         assert!(exe.exists());
+    }
+
+    #[test]
+    fn test_prompt_for_install_model_custom_entry_path_rejects_empty_input() {
+        let prompt = InstallModelPrompt {
+            models: vec![
+                "minimax/minimax-m2.7".to_string(),
+                "qwen/qwen3.6-plus".to_string(),
+            ],
+            default_model: "minimax/minimax-m2.7".to_string(),
+            source: OpenRouterCatalogSource::CuratedFallback,
+            live_error: Some("timeout".to_string()),
+        };
+        let mut input = Cursor::new("3\n\ncustom/model\n");
+        let mut output = Vec::new();
+
+        let selected = prompt_for_install_model_with_io(&mut input, &mut output, &prompt).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+
+        assert_eq!(selected, "custom/model");
+        assert!(rendered.contains("Using a starter model list"));
+        assert!(rendered.contains(CUSTOM_MODEL_OPTION_LABEL));
+        assert!(rendered.contains("Model ID cannot be empty."));
+    }
+
+    #[test]
+    fn test_prompt_for_install_model_enter_keeps_default_model() {
+        let prompt = InstallModelPrompt {
+            models: vec!["qwen/qwen3.6-plus".to_string()],
+            default_model: "persisted/model".to_string(),
+            source: OpenRouterCatalogSource::Cache { age_secs: 75 },
+            live_error: Some("network down".to_string()),
+        };
+        let mut input = Cursor::new("\n");
+        let mut output = Vec::new();
+
+        let selected = prompt_for_install_model_with_io(&mut input, &mut output, &prompt).unwrap();
+        let rendered = String::from_utf8(output).unwrap();
+
+        assert_eq!(selected, "persisted/model");
+        assert!(rendered.contains("Using cached models from 1m ago"));
+    }
+
+    #[test]
+    fn test_render_managed_env_values_keeps_all_existing_entries() {
+        let values = HashMap::from([
+            (TOPAGENT_SERVICE_MANAGED_KEY.to_string(), "1".to_string()),
+            (OPENROUTER_API_KEY_KEY.to_string(), "key".to_string()),
+            (TELEGRAM_BOT_TOKEN_KEY.to_string(), "123:abc".to_string()),
+            (
+                TOPAGENT_MODEL_KEY.to_string(),
+                "qwen/qwen3.6-plus".to_string(),
+            ),
+            ("EXTRA_FLAG".to_string(), "still-here".to_string()),
+        ]);
+
+        let rendered = render_managed_env_values(&values).unwrap();
+
+        assert!(rendered.contains("TOPAGENT_SERVICE_MANAGED=\"1\""));
+        assert!(rendered.contains("OPENROUTER_API_KEY=\"key\""));
+        assert!(rendered.contains("TELEGRAM_BOT_TOKEN=\"123:abc\""));
+        assert!(rendered.contains("TOPAGENT_MODEL=\"qwen/qwen3.6-plus\""));
+        assert!(rendered.contains("EXTRA_FLAG=\"still-here\""));
     }
 }

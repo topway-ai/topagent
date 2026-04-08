@@ -45,12 +45,24 @@ Interactive setup that configures and starts the Telegram background service.
    - existing value from a previous install
    - otherwise creates `workspace/` next to the installed binary (or in the repo root if running from source)
 4. Prompts for OpenRouter API key (pre-fills from `--api-key`, env var, or previous install)
-5. Prompts for Telegram bot token (pre-fills from previous install)
-6. Writes config file: `~/.config/topagent/services/topagent-telegram.env` (mode 0600)
-7. Writes systemd unit: `~/.config/systemd/user/topagent-telegram.service`
-8. Runs `systemctl --user daemon-reload && systemctl --user enable --now topagent-telegram.service`
+5. Prompts for the OpenRouter model unless `--model` was provided:
+   - tries to fetch a short list of current top OpenRouter models
+   - falls back to the cached list under `~/.config/topagent/cache/openrouter-models.json`
+   - falls back again to a curated starter list when no live or cached list is available
+   - always offers `Custom model ID (type manually)`
+6. Prompts for Telegram bot token (pre-fills from previous install)
+7. Writes config file: `~/.config/topagent/services/topagent-telegram.env` (mode 0600)
+8. Writes systemd unit: `~/.config/systemd/user/topagent-telegram.service`
+9. Runs `systemctl --user daemon-reload && systemctl --user enable --now topagent-telegram.service`
 
-**Re-running install** updates the config and restarts the service. It preserves values you don't change.
+Model precedence during install is:
+
+1. explicit `--model`
+2. the interactive model selection
+3. the previously persisted `TOPAGENT_MODEL`
+4. the built-in TopAgent default model
+
+**Re-running install** still updates the config and restarts the service, but you no longer need to use it just to switch models.
 
 ## Service lifecycle
 
@@ -60,6 +72,10 @@ The Telegram bot runs as a systemd user service named `topagent-telegram.service
 
 ```bash
 topagent status              # show config paths, service state, and recent logs
+topagent model status        # show the configured OpenRouter model
+topagent model set <id>      # update the configured OpenRouter model
+topagent model list          # show cached top OpenRouter models
+topagent model refresh       # refresh the cached top OpenRouter models
 topagent service start       # start the service
 topagent service stop        # stop the service
 topagent service restart     # restart the service (keeps current config)
@@ -67,6 +83,16 @@ topagent service install     # install service without the full interactive flow
 topagent service uninstall   # remove service and config, keep binary
 topagent uninstall           # remove service, config, and installed binary
 ```
+
+### Model management
+
+`topagent model status` reads the same managed env file that powers `topagent status`, then reports the configured model and whether setup/service are installed.
+
+`topagent model set <openrouter-model-id>` updates only `TOPAGENT_MODEL` inside the managed env file, preserves the other managed values, and automatically restarts the Telegram service when it is installed.
+
+`topagent model list` shows the cached OpenRouter starter list and marks the current configured model when it appears in that cache.
+
+`topagent model refresh` fetches the current top OpenRouter models and stores them in `~/.config/topagent/cache/openrouter-models.json`. If live refresh fails and a cache already exists, TopAgent keeps the stale cache and tells you so.
 
 ### What topagent status shows
 
@@ -210,7 +236,9 @@ Plans and lessons are saved under `.topagent/plans/` and `.topagent/lessons/` re
 
 ### Config
 
-The env file at `~/.config/topagent/services/topagent-telegram.env` stores the API key, bot token, model, workspace path, tool-authoring mode, and runtime limits (`max_steps`, `max_retries`, `timeout_secs`). It has mode 0600 (owner-readable only). The installed systemd unit reads this env file at startup, so re-running `topagent install` updates the next service run without duplicating those settings in `ExecStart`.
+The env file at `~/.config/topagent/services/topagent-telegram.env` stores the API key, bot token, model, workspace path, tool-authoring mode, and runtime limits (`max_steps`, `max_retries`, `timeout_secs`). It has mode 0600 (owner-readable only). The installed systemd unit reads this env file at startup, so `topagent install` and `topagent model set` both update the next service run without duplicating those settings in `ExecStart`.
+
+The OpenRouter discovery cache lives separately at `~/.config/topagent/cache/openrouter-models.json`. It is only a convenience cache for install/list/refresh and is not the active model source of truth.
 
 ## TOPAGENT.md
 
@@ -263,7 +291,9 @@ curl "https://api.telegram.org/bot<YOUR_TOKEN>/deleteWebhook"
 
 ### Agent produces poor results
 
-- Try a different model: `topagent install` then change the model, or use `--model` flag
+- Try a different model: `topagent model set <openrouter-model-id>`
+- Refresh the cached starter list first when you want fresh options: `topagent model refresh`
+- Use `--model <id>` for one-shot runs or foreground Telegram without changing the installed service
 - Enable generated-tool authoring explicitly when needed: `--tool-authoring on`
 - Add a `TOPAGENT.md` with project-specific guidance
 - Break large tasks into smaller, more specific instructions

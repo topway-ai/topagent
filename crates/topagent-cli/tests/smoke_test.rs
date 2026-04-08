@@ -143,6 +143,15 @@ fn test_cli_service_appears_in_help() {
 }
 
 #[test]
+fn test_cli_model_appears_in_help() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("model"));
+}
+
+#[test]
 fn test_cli_service_help_mentions_lifecycle_commands() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
     cmd.args(["service", "--help"])
@@ -151,6 +160,18 @@ fn test_cli_service_help_mentions_lifecycle_commands() {
         .stdout(predicates::str::contains("start"))
         .stdout(predicates::str::contains("stop"))
         .stdout(predicates::str::contains("restart"));
+}
+
+#[test]
+fn test_cli_model_help_mentions_management_commands() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.args(["model", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("status"))
+        .stdout(predicates::str::contains("set"))
+        .stdout(predicates::str::contains("list"))
+        .stdout(predicates::str::contains("refresh"));
 }
 
 #[test]
@@ -171,6 +192,8 @@ fn test_readme_documents_product_setup_commands() {
 
     assert!(readme.contains("topagent install"));
     assert!(readme.contains("topagent status"));
+    assert!(readme.contains("topagent model status"));
+    assert!(readme.contains("topagent model set <id>"));
     assert!(readme.contains("topagent uninstall"));
     assert!(readme.contains("topagent service start"));
     assert!(readme.contains("topagent service stop"));
@@ -233,4 +256,16 @@ fn test_operations_docs_explain_external_tool_sandbox_rollout() {
     assert!(operations.contains("\"sandbox\": \"host\""));
     assert!(operations.contains("If `sandbox` is omitted, TopAgent rejects"));
     assert!(operations.contains("only supported workspace external-tool config file"));
+}
+
+#[test]
+fn test_operations_docs_cover_model_management() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let operations = std::fs::read_to_string(repo_root.join("docs/operations.md")).unwrap();
+
+    assert!(operations.contains("topagent model status"));
+    assert!(operations.contains("topagent model set <openrouter-model-id>"));
+    assert!(operations.contains("topagent model refresh"));
+    assert!(operations.contains("openrouter-models.json"));
 }

@@ -3,6 +3,7 @@
 mod config;
 mod managed_files;
 mod memory;
+mod openrouter_models;
 mod progress;
 mod run_setup;
 mod service;
@@ -30,7 +31,9 @@ use crate::config::{
 };
 use crate::progress::LiveProgress;
 use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
-use crate::service::{run_install, run_service_command, run_status, run_uninstall};
+use crate::service::{
+    run_install, run_model_command, run_service_command, run_status, run_uninstall,
+};
 use crate::telegram::run_telegram;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -114,6 +117,11 @@ enum Commands {
         #[command(subcommand)]
         command: ServiceCommands,
     },
+    /// Inspect and change the configured OpenRouter model.
+    Model {
+        #[command(subcommand)]
+        command: ModelCommands,
+    },
     /// Remove the installed TopAgent setup and, when applicable, the installed binary.
     Uninstall,
     #[command(hide = true)]
@@ -139,6 +147,18 @@ pub(crate) enum ServiceCommands {
     Uninstall,
 }
 
+#[derive(Subcommand)]
+pub(crate) enum ModelCommands {
+    /// Show the configured OpenRouter model.
+    Status,
+    /// Set the configured OpenRouter model and restart the service when installed.
+    Set { model_id: String },
+    /// Show the cached OpenRouter starter models.
+    List,
+    /// Refresh the cached OpenRouter starter models.
+    Refresh,
+}
+
 fn main() -> Result<()> {
     init_tracing();
 
@@ -159,6 +179,7 @@ fn main() -> Result<()> {
     match command {
         Some(Commands::Install) => run_install(params),
         Some(Commands::Status) => run_status(),
+        Some(Commands::Model { command }) => run_model_command(command, params),
         Some(Commands::Uninstall) => run_uninstall(),
         Some(Commands::Service { command }) => run_service_command(command, params),
         Some(Commands::Telegram { token }) => run_telegram(token, params),
