@@ -453,7 +453,8 @@ fn test_model_status_reports_configured_model() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Configured model: qwen/qwen3.6-plus:free"));
+    assert!(stdout.contains("Configured default model: qwen/qwen3.6-plus:free"));
+    assert!(stdout.contains("Effective model: qwen/qwen3.6-plus:free (persisted default)"));
     assert!(stdout.contains("Setup installed: yes"));
     assert!(stdout.contains("Service installed: yes"));
 }
@@ -494,10 +495,85 @@ fn test_model_set_preserves_other_env_values_restarts_service_and_updates_status
     let status = harness.command().arg("status").output().unwrap();
     assert!(status.status.success());
     let status_stdout = String::from_utf8_lossy(&status.stdout);
-    assert!(status_stdout.contains("Model: qwen/qwen3.6-plus:free"));
+    assert!(status_stdout.contains("Configured default model: qwen/qwen3.6-plus:free"));
+    assert!(status_stdout.contains("Effective model: qwen/qwen3.6-plus:free (persisted default)"));
 
     let calls = harness.calls_log();
     assert!(calls.contains("restart topagent-telegram.service"));
+}
+
+#[test]
+fn test_model_pick_updates_configured_model_and_restarts_service() {
+    let harness = ServiceHarness::new();
+    harness
+        .command()
+        .args(["--model", "minimax/minimax-m2.7", "install"])
+        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .assert()
+        .success();
+
+    fs::create_dir_all(harness.cache_path().parent().unwrap()).unwrap();
+    fs::write(
+        harness.cache_path(),
+        r#"{
+  "updated_at_unix_secs": 4102444800,
+  "models": [
+    "qwen/qwen3.6-plus",
+    "anthropic/claude-sonnet-4.6"
+  ]
+}"#,
+    )
+    .unwrap();
+
+    let output = harness
+        .command()
+        .args(["model", "pick"])
+        .write_stdin("1\n")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "model pick should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("TopAgent model updated."));
+    assert!(stdout.contains("Previous model: minimax/minimax-m2.7"));
+    assert!(stdout.contains("Configured model: anthropic/claude-sonnet-4.6"));
+    assert!(stdout.contains("Selection source: interactive selection"));
+
+    let env = fs::read_to_string(harness.env_path()).unwrap();
+    assert!(env.contains("TOPAGENT_MODEL=\"anthropic/claude-sonnet-4.6\""));
+
+    let calls = harness.calls_log();
+    assert!(calls.contains("restart topagent-telegram.service"));
+}
+
+#[test]
+fn test_status_shows_effective_model_when_cli_override_is_present() {
+    let harness = ServiceHarness::new();
+    harness
+        .command()
+        .args(["--model", "qwen/qwen3.6-plus:free", "install"])
+        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .assert()
+        .success();
+
+    let output = harness
+        .command()
+        .args(["--model", "anthropic/claude-sonnet-4.6", "status"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "status should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Configured default model: qwen/qwen3.6-plus:free"));
+    assert!(stdout.contains("Effective model: anthropic/claude-sonnet-4.6 (CLI override)"));
 }
 
 #[test]

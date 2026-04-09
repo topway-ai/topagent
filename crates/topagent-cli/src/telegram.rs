@@ -1,7 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -12,13 +11,13 @@ use topagent_core::channel::telegram::{
 use topagent_core::{
     context::ExecutionContext, model::ModelRoute, Agent, ApprovalEntry, ApprovalMailbox,
     ApprovalMailboxMode, CancellationToken, Message, ProgressCallback, ProgressUpdate, Role,
-    RuntimeOptions, TelegramAdapter, POLL_TIMEOUT_SECS,
+    RuntimeOptions, TelegramAdapter, WorkspaceCheckpointStore, POLL_TIMEOUT_SECS,
 };
 use tracing::{error, info, warn};
 
 use crate::config::*;
-use crate::managed_files::{read_managed_env_metadata, write_managed_file};
-use crate::memory::WorkspaceMemory;
+use crate::managed_files::write_managed_file;
+use crate::memory::{distill_verified_task, WorkspaceMemory};
 use crate::progress::LiveProgress;
 use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
 
@@ -27,8 +26,9 @@ const MAX_PERSISTED_TRANSCRIPT_MESSAGES: usize = 100;
 const APPROVAL_CALLBACK_PREFIX: &str = "approval";
 
 pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<()> {
-    let config =
-        resolve_telegram_mode_config(token, params, TelegramModeDefaults::from_process_env())?;
+    let persisted_defaults = load_persisted_telegram_defaults().unwrap_or_default();
+    let config = resolve_telegram_mode_config(token, params.clone(), persisted_defaults.clone())?;
+    let model_selection = resolve_runtime_model_selection(params.model, persisted_defaults.model);
     let token = config.token;
     let workspace = config.workspace;
     // Register known secrets for redaction in tool output and final replies.
@@ -78,6 +78,7 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
 
     let mut session_manager = ChatSessionManager::new(
         route,
+        model_selection.configured_default.model_id,
         api_key,
         options,
         ctx.workspace_root.clone(),
@@ -280,8 +281,21 @@ fn send_telegram(
     chat_id: i64,
     chunks: Vec<String>,
     secrets: Option<&topagent_core::SecretRegistry>,
-) {
-    send_telegram_with_markup(adapter, chat_id, chunks, None, secrets);
+) -> DeliveryReport {
+    send_telegram_with_markup(adapter, chat_id, chunks, None, secrets)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct DeliveryReport {
+    attempted_chunks: usize,
+    delivered_chunks: usize,
+    first_error: Option<String>,
+}
+
+impl DeliveryReport {
+    fn fully_delivered(&self) -> bool {
+        self.attempted_chunks > 0 && self.delivered_chunks == self.attempted_chunks
+    }
 }
 
 fn send_telegram_with_markup(
@@ -290,8 +304,12 @@ fn send_telegram_with_markup(
     chunks: Vec<String>,
     reply_markup: Option<&TelegramInlineKeyboardMarkup>,
     secrets: Option<&topagent_core::SecretRegistry>,
-) {
+) -> DeliveryReport {
     let last_index = chunks.len().saturating_sub(1);
+    let mut report = DeliveryReport {
+        attempted_chunks: chunks.len(),
+        ..DeliveryReport::default()
+    };
 
     for (index, chunk) in chunks.into_iter().enumerate() {
         // Last-mile secret redaction before the message reaches Telegram.
@@ -306,8 +324,15 @@ fn send_telegram_with_markup(
         };
         if let Err(e) = result {
             error!("failed to send message: {}", e);
+            if report.first_error.is_none() {
+                report.first_error = Some(e.to_string());
+            }
+        } else {
+            report.delivered_chunks += 1;
         }
     }
+
+    report
 }
 
 fn approval_callback_data(approve: bool, request_id: &str) -> String {
@@ -423,6 +448,46 @@ fn persist_messages_to_store(history_store: &ChatHistoryStore, chat_id: i64, mes
     }
 }
 
+fn persist_visible_exchange_to_store(
+    history_store: &ChatHistoryStore,
+    chat_id: i64,
+    user_text: &str,
+    assistant_text: Option<&str>,
+) {
+    let mut messages = match history_store.load(chat_id) {
+        Ok(existing) => build_persisted_transcript(&existing, None),
+        Err(err) => {
+            warn!(
+                "failed to load existing Telegram transcript for chat {} from {} before appending visible exchange: {}",
+                chat_id,
+                history_store.path_for_chat(chat_id).display(),
+                err
+            );
+            Vec::new()
+        }
+    };
+
+    let user_text = user_text.trim();
+    if !user_text.is_empty() {
+        messages.push(Message::user(user_text));
+    }
+
+    if let Some(assistant_text) = assistant_text
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        messages.push(Message::assistant(assistant_text));
+    }
+
+    if messages.len() > MAX_PERSISTED_TRANSCRIPT_MESSAGES {
+        let keep_start = messages.len() - MAX_PERSISTED_TRANSCRIPT_MESSAGES;
+        messages.drain(..keep_start);
+    }
+
+    persist_messages_to_store(history_store, chat_id, &messages);
+}
+
+#[cfg(test)]
 fn persist_agent_history_to_store(
     history_store: &ChatHistoryStore,
     chat_id: i64,
@@ -528,6 +593,7 @@ use anyhow::Context;
 
 pub(crate) struct ChatSessionManager {
     route: ModelRoute,
+    configured_default_model: String,
     api_key: String,
     options: RuntimeOptions,
     history_store: ChatHistoryStore,
@@ -547,6 +613,7 @@ pub(crate) struct RunningChatTask {
 impl ChatSessionManager {
     pub fn new(
         route: ModelRoute,
+        configured_default_model: String,
         api_key: String,
         options: RuntimeOptions,
         workspace_root: PathBuf,
@@ -557,6 +624,7 @@ impl ChatSessionManager {
 
         Self {
             route,
+            configured_default_model,
             api_key,
             options,
             history_store: ChatHistoryStore::new(workspace_root.clone()),
@@ -577,7 +645,7 @@ impl ChatSessionManager {
     }
 
     fn model_label_for_help(&self) -> String {
-        current_model_label_for_help(&self.route)
+        current_model_label_for_help(&self.route, &self.configured_default_model)
     }
 
     fn load_redacted_transcript(&self, chat_id: i64) -> Vec<Message> {
@@ -606,6 +674,9 @@ impl ChatSessionManager {
     ) -> ExecutionContext {
         let transcript = self.load_redacted_transcript(chat_id);
         prepare_run_context(ctx, &self.memory, instruction, Some(&transcript))
+            .with_workspace_checkpoint_store(WorkspaceCheckpointStore::new(
+                ctx.workspace_root.clone(),
+            ))
     }
 
     #[cfg(test)]
@@ -813,9 +884,11 @@ impl ChatSessionManager {
         let worker_progress_callback = progress_callback.clone();
         let completed_tx = self.completed_tx.clone();
         let history_store = self.history_store.clone();
+        let memory = self.memory.clone();
         let worker_secrets = self.secrets.clone();
         let adapter = adapter.clone();
         let instruction = text.to_string();
+        let distill_options = self.options.clone();
 
         thread::spawn(move || {
             let has_progress = worker_progress_callback.is_some();
@@ -825,13 +898,39 @@ impl ChatSessionManager {
 
             let result = agent.run(&run_ctx, &instruction);
             agent.set_progress_callback(None);
-            match &result {
-                Ok(response) => {
-                    persist_agent_history_to_store(&history_store, chat_id, &agent, Some(response))
+            if let Ok(_response) = &result {
+                if let Some(task_result) = agent.last_task_result().cloned() {
+                    match agent.plan().lock() {
+                        Ok(plan) => match distill_verified_task(
+                            &memory,
+                            &run_ctx,
+                            &distill_options,
+                            &instruction,
+                            &task_result,
+                            &plan.clone(),
+                            agent.durable_memory_written_this_run(),
+                        ) {
+                            Ok(report) => {
+                                if report.lesson_file.is_some() || report.plan_file.is_some() {
+                                    info!(
+                                        lesson = report.lesson_file.as_deref().unwrap_or(""),
+                                        plan = report.plan_file.as_deref().unwrap_or(""),
+                                        chat_id,
+                                        "saved distilled workspace memory artifacts"
+                                    );
+                                }
+                            }
+                            Err(err) => {
+                                warn!("failed to distill verified Telegram task memory: {}", err)
+                            }
+                        },
+                        Err(err) => warn!(
+                            "failed to lock agent plan for Telegram distillation: {}",
+                            err
+                        ),
+                    }
                 }
-                Err(_) => persist_agent_history_to_store(&history_store, chat_id, &agent, None),
             }
-
             if let Some(progress) = progress {
                 progress.wait();
             }
@@ -840,22 +939,44 @@ impl ChatSessionManager {
                 Ok(response) => {
                     let max_len = 4000;
                     let chunks = if response.len() <= max_len {
-                        vec![response]
+                        vec![response.clone()]
                     } else {
                         topagent_core::channel::telegram::chunk_text(&response, max_len)
                     };
-                    send_telegram(&adapter, chat_id, chunks, Some(&worker_secrets));
+                    let delivery = send_telegram(&adapter, chat_id, chunks, Some(&worker_secrets));
+                    persist_visible_exchange_to_store(
+                        &history_store,
+                        chat_id,
+                        &instruction,
+                        delivery.fully_delivered().then_some(response.as_str()),
+                    );
                 }
-                Err(topagent_core::Error::Stopped(_)) => {}
+                Err(topagent_core::Error::Stopped(_)) => {
+                    persist_visible_exchange_to_store(&history_store, chat_id, &instruction, None);
+                }
                 Err(e) => {
                     // When progress is active, the status message already shows the
                     // failure via ProgressUpdate::failed. Don't send a duplicate error.
                     if !has_progress {
-                        send_telegram(
+                        let error_text = format!("Error: {}", e);
+                        let delivery = send_telegram(
                             &adapter,
                             chat_id,
-                            vec![format!("Error: {}", e)],
+                            vec![error_text.clone()],
                             Some(&worker_secrets),
+                        );
+                        persist_visible_exchange_to_store(
+                            &history_store,
+                            chat_id,
+                            &instruction,
+                            delivery.fully_delivered().then_some(error_text.as_str()),
+                        );
+                    } else {
+                        persist_visible_exchange_to_store(
+                            &history_store,
+                            chat_id,
+                            &instruction,
+                            None,
                         );
                     }
                 }
@@ -876,23 +997,19 @@ impl ChatSessionManager {
     }
 }
 
-fn current_model_label_for_help(active_route: &ModelRoute) -> String {
-    let managed_env_path = crate::service::service_paths()
-        .ok()
-        .map(|paths| paths.env_path);
-    current_model_label_for_help_from_env_path(active_route, managed_env_path.as_deref())
-}
-
-fn current_model_label_for_help_from_env_path(
+fn current_model_label_for_help(
     active_route: &ModelRoute,
-    env_path: Option<&Path>,
+    configured_default_model: &str,
 ) -> String {
-    env_path
-        .and_then(|path| read_managed_env_metadata(path).ok())
-        .and_then(|values| values.get(TOPAGENT_MODEL_KEY).cloned())
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| active_route.model_id.clone())
+    let configured_default_model = configured_default_model.trim();
+    if configured_default_model.is_empty() || configured_default_model == active_route.model_id {
+        active_route.model_id.clone()
+    } else {
+        format!(
+            "{} (override; default {})",
+            active_route.model_id, configured_default_model
+        )
+    }
 }
 
 #[cfg(test)]
@@ -908,6 +1025,7 @@ mod tests {
     fn test_manager(workspace_root: PathBuf) -> ChatSessionManager {
         ChatSessionManager::new(
             ModelRoute::openrouter("test-model"),
+            "test-model".to_string(),
             "test-key".to_string(),
             RuntimeOptions::default(),
             workspace_root,
@@ -973,31 +1091,23 @@ mod tests {
     }
 
     #[test]
-    fn test_help_model_label_prefers_managed_env_model() {
-        let workspace = TempDir::new().unwrap();
-        let env_path = workspace.path().join("topagent-telegram.env");
-        std::fs::write(
-            &env_path,
-            "# Managed by TopAgent. Safe to remove with `topagent uninstall`.\nTOPAGENT_MODEL=\"qwen/qwen3.6-plus:free\"\n",
-        )
-        .unwrap();
-
-        let label = current_model_label_for_help_from_env_path(
-            &ModelRoute::openrouter("minimax/minimax-m2.7"),
-            Some(&env_path),
+    fn test_help_model_label_shows_override_and_default_when_they_differ() {
+        let label = current_model_label_for_help(
+            &ModelRoute::openrouter("anthropic/claude-sonnet-4.6"),
+            "qwen/qwen3.6-plus:free",
         );
 
-        assert_eq!(label, "qwen/qwen3.6-plus:free");
+        assert_eq!(
+            label,
+            "anthropic/claude-sonnet-4.6 (override; default qwen/qwen3.6-plus:free)"
+        );
     }
 
     #[test]
-    fn test_help_model_label_falls_back_to_active_route_when_env_is_missing() {
-        let workspace = TempDir::new().unwrap();
-        let missing_env = workspace.path().join("missing.env");
-
-        let label = current_model_label_for_help_from_env_path(
+    fn test_help_model_label_falls_back_to_active_route_when_it_matches_default() {
+        let label = current_model_label_for_help(
             &ModelRoute::openrouter("anthropic/claude-sonnet-4.6"),
-            Some(&missing_env),
+            "anthropic/claude-sonnet-4.6",
         );
 
         assert_eq!(label, "anthropic/claude-sonnet-4.6");
@@ -1246,6 +1356,60 @@ mod tests {
     }
 
     #[test]
+    fn test_persist_visible_exchange_stores_only_delivered_messages() {
+        let workspace = TempDir::new().unwrap();
+        let chat_id = 1717;
+        let manager = test_manager(workspace.path().to_path_buf());
+
+        persist_visible_exchange_to_store(
+            &manager.history_store,
+            chat_id,
+            "Fix the config path.",
+            Some("Done. Verified with cargo test."),
+        );
+
+        let persisted = manager.history_store.load(chat_id).unwrap();
+        assert_eq!(persisted.len(), 2);
+        assert_eq!(persisted[0].as_text(), Some("Fix the config path."));
+        assert_eq!(
+            persisted[1].as_text(),
+            Some("Done. Verified with cargo test.")
+        );
+    }
+
+    #[test]
+    fn test_persist_visible_exchange_skips_undelivered_assistant_reply() {
+        let workspace = TempDir::new().unwrap();
+        let chat_id = 1818;
+        let manager = test_manager(workspace.path().to_path_buf());
+
+        persist_visible_exchange_to_store(
+            &manager.history_store,
+            chat_id,
+            "Fix the config path.",
+            Some("Done. Verified with cargo test."),
+        );
+        persist_visible_exchange_to_store(
+            &manager.history_store,
+            chat_id,
+            "Run it again after the restart.",
+            None,
+        );
+
+        let persisted = manager.history_store.load(chat_id).unwrap();
+        assert_eq!(persisted.len(), 3);
+        assert_eq!(persisted[0].as_text(), Some("Fix the config path."));
+        assert_eq!(
+            persisted[1].as_text(),
+            Some("Done. Verified with cargo test.")
+        );
+        assert_eq!(
+            persisted[2].as_text(),
+            Some("Run it again after the restart.")
+        );
+    }
+
+    #[test]
     fn test_post_restart_persist_keeps_pre_restart_exchange_in_file() {
         let workspace = TempDir::new().unwrap();
         let chat_id = 5150;
@@ -1337,6 +1501,7 @@ mod tests {
 
         let enabled_manager = ChatSessionManager::new(
             ModelRoute::openrouter("test-model"),
+            "test-model".to_string(),
             "test-key".to_string(),
             RuntimeOptions::default().with_generated_tool_authoring(true),
             workspace.path().to_path_buf(),

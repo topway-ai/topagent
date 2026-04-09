@@ -1,4 +1,5 @@
 use crate::approval::ApprovalMailbox;
+use crate::checkpoint::WorkspaceCheckpointStore;
 use crate::secrets::SecretRegistry;
 use crate::{cancel::CancellationToken, runtime::RuntimeOptions};
 use std::path::{Component, Path, PathBuf};
@@ -10,6 +11,7 @@ pub struct ExecutionContext {
     secrets: SecretRegistry,
     memory_context: Option<String>,
     approval_mailbox: Option<ApprovalMailbox>,
+    checkpoint_store: Option<WorkspaceCheckpointStore>,
 }
 
 impl ExecutionContext {
@@ -20,6 +22,7 @@ impl ExecutionContext {
             secrets: SecretRegistry::new(),
             memory_context: None,
             approval_mailbox: None,
+            checkpoint_store: None,
         }
     }
 
@@ -48,6 +51,14 @@ impl ExecutionContext {
         self
     }
 
+    pub fn with_workspace_checkpoint_store(
+        mut self,
+        checkpoint_store: WorkspaceCheckpointStore,
+    ) -> Self {
+        self.checkpoint_store = Some(checkpoint_store);
+        self
+    }
+
     pub fn secrets(&self) -> &SecretRegistry {
         &self.secrets
     }
@@ -58,6 +69,10 @@ impl ExecutionContext {
 
     pub fn approval_mailbox(&self) -> Option<&ApprovalMailbox> {
         self.approval_mailbox.as_ref()
+    }
+
+    pub fn checkpoint_store(&self) -> Option<&WorkspaceCheckpointStore> {
+        self.checkpoint_store.as_ref()
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -129,6 +144,7 @@ impl<'a> ToolContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checkpoint::WorkspaceCheckpointStore;
     use std::fs;
     use tempfile::TempDir;
 
@@ -195,5 +211,16 @@ mod tests {
         let (ctx, _temp) = create_context();
         let ctx = ctx.with_memory_context("memory");
         assert_eq!(ctx.memory_context(), Some("memory"));
+    }
+
+    #[test]
+    fn test_checkpoint_store_round_trip() {
+        let (ctx, temp) = create_context();
+        let checkpoint = WorkspaceCheckpointStore::new(temp.path().to_path_buf());
+        let ctx = ctx.with_workspace_checkpoint_store(checkpoint);
+        assert_eq!(
+            ctx.checkpoint_store().unwrap().latest_status().unwrap(),
+            None
+        );
     }
 }

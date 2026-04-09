@@ -12,6 +12,7 @@ use crate::prompt::BehaviorPromptContext;
 use crate::run_state::AgentRunState;
 use crate::runtime::RuntimeOptions;
 use crate::session::Session;
+use crate::task_result::TaskResult;
 use crate::tool_genesis::{load_generated_tool_inventory, register_generated_tool_authoring_tools};
 use crate::tools::{
     ManageOperatorPreferenceTool, SaveLessonTool, SavePlanTool, Tool, ToolRegistry, UpdatePlanTool,
@@ -63,6 +64,8 @@ pub struct Agent {
     planning_block_count: usize,
     compaction_state: CompactionRuntimeState,
     generated_tool_warnings: Vec<String>,
+    last_task_result: Option<TaskResult>,
+    durable_memory_written_this_run: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -146,6 +149,8 @@ impl Agent {
             planning_block_count: 0,
             compaction_state: CompactionRuntimeState::default(),
             generated_tool_warnings: Vec::new(),
+            last_task_result: None,
+            durable_memory_written_this_run: false,
         }
     }
 
@@ -167,6 +172,14 @@ impl Agent {
 
     pub fn changed_files(&self) -> Vec<String> {
         self.run_state.changed_files()
+    }
+
+    pub fn last_task_result(&self) -> Option<&TaskResult> {
+        self.last_task_result.as_ref()
+    }
+
+    pub fn durable_memory_written_this_run(&self) -> bool {
+        self.durable_memory_written_this_run
     }
 
     pub fn conversation_messages(&self) -> Vec<Message> {
@@ -216,12 +229,25 @@ impl Agent {
             return ProgressUpdate::planning();
         }
 
+        if name == "read" {
+            if let Some(path) = Self::extract_file_path(args) {
+                return ProgressUpdate::working(format!("Reading file: {}", path));
+            }
+        }
+
+        if matches!(name, "write" | "edit") {
+            if let Some(path) = Self::extract_file_path(args) {
+                return ProgressUpdate::working(format!("Editing file: {}", path));
+            }
+        }
+
         if name == "bash" {
             let bash_cmd = Self::extract_bash_command(args);
             return match Self::classify_bash_command(&bash_cmd) {
-                BashCommandClass::Verification => {
-                    ProgressUpdate::working("Running tool: bash (verification)".to_string())
-                }
+                BashCommandClass::Verification => ProgressUpdate::working(format!(
+                    "Running verification: {}",
+                    Self::summarize_progress_text(&bash_cmd, 96)
+                )),
                 _ => ProgressUpdate::running_tool("bash"),
             };
         }
@@ -229,11 +255,121 @@ impl Agent {
         ProgressUpdate::running_tool(name)
     }
 
+    fn external_tool_progress(name: &str, effect: ExternalToolEffect) -> ProgressUpdate {
+        match effect {
+            ExternalToolEffect::VerificationOnly => {
+                ProgressUpdate::working(format!("Running verification tool: {}", name))
+            }
+            ExternalToolEffect::ExecutionStarted => {
+                ProgressUpdate::working(format!("Running execution tool: {}", name))
+            }
+            ExternalToolEffect::ReadOnly => ProgressUpdate::running_tool(name),
+        }
+    }
+
+    fn extract_file_path(args: &serde_json::Value) -> Option<&str> {
+        args.get("path").and_then(|value| value.as_str())
+    }
+
+    fn summarize_progress_text(text: &str, max_chars: usize) -> String {
+        let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        if compact.len() <= max_chars {
+            return compact;
+        }
+
+        let mut end = max_chars;
+        while end > 0 && !compact.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut limited = compact[..end].trim_end().to_string();
+        limited.push_str("...");
+        limited
+    }
+
+    fn changed_files_progress_update(files: &[String]) -> Option<ProgressUpdate> {
+        match files {
+            [] => None,
+            [path] => Some(ProgressUpdate::working(format!("Changed file: {}", path))),
+            _ => Some(ProgressUpdate::working(format!(
+                "Changed files: {}",
+                Self::summarize_progress_text(&files.join(", "), 96)
+            ))),
+        }
+    }
+
+    fn new_changed_files<'a>(before: &[String], after: &'a [String]) -> Vec<&'a String> {
+        after.iter().filter(|path| !before.contains(path)).collect()
+    }
+
+    fn verification_progress_update(command: &str, exit_code: i32) -> ProgressUpdate {
+        let command = Self::summarize_progress_text(command, 96);
+        if exit_code == 0 {
+            ProgressUpdate::working(format!("Verification passed: {}", command))
+        } else {
+            ProgressUpdate::working(format!(
+                "Verification failed (exit {}): {}",
+                exit_code, command
+            ))
+        }
+    }
+
     fn blocked_progress(reason: &str) -> ProgressUpdate {
         if reason.contains("Planning required") {
             ProgressUpdate::blocked("Blocked: planning required before mutation.")
         } else {
             ProgressUpdate::blocked(format!("Blocked: {}", reason))
+        }
+    }
+
+    fn emit_post_tool_progress(
+        &self,
+        name: &str,
+        args: &serde_json::Value,
+        bash_cmd: Option<&str>,
+        bash_exit_code: Option<i32>,
+        changed_before: &[String],
+    ) {
+        if matches!(name, "write" | "edit") {
+            if let Some(path) = Self::extract_file_path(args) {
+                self.emit_progress(ProgressUpdate::working(format!("Changed file: {}", path)));
+                return;
+            }
+        }
+
+        if name == "bash" {
+            if let Some(command) = bash_cmd {
+                match Self::classify_bash_command(command) {
+                    BashCommandClass::Verification => {
+                        if let Some(exit_code) = bash_exit_code {
+                            self.emit_progress(Self::verification_progress_update(
+                                command, exit_code,
+                            ));
+                        }
+                    }
+                    BashCommandClass::MutationRisk => {
+                        let changed_after = self.run_state.changed_files();
+                        let new_files = Self::new_changed_files(changed_before, &changed_after)
+                            .into_iter()
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        if let Some(update) = Self::changed_files_progress_update(&new_files) {
+                            self.emit_progress(update);
+                        }
+                    }
+                    BashCommandClass::ResearchSafe => {}
+                }
+            }
+        }
+    }
+
+    fn emit_external_tool_post_progress(&self, changed_before: &[String]) {
+        let changed_after = self.run_state.changed_files();
+        let new_files = Self::new_changed_files(changed_before, &changed_after)
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        if let Some(update) = Self::changed_files_progress_update(&new_files) {
+            self.emit_progress(update);
         }
     }
 
@@ -607,6 +743,7 @@ impl Agent {
         }
 
         let tool = self.tools.get(&name).unwrap();
+        let changed_before = self.run_state.changed_files();
 
         // ── Execute ──
         let tool_ctx = ToolContext::new(ctx, &self.options);
@@ -615,6 +752,7 @@ impl Agent {
         } else {
             None
         };
+        let mut bash_exit_code = None;
         self.emit_progress(self.tool_progress(&name, &args));
         self.check_cancelled(ctx)?;
         let result = match tool.execute(args.clone(), &tool_ctx) {
@@ -639,10 +777,11 @@ impl Agent {
             } else {
                 BashCommandClass::MutationRisk
             };
-            if let Some(cmd) = bash_cmd {
+            if let Some(cmd) = bash_cmd.as_ref() {
                 let exit_code = extract_exit_code(&result);
+                bash_exit_code = Some(exit_code);
                 self.run_state
-                    .record_bash_result(cmd, result.clone(), exit_code);
+                    .record_bash_result(cmd.clone(), result.clone(), exit_code);
             }
             if matches!(
                 class,
@@ -675,6 +814,10 @@ impl Agent {
             self.deactivate_planning_gate();
         }
 
+        if self.behavior.is_memory_write_tool(&name) {
+            self.durable_memory_written_this_run = true;
+        }
+
         if self.behavior.mutates_generated_tool_surface(&name) {
             self.reload_workspace_tools(&ctx.workspace_root)?;
         }
@@ -686,6 +829,13 @@ impl Agent {
             std::borrow::Cow::Borrowed(_) => result,
         };
 
+        self.emit_post_tool_progress(
+            &name,
+            &args,
+            bash_cmd.as_deref(),
+            bash_exit_code,
+            &changed_before,
+        );
         self.record_tool_result(id, name, args, result);
         Ok(())
     }
@@ -701,6 +851,7 @@ impl Agent {
     ) -> Result<()> {
         let external_effect = self.external_tools.get(&name).unwrap().effect();
         let external_sandbox = self.external_tools.get(&name).unwrap().sandbox_policy();
+        let changed_before = self.run_state.changed_files();
 
         // ── Preflight: gates ──
         if let Some(block) = self.run_preflight(
@@ -718,7 +869,7 @@ impl Agent {
             return Ok(());
         }
 
-        self.emit_progress(self.tool_progress(&name, &args));
+        self.emit_progress(Self::external_tool_progress(&name, external_effect));
         self.check_cancelled(ctx)?;
         let tool_ctx = ToolContext::new(ctx, &self.options);
         let external_tool = self.external_tools.get(&name).unwrap();
@@ -753,6 +904,7 @@ impl Agent {
             std::borrow::Cow::Owned(s) => s,
             std::borrow::Cow::Borrowed(_) => result_str,
         };
+        self.emit_external_tool_post_progress(&changed_before);
         self.record_tool_result(id, name, args, result_str);
         Ok(())
     }
@@ -1029,12 +1181,23 @@ impl Agent {
                         }
 
                         self.session.add_message(msg);
-                        let final_response = self.run_state.build_proof_of_work(
-                            &self.behavior,
+                        let task_result = self.run_state.build_task_result(
                             &text,
                             &ctx.workspace_root,
+                            &self.behavior,
                             &self.generated_tool_warnings,
                         );
+                        let final_response = if self.behavior.should_attach_proof_of_work(
+                            task_result.files_changed().len(),
+                            task_result.verification_commands().len(),
+                            task_result.unresolved_issues().len(),
+                            self.generated_tool_warnings.len(),
+                        ) {
+                            task_result.format_proof_of_work()
+                        } else {
+                            text.clone()
+                        };
+                        self.last_task_result = Some(task_result);
                         return Ok(final_response);
                     }
                     self.session.add_message(msg);
@@ -1083,6 +1246,8 @@ impl Agent {
         let workspace_root = &ctx.workspace_root;
         self.run_state.reset(workspace_root, instruction);
         self.compaction_state = CompactionRuntimeState::default();
+        self.last_task_result = None;
+        self.durable_memory_written_this_run = false;
 
         self.planning_required_for_task = self.behavior.planning.require_plan_by_default
             && self.classify_task(instruction, ctx.cancel_token())?;
@@ -1368,6 +1533,56 @@ path = "src/lib.rs"
     }
 
     #[test]
+    fn test_run_exposes_last_task_result_for_verified_work() {
+        let (_temp, ctx) = create_temp_crate();
+        let mut agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![
+                write_lib_call("write", "pub fn answer() -> u32 {\n    99\n}\n"),
+                cargo_check_call("verify"),
+                assistant_message("done after verification"),
+            ])),
+            default_tools().into_inner(),
+            RuntimeOptions::default(),
+        );
+
+        let result = agent.run(&ctx, "update src/lib.rs and verify").unwrap();
+
+        assert!(result.contains("done after verification"));
+        let task_result = agent
+            .last_task_result()
+            .expect("expected a structured task result after completion");
+        assert!(task_result.has_files_changed());
+        assert!(task_result.final_verification_passed());
+        assert!(!agent.durable_memory_written_this_run());
+    }
+
+    #[test]
+    fn test_memory_write_tool_sets_durable_memory_written_flag() {
+        let (_temp, ctx) = create_temp_crate();
+        let mut agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![
+                tool_call(
+                    "save",
+                    "save_lesson",
+                    serde_json::json!({
+                        "title": "Approval mailbox",
+                        "what_changed": "Updated the approval flow",
+                        "what_learned": "Pending approvals must remain visible",
+                    }),
+                ),
+                assistant_message("saved lesson"),
+            ])),
+            default_tools().into_inner(),
+            RuntimeOptions::default(),
+        );
+
+        let result = agent.run(&ctx, "save a lesson about approvals").unwrap();
+
+        assert_eq!(result, "saved lesson");
+        assert!(agent.durable_memory_written_this_run());
+    }
+
+    #[test]
     fn test_verification_only_task_does_not_get_blocked_unnecessarily() {
         let (_temp, ctx) = create_temp_crate();
         let mut agent = make_plan_required_agent(vec![
@@ -1581,6 +1796,47 @@ path = "src/lib.rs"
     }
 
     #[test]
+    fn test_repeated_identical_commit_after_denial_requests_fresh_approval() {
+        let (_temp, ctx) = create_temp_git_repo();
+        let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
+        let ctx = ctx.with_approval_mailbox(mailbox.clone());
+
+        let mut first_agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![tool_call(
+                "commit-1",
+                "git_commit",
+                serde_json::json!({"message": "ship it"}),
+            )])),
+            default_tools().into_inner(),
+            RuntimeOptions::default(),
+        );
+        let first_request = match first_agent.run(&ctx, "commit the staged change") {
+            Err(Error::ApprovalRequired(request)) => request,
+            other => panic!("expected approval-required error, got {other:?}"),
+        };
+        mailbox
+            .deny(&first_request.id, Some("not yet".to_string()))
+            .unwrap();
+
+        let mut second_agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![tool_call(
+                "commit-2",
+                "git_commit",
+                serde_json::json!({"message": "ship it"}),
+            )])),
+            default_tools().into_inner(),
+            RuntimeOptions::default(),
+        );
+        let second_request = match second_agent.run(&ctx, "commit the staged change") {
+            Err(Error::ApprovalRequired(request)) => request,
+            other => panic!("expected a fresh approval-required error, got {other:?}"),
+        };
+
+        assert_ne!(first_request.id, second_request.id);
+        assert_eq!(mailbox.pending().len(), 1);
+    }
+
+    #[test]
     fn test_host_external_execution_requires_approval_and_does_not_run() {
         let (temp, ctx) = create_temp_crate();
         write_workspace_external_tools_json(
@@ -1705,5 +1961,41 @@ path = "src/lib.rs"
         assert!(summary.contains(instruction));
         assert!(summary.contains("current plan"));
         assert!(summary.contains("apr-2 [denied] delete generated tool: cleanup_helper"));
+    }
+
+    #[test]
+    fn test_compaction_preserves_missing_verification_warning_in_snapshot() {
+        let (_temp, ctx) = create_temp_crate();
+        let provider = ScriptedProvider::new(vec![
+            write_lib_call("write", "pub fn answer() -> u32 {\n    77\n}\n"),
+            tool_call("read-1", "read", serde_json::json!({"path": "src/lib.rs"})),
+            tool_call("read-2", "read", serde_json::json!({"path": "src/lib.rs"})),
+            assistant_message("done"),
+        ]);
+        let mut agent = Agent::with_options(
+            Box::new(provider),
+            default_tools().into_inner(),
+            RuntimeOptions::default().with_max_messages_before_truncation(4),
+        );
+
+        let result = agent.run(&ctx, "update src/lib.rs").unwrap();
+
+        assert!(result.contains("Files were modified but no verification commands were run"));
+
+        let prompt = agent.build_run_system_prompt(&ctx).unwrap();
+        assert!(prompt.contains("Files were modified but no verification commands were run"));
+
+        let summary = agent
+            .session
+            .raw_messages()
+            .into_iter()
+            .find_map(|message| {
+                message
+                    .as_text()
+                    .filter(|text| text.starts_with("["))
+                    .map(str::to_string)
+            })
+            .expect("compaction summary should be present");
+        assert!(summary.contains("Files were modified but no verification commands were run"));
     }
 }

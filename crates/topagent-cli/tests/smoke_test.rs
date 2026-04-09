@@ -1,5 +1,18 @@
 use assert_cmd::Command;
 use std::path::PathBuf;
+use tempfile::TempDir;
+
+fn isolated_topagent_command() -> (TempDir, Command) {
+    let temp = TempDir::new().unwrap();
+    let home = temp.path().join("home");
+    let config = temp.path().join("config");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&config).unwrap();
+
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.env("HOME", &home).env("XDG_CONFIG_HOME", &config);
+    (temp, cmd)
+}
 
 #[test]
 fn test_cli_smoke_help() {
@@ -18,7 +31,7 @@ fn test_cli_help_mentions_workspace() {
 
 #[test]
 fn test_cli_bare_instruction_requires_api_key() {
-    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    let (_temp, mut cmd) = isolated_topagent_command();
     cmd.env_remove("OPENROUTER_API_KEY")
         .args(["say hello"])
         .assert()
@@ -47,7 +60,7 @@ fn test_cli_invalid_workspace_fails_fast() {
 
 #[test]
 fn test_cli_telegram_requires_token() {
-    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    let (_temp, mut cmd) = isolated_topagent_command();
     cmd.env_remove("TELEGRAM_BOT_TOKEN")
         .args(["telegram"])
         .assert()
@@ -125,6 +138,15 @@ fn test_cli_install_appears_in_help() {
 }
 
 #[test]
+fn test_cli_setup_alias_appears_in_help() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("setup"));
+}
+
+#[test]
 fn test_cli_status_appears_in_help() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
     cmd.arg("--help")
@@ -152,6 +174,15 @@ fn test_cli_model_appears_in_help() {
 }
 
 #[test]
+fn test_cli_checkpoint_appears_in_help() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("checkpoint"));
+}
+
+#[test]
 fn test_cli_service_help_mentions_lifecycle_commands() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
     cmd.args(["service", "--help"])
@@ -170,8 +201,34 @@ fn test_cli_model_help_mentions_management_commands() {
         .success()
         .stdout(predicates::str::contains("status"))
         .stdout(predicates::str::contains("set"))
+        .stdout(predicates::str::contains("pick"))
         .stdout(predicates::str::contains("list"))
         .stdout(predicates::str::contains("refresh"));
+}
+
+#[test]
+fn test_cli_checkpoint_help_mentions_management_commands() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.args(["checkpoint", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("status"))
+        .stdout(predicates::str::contains("diff"))
+        .stdout(predicates::str::contains("restore"));
+}
+
+#[test]
+fn test_cli_checkpoint_status_reports_none_for_fresh_workspace() {
+    let temp = TempDir::new().unwrap();
+    let (_isolated, mut cmd) = isolated_topagent_command();
+    cmd.arg("--workspace")
+        .arg(temp.path())
+        .args(["checkpoint", "status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains(
+            "No active workspace checkpoint found.",
+        ));
 }
 
 #[test]
@@ -190,14 +247,19 @@ fn test_readme_documents_product_setup_commands() {
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
     let readme = std::fs::read_to_string(repo_root.join("README.md")).unwrap();
 
+    assert!(readme.contains("topagent setup"));
     assert!(readme.contains("topagent install"));
     assert!(readme.contains("topagent status"));
     assert!(readme.contains("topagent model status"));
     assert!(readme.contains("topagent model set <id>"));
+    assert!(readme.contains("topagent model pick"));
     assert!(readme.contains("topagent uninstall"));
     assert!(readme.contains("topagent service start"));
     assert!(readme.contains("topagent service stop"));
     assert!(readme.contains("topagent service restart"));
+    assert!(readme.contains("topagent checkpoint status"));
+    assert!(readme.contains("topagent checkpoint diff"));
+    assert!(readme.contains("topagent checkpoint restore"));
     assert!(readme.contains("Download the latest release binary"));
 }
 
@@ -266,6 +328,20 @@ fn test_operations_docs_cover_model_management() {
 
     assert!(operations.contains("topagent model status"));
     assert!(operations.contains("topagent model set <openrouter-model-id>"));
+    assert!(operations.contains("topagent model pick"));
     assert!(operations.contains("topagent model refresh"));
     assert!(operations.contains("openrouter-models.json"));
+}
+
+#[test]
+fn test_operations_docs_cover_checkpoint_management() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let operations = std::fs::read_to_string(repo_root.join("docs/operations.md")).unwrap();
+
+    assert!(operations.contains("topagent checkpoint status"));
+    assert!(operations.contains("topagent checkpoint diff"));
+    assert!(operations.contains("topagent checkpoint restore"));
+    assert!(operations.contains(".topagent/checkpoints"));
+    assert!(operations.contains("clears persisted Telegram transcripts"));
 }

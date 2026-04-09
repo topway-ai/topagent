@@ -14,8 +14,8 @@ pub use git::{GitAddTool, GitBranchTool, GitCommitTool, GitDiffTool, GitStatusTo
 pub use operator_preference::ManageOperatorPreferenceTool;
 pub use planning::UpdatePlanTool;
 pub use read::ReadTool;
-pub use save_lesson::SaveLessonTool;
-pub use save_plan::SavePlanTool;
+pub use save_lesson::{SaveLessonArgs, SaveLessonTool};
+pub use save_plan::{SavePlanArgs, SavePlanTool};
 pub use write::WriteTool;
 
 use crate::context::ToolContext;

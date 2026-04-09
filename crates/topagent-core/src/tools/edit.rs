@@ -38,6 +38,9 @@ impl crate::tools::Tool for EditTool {
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
         let full_path = ctx.exec.resolve_path(&args.path)?;
         let content = read_text_file_for_edit(&full_path, ctx.runtime.max_read_bytes)?;
+        if let Some(checkpoint_store) = ctx.exec.checkpoint_store() {
+            checkpoint_store.capture_file(&args.path)?;
+        }
 
         let matches: Vec<usize> = content
             .match_indices(&args.old_text)
@@ -81,6 +84,7 @@ impl crate::tools::Tool for EditTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checkpoint::WorkspaceCheckpointStore;
     use crate::context::{ExecutionContext, ToolContext};
     use crate::runtime::RuntimeOptions;
     use crate::tools::Tool;
@@ -265,5 +269,34 @@ mod tests {
         assert!(result.is_ok(), "{:?}", result);
         let content = fs::read_to_string(ctx.exec.resolve_path("test.txt").unwrap()).unwrap();
         assert_eq!(content, "hello rust");
+    }
+
+    #[test]
+    fn test_edit_captures_original_file_for_checkpoint_restore() {
+        let temp = TempDir::new().unwrap();
+        let original_path = temp.path().join("test.txt");
+        fs::write(&original_path, "hello world").unwrap();
+
+        let exec = ExecutionContext::new(temp.path().to_path_buf())
+            .with_workspace_checkpoint_store(WorkspaceCheckpointStore::new(
+                temp.path().to_path_buf(),
+            ));
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+        let tool = EditTool::new();
+
+        tool.execute(
+            serde_json::json!({"path": "test.txt", "old_text": "world", "new_text": "rust"}),
+            &ctx,
+        )
+        .unwrap();
+
+        exec.checkpoint_store()
+            .unwrap()
+            .restore_latest()
+            .unwrap()
+            .unwrap();
+        let content = fs::read_to_string(original_path).unwrap();
+        assert_eq!(content, "hello world");
     }
 }

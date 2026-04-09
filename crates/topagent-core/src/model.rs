@@ -1,3 +1,5 @@
+pub const DEFAULT_OPENROUTER_MODEL_ID: &str = "minimax/minimax-m2.7";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelRoute {
     pub model_id: String,
@@ -13,7 +15,7 @@ impl ModelRoute {
 
 impl Default for ModelRoute {
     fn default() -> Self {
-        Self::openrouter("minimax/minimax-m2.7")
+        Self::openrouter(DEFAULT_OPENROUTER_MODEL_ID)
     }
 }
 
@@ -28,7 +30,7 @@ impl ModelRoute {
 impl ModelRoute {
     /// Build a route with an optional model override, falling back to the default model.
     pub fn with_override(model_override: Option<&str>) -> Self {
-        Self::openrouter(model_override.unwrap_or("minimax/minimax-m2.7"))
+        Self::openrouter(model_override.unwrap_or(DEFAULT_OPENROUTER_MODEL_ID))
     }
 }
 
@@ -39,7 +41,7 @@ mod tests {
     #[test]
     fn test_default_route() {
         let route = ModelRoute::default();
-        assert_eq!(route.model_id, "minimax/minimax-m2.7");
+        assert_eq!(route.model_id, DEFAULT_OPENROUTER_MODEL_ID);
     }
 
     #[test]
@@ -54,7 +56,7 @@ mod tests {
     #[test]
     fn test_with_override_uses_default_model() {
         let route = ModelRoute::with_override(None);
-        assert_eq!(route.model_id, "minimax/minimax-m2.7");
+        assert_eq!(route.model_id, DEFAULT_OPENROUTER_MODEL_ID);
     }
 
     #[test]

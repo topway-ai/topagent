@@ -3,6 +3,7 @@ pub mod approval;
 pub mod behavior;
 pub mod cancel;
 pub mod channel;
+pub mod checkpoint;
 pub mod command_exec;
 pub mod compaction;
 pub mod context;
@@ -35,6 +36,9 @@ pub use approval::{
 pub use behavior::{BashCommandClass, BehaviorContract, RunStateSnapshot};
 pub use cancel::CancellationToken;
 pub use channel::telegram::{ChannelError, TelegramAdapter, POLL_TIMEOUT_SECS};
+pub use checkpoint::{
+    WorkspaceCheckpointRestoreReport, WorkspaceCheckpointStatus, WorkspaceCheckpointStore,
+};
 pub use command_exec::CommandSandboxPolicy;
 pub use compaction::{
     CompactionError, CompactionLevel, CompactionOutcome, CompactionRuntimeState,

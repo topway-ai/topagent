@@ -34,6 +34,9 @@ impl crate::tools::Tool for WriteTool {
         let args: WriteArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
         let full_path = ctx.exec.resolve_path(&args.path)?;
+        if let Some(checkpoint_store) = ctx.exec.checkpoint_store() {
+            checkpoint_store.capture_file(&args.path)?;
+        }
         atomic_write(&full_path, &args.content)?;
         Ok(format!(
             "wrote {} bytes to {}",
@@ -46,6 +49,7 @@ impl crate::tools::Tool for WriteTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checkpoint::WorkspaceCheckpointStore;
     use crate::context::{ExecutionContext, ToolContext};
     use crate::runtime::RuntimeOptions;
     use crate::tools::Tool;
@@ -96,5 +100,34 @@ mod tests {
             &ctx,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_write_captures_preexisting_file_for_checkpoint_restore() {
+        let temp = TempDir::new().unwrap();
+        let original_path = temp.path().join("test.txt");
+        fs::write(&original_path, "before").unwrap();
+
+        let exec = ExecutionContext::new(temp.path().to_path_buf())
+            .with_workspace_checkpoint_store(WorkspaceCheckpointStore::new(
+                temp.path().to_path_buf(),
+            ));
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+        let tool = WriteTool::new();
+
+        tool.execute(
+            serde_json::json!({"path": "test.txt", "content": "after"}),
+            &ctx,
+        )
+        .unwrap();
+
+        exec.checkpoint_store()
+            .unwrap()
+            .restore_latest()
+            .unwrap()
+            .unwrap();
+        let content = fs::read_to_string(original_path).unwrap();
+        assert_eq!(content, "before");
     }
 }

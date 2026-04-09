@@ -7,7 +7,12 @@ use self::memory_consolidation::{
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
-use topagent_core::{BehaviorContract, Message, Role};
+use std::sync::{Arc, Mutex};
+use topagent_core::context::ToolContext;
+use topagent_core::tools::{SaveLessonArgs, SaveLessonTool, SavePlanArgs, SavePlanTool, Tool};
+use topagent_core::{
+    BehaviorContract, ExecutionContext, Message, Plan, Role, RuntimeOptions, TaskResult,
+};
 use tracing::warn;
 
 use crate::managed_files::write_managed_file;
@@ -305,9 +310,136 @@ struct TopicLoad {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct TaskDistillationReport {
+    pub lesson_file: Option<String>,
+    pub plan_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct TranscriptSection {
     section: String,
     snippet_count: usize,
+}
+
+pub(crate) fn distill_verified_task(
+    memory: &WorkspaceMemory,
+    ctx: &ExecutionContext,
+    options: &RuntimeOptions,
+    instruction: &str,
+    task_result: &TaskResult,
+    plan: &Plan,
+    durable_memory_written: bool,
+) -> Result<TaskDistillationReport> {
+    if durable_memory_written
+        || instruction.trim().is_empty()
+        || !task_result.final_verification_passed()
+        || !task_result.has_files_changed()
+        || task_result.has_unresolved_issues()
+    {
+        return Ok(TaskDistillationReport::default());
+    }
+
+    memory.ensure_layout()?;
+
+    let tool_ctx = ToolContext::new(ctx, options);
+    let lesson_title = compact_text_line(&normalize_task_text(instruction), 72);
+    if lesson_title.is_empty() {
+        return Ok(TaskDistillationReport::default());
+    }
+
+    let changed_files = summarize_changed_files(task_result.files_changed());
+    let verification_command = task_result
+        .latest_verification_command()
+        .map(|command| compact_text_line(&command.command, 96));
+    let lesson_args = SaveLessonArgs {
+        title: lesson_title.clone(),
+        what_changed: build_distilled_what_changed(&task_result.outcome_summary, &changed_files),
+        what_learned: build_distilled_what_learned(&changed_files, verification_command.as_deref()),
+        reuse_next_time: verification_command
+            .map(|command| format!("Reuse `{command}` as the completion check for similar edits.")),
+        avoid_next_time: None,
+    };
+
+    let lesson_output = SaveLessonTool::new()
+        .execute(
+            serde_json::to_value(lesson_args).context("failed to serialize lesson args")?,
+            &tool_ctx,
+        )
+        .map_err(anyhow::Error::new)?;
+
+    let mut report = TaskDistillationReport {
+        lesson_file: extract_saved_artifact_path(&lesson_output, "Lesson saved to "),
+        plan_file: None,
+    };
+
+    if should_save_reusable_plan(plan) {
+        let plan_title = compact_text_line(&format!("{lesson_title} procedure"), 80);
+        let plan_tool = SavePlanTool::with_plan(Arc::new(Mutex::new(plan.clone())));
+        let plan_output = plan_tool
+            .execute(
+                serde_json::to_value(SavePlanArgs {
+                    title: plan_title,
+                    task: Some(compact_text_line(&normalize_task_text(instruction), 160)),
+                })
+                .context("failed to serialize plan args")?,
+                &tool_ctx,
+            )
+            .map_err(anyhow::Error::new)?;
+        report.plan_file = extract_saved_artifact_path(&plan_output, "Plan saved to ");
+    }
+
+    if report.lesson_file.is_some() || report.plan_file.is_some() {
+        memory.consolidate_memory_if_needed()?;
+    }
+
+    Ok(report)
+}
+
+fn normalize_task_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn summarize_changed_files(files: &[String]) -> String {
+    match files {
+        [] => "the verified workspace changes".to_string(),
+        [file] => format!("`{file}`"),
+        [first, second] => format!("`{first}` and `{second}`"),
+        [first, ..] => format!("`{first}` and {} more files", files.len() - 1),
+    }
+}
+
+fn build_distilled_what_changed(outcome_summary: &str, changed_files: &str) -> String {
+    let summary = compact_text_line(&normalize_task_text(outcome_summary), 220);
+    if summary.is_empty() {
+        format!("Verified work touched {changed_files}.")
+    } else {
+        format!("{summary} Verified work touched {changed_files}.")
+    }
+}
+
+fn build_distilled_what_learned(changed_files: &str, verification_command: Option<&str>) -> String {
+    match verification_command {
+        Some(command) => format!(
+            "For similar work, finish changes in {changed_files} by rerunning `{command}` before considering the task complete."
+        ),
+        None => format!(
+            "For similar work, keep the edits in {changed_files} tied to an explicit passing verification step."
+        ),
+    }
+}
+
+fn should_save_reusable_plan(plan: &Plan) -> bool {
+    plan.items().len() >= 2
+}
+
+fn extract_saved_artifact_path(output: &str, prefix: &str) -> Option<String> {
+    output
+        .lines()
+        .next()
+        .and_then(|line| line.strip_prefix(prefix))
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(ToString::to_string)
 }
 
 fn render_index_section(
@@ -632,6 +764,7 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+    use topagent_core::{ExecutionContext, RuntimeOptions, TaskResult, VerificationCommand};
 
     fn write_memory_index(workspace: &Path, body: &str) {
         let path = workspace.join(MEMORY_INDEX_RELATIVE_PATH);
@@ -655,6 +788,20 @@ mod tests {
         let path = workspace.join(MEMORY_PLANS_RELATIVE_DIR).join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, body).unwrap();
+    }
+
+    fn verified_task_result() -> TaskResult {
+        TaskResult::new("Unified the model control path and reran the CLI test suite.".to_string())
+            .with_files_changed(vec![
+                "crates/topagent-cli/src/config.rs".to_string(),
+                "crates/topagent-cli/src/service.rs".to_string(),
+            ])
+            .with_verification_command(VerificationCommand {
+                command: "cargo test -p topagent-cli".to_string(),
+                output: "ok".to_string(),
+                exit_code: 0,
+                succeeded: true,
+            })
     }
 
     #[test]
@@ -803,6 +950,97 @@ mod tests {
 
         assert!(rendered.contains("Treat every memory item below as a hint, not truth"));
         assert!(rendered.contains("current state wins"));
+    }
+
+    #[test]
+    fn test_distill_verified_task_saves_lesson_and_plan() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let ctx = ExecutionContext::new(temp.path().to_path_buf());
+        let options = RuntimeOptions::default();
+        let mut plan = Plan::new();
+        plan.add_item("Inspect the model config path".to_string());
+        plan.add_item("Unify the CLI and Telegram resolution flow".to_string());
+
+        let report = distill_verified_task(
+            &memory,
+            &ctx,
+            &options,
+            "Unify the model control path and rerun CLI tests",
+            &verified_task_result(),
+            &plan,
+            false,
+        )
+        .unwrap();
+
+        assert!(report.lesson_file.is_some());
+        assert!(report.plan_file.is_some());
+
+        let lesson_path = temp.path().join(report.lesson_file.unwrap());
+        let plan_path = temp.path().join(report.plan_file.unwrap());
+        let memory_index =
+            fs::read_to_string(temp.path().join(MEMORY_INDEX_RELATIVE_PATH)).unwrap();
+
+        assert!(lesson_path.is_file());
+        assert!(plan_path.is_file());
+        assert!(memory_index.contains("file: lessons/"));
+        assert!(memory_index.contains("file: plans/"));
+    }
+
+    #[test]
+    fn test_distill_verified_task_skips_without_passing_verification() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let ctx = ExecutionContext::new(temp.path().to_path_buf());
+        let options = RuntimeOptions::default();
+        let mut failed = verified_task_result();
+        failed = failed.with_verification_command(VerificationCommand {
+            command: "cargo test -p topagent-cli".to_string(),
+            output: "fail".to_string(),
+            exit_code: 1,
+            succeeded: false,
+        });
+
+        let report = distill_verified_task(
+            &memory,
+            &ctx,
+            &options,
+            "Unify the model control path and rerun CLI tests",
+            &failed,
+            &Plan::new(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(report, TaskDistillationReport::default());
+        assert!(!temp.path().join(MEMORY_LESSONS_RELATIVE_DIR).exists());
+        assert!(!temp.path().join(MEMORY_PLANS_RELATIVE_DIR).exists());
+    }
+
+    #[test]
+    fn test_distill_verified_task_skips_when_memory_was_already_written() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let ctx = ExecutionContext::new(temp.path().to_path_buf());
+        let options = RuntimeOptions::default();
+        let mut plan = Plan::new();
+        plan.add_item("Inspect the config path".to_string());
+        plan.add_item("Rerun the CLI tests".to_string());
+
+        let report = distill_verified_task(
+            &memory,
+            &ctx,
+            &options,
+            "Unify the model control path and rerun CLI tests",
+            &verified_task_result(),
+            &plan,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(report, TaskDistillationReport::default());
+        assert!(!temp.path().join(MEMORY_LESSONS_RELATIVE_DIR).exists());
+        assert!(!temp.path().join(MEMORY_PLANS_RELATIVE_DIR).exists());
     }
 
     #[test]

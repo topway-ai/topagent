@@ -1,5 +1,6 @@
 // TopAgent CLI entry point - supports one-shot execution and Telegram bot mode.
 // Run: topagent "task" or topagent telegram
+mod checkpoint;
 mod config;
 mod managed_files;
 mod memory;
@@ -20,15 +21,17 @@ use std::sync::{
 use std::time::Duration;
 use topagent_core::{
     context::ExecutionContext, ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest,
-    CancellationToken, ProgressCallback, ProgressUpdate,
+    CancellationToken, ProgressCallback, ProgressUpdate, WorkspaceCheckpointStore,
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+use crate::checkpoint::run_checkpoint_command;
 use crate::config::{
-    build_route, build_runtime_options, require_openrouter_api_key, resolve_workspace_path,
-    CliParams,
+    build_route_from_resolved, build_runtime_options, load_persisted_telegram_defaults,
+    require_openrouter_api_key, resolve_runtime_model_selection, resolve_workspace_path, CliParams,
 };
+use crate::memory::distill_verified_task;
 use crate::progress::LiveProgress;
 use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
 use crate::service::{
@@ -104,6 +107,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Set up and start the TopAgent Telegram background service.
+    #[command(visible_alias = "setup")]
     Install,
     /// Show TopAgent setup and service status.
     Status,
@@ -121,6 +125,11 @@ enum Commands {
     Model {
         #[command(subcommand)]
         command: ModelCommands,
+    },
+    /// Inspect and restore the latest workspace checkpoint.
+    Checkpoint {
+        #[command(subcommand)]
+        command: CheckpointCommands,
     },
     /// Remove the installed TopAgent setup and, when applicable, the installed binary.
     Uninstall,
@@ -153,10 +162,22 @@ pub(crate) enum ModelCommands {
     Status,
     /// Set the configured OpenRouter model and restart the service when installed.
     Set { model_id: String },
+    /// Pick the configured OpenRouter model interactively.
+    Pick,
     /// Show the cached OpenRouter starter models.
     List,
     /// Refresh the cached OpenRouter starter models.
     Refresh,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum CheckpointCommands {
+    /// Show the latest workspace checkpoint.
+    Status,
+    /// Show the diff between the latest checkpoint and the current workspace.
+    Diff,
+    /// Restore the latest checkpoint and clear persisted Telegram transcripts.
+    Restore,
 }
 
 fn main() -> Result<()> {
@@ -178,8 +199,9 @@ fn main() -> Result<()> {
 
     match command {
         Some(Commands::Install) => run_install(params),
-        Some(Commands::Status) => run_status(),
+        Some(Commands::Status) => run_status(params),
         Some(Commands::Model { command }) => run_model_command(command, params),
+        Some(Commands::Checkpoint { command }) => run_checkpoint_command(command, params.workspace),
         Some(Commands::Uninstall) => run_uninstall(),
         Some(Commands::Service { command }) => run_service_command(command, params),
         Some(Commands::Telegram { token }) => run_telegram(token, params),
@@ -221,12 +243,16 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
     let cancel_token = CancellationToken::new();
     let interactive_approvals = io::stdin().is_terminal() && io::stderr().is_terminal();
     let approval_mailbox = build_cli_approval_mailbox(interactive_approvals);
-    let mut ctx = ExecutionContext::new(workspace)
+    let mut ctx = ExecutionContext::new(workspace.clone())
         .with_cancel_token(cancel_token.clone())
-        .with_approval_mailbox(approval_mailbox);
+        .with_approval_mailbox(approval_mailbox)
+        .with_workspace_checkpoint_store(WorkspaceCheckpointStore::new(workspace));
     let options = build_runtime_options(params.max_steps, params.max_retries, params.timeout_secs)
         .with_generated_tool_authoring(params.generated_tool_authoring.unwrap_or(false));
-    let route = build_route(params.model);
+    let persisted_defaults = load_persisted_telegram_defaults().unwrap_or_default();
+    let model_selection =
+        resolve_runtime_model_selection(params.model, persisted_defaults.model.clone());
+    let route = build_route_from_resolved(&model_selection.effective);
     let api_key = require_openrouter_api_key(params.api_key)?;
     let workspace_memory = prepare_workspace_memory(ctx.workspace_root.clone());
     ctx = prepare_run_context(&ctx, &workspace_memory, &instruction, None);
@@ -239,6 +265,7 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
     info!("instruction: {}", instruction);
 
     let heartbeat_interval = Duration::from_secs(options.progress_heartbeat_secs);
+    let distill_options = options.clone();
     let mut agent = build_agent(&route, &api_key, options);
     let progress = LiveProgress::for_cli(heartbeat_interval);
     let progress_callback = progress.callback();
@@ -250,6 +277,31 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
 
     match result {
         Ok(result) => {
+            if let Some(task_result) = agent.last_task_result().cloned() {
+                match agent.plan().lock() {
+                    Ok(plan) => match distill_verified_task(
+                        &workspace_memory,
+                        &ctx,
+                        &distill_options,
+                        &instruction,
+                        &task_result,
+                        &plan.clone(),
+                        agent.durable_memory_written_this_run(),
+                    ) {
+                        Ok(report) => {
+                            if report.lesson_file.is_some() || report.plan_file.is_some() {
+                                info!(
+                                    lesson = report.lesson_file.as_deref().unwrap_or(""),
+                                    plan = report.plan_file.as_deref().unwrap_or(""),
+                                    "saved distilled workspace memory artifacts"
+                                );
+                            }
+                        }
+                        Err(err) => warn!("failed to distill verified task memory: {}", err),
+                    },
+                    Err(err) => warn!("failed to lock agent plan for distillation: {}", err),
+                }
+            }
             println!("{}", result);
             Ok(())
         }

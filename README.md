@@ -33,7 +33,7 @@ Press Ctrl-C once to request a graceful stop. Press again to force exit.
 ## Quick start: Telegram bot
 
 ```bash
-topagent install
+topagent setup
 ```
 
 This prompts for your OpenRouter API key, lets you pick an OpenRouter model (or type a custom model ID), and asks for your Telegram bot token (from [BotFather](https://t.me/BotFather)), then:
@@ -63,17 +63,21 @@ TopAgent keeps Telegram memory in three layers:
 
 ```bash
 topagent status              # show setup and service health
-topagent model status        # show the configured OpenRouter model
+topagent model status        # show the configured default and effective OpenRouter model
 topagent model set <id>      # change the configured OpenRouter model
+topagent model pick          # pick the configured OpenRouter model interactively
 topagent model list          # show cached starter models
 topagent model refresh       # refresh cached starter models
 topagent service start       # start the background service
 topagent service stop        # stop the background service
 topagent service restart     # restart the background service
+topagent checkpoint status   # show the latest workspace checkpoint
+topagent checkpoint diff     # preview what restore would change
+topagent checkpoint restore  # restore the latest checkpoint and clear Telegram transcripts
 topagent uninstall           # remove service, config, and installed binary
 ```
 
-Re-running `topagent install` still updates the config and restarts the service, but you no longer need it just to switch models.
+`topagent setup` is the obvious full setup path. `topagent install` remains available as the same command. After setup, use `topagent model set` or `topagent model pick` to change the configured default model without re-running full setup.
 
 See [docs/operations.md](docs/operations.md) for full operational details.
 
@@ -99,6 +103,7 @@ Workspace memory is separate from `TOPAGENT.md`:
 - `.topagent/MEMORY.md` is a tiny durable memory index
 - `.topagent/topics/`, `.topagent/lessons/`, and `.topagent/plans/` hold compact durable notes and archived artifacts that get curated back into the index when useful
 - `.topagent/telegram-history/` stores searchable per-chat transcript evidence
+- `.topagent/checkpoints/` stores the most recent automatic workspace checkpoints for restore
 
 ## Troubleshooting
 
@@ -107,7 +112,7 @@ Workspace memory is separate from `TOPAGENT.md`:
 | `topagent: command not found` | `source "$HOME/.cargo/env"` |
 | `A C compiler is required` | `sudo apt install -y build-essential` |
 | `OpenRouter API key required` | Set `--api-key` or `OPENROUTER_API_KEY` |
-| `Workspace path does not exist` | Run from a repo, pass `--workspace`, or run `topagent install` |
+| `Workspace path does not exist` | Run from a repo, pass `--workspace`, or run `topagent setup` |
 | `Telegram bot token looks invalid` | Get a valid token from BotFather |
 | `Telegram webhook is configured` | Remove the webhook, then retry |
 | `systemd user services are unavailable` | Log into a desktop session where `systemctl --user` works |

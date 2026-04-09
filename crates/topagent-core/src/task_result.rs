@@ -66,6 +66,35 @@ impl TaskResult {
         self
     }
 
+    pub fn files_changed(&self) -> &[String] {
+        &self.evidence.files_changed
+    }
+
+    pub fn verification_commands(&self) -> &[VerificationCommand] {
+        &self.evidence.verification_commands_run
+    }
+
+    pub fn unresolved_issues(&self) -> &[String] {
+        &self.evidence.unresolved_issues
+    }
+
+    pub fn has_files_changed(&self) -> bool {
+        !self.evidence.files_changed.is_empty()
+    }
+
+    pub fn latest_verification_command(&self) -> Option<&VerificationCommand> {
+        self.evidence.verification_commands_run.last()
+    }
+
+    pub fn final_verification_passed(&self) -> bool {
+        self.latest_verification_command()
+            .is_some_and(|command| command.exit_code == 0)
+    }
+
+    pub fn has_unresolved_issues(&self) -> bool {
+        !self.evidence.unresolved_issues.is_empty()
+    }
+
     pub fn format_proof_of_work(&self) -> String {
         let mut output = String::new();
 
@@ -247,6 +276,39 @@ mod tests {
         let proof = result.format_proof_of_work();
         assert!(proof.contains("Workspace Warnings"));
         assert!(proof.contains("broken_tool: missing script.sh"));
+    }
+
+    #[test]
+    fn test_final_verification_passed_uses_latest_command() {
+        let result = TaskResult::new("Done".to_string())
+            .with_verification_command(VerificationCommand {
+                command: "cargo test".to_string(),
+                output: "fail".to_string(),
+                exit_code: 1,
+                succeeded: false,
+            })
+            .with_verification_command(VerificationCommand {
+                command: "cargo test".to_string(),
+                output: "ok".to_string(),
+                exit_code: 0,
+                succeeded: true,
+            });
+
+        assert!(result.final_verification_passed());
+        assert_eq!(
+            result
+                .latest_verification_command()
+                .map(|command| command.command.as_str()),
+            Some("cargo test")
+        );
+    }
+
+    #[test]
+    fn test_final_verification_passed_requires_a_command() {
+        let result =
+            TaskResult::new("Done".to_string()).with_files_changed(vec!["src/lib.rs".to_string()]);
+
+        assert!(!result.final_verification_passed());
     }
 
     // ── Regression: exit_code is the source of truth for labels ──

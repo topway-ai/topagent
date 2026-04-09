@@ -249,7 +249,8 @@ impl ApprovalMailbox {
                 .iter()
                 .rev()
                 .find(|entry| {
-                    entry.request.action_kind == draft.action_kind
+                    entry.state == ApprovalState::Pending
+                        && entry.request.action_kind == draft.action_kind
                         && entry.request.exact_action == draft.exact_action
                 })
                 .cloned()
@@ -571,5 +572,51 @@ mod tests {
             mailbox.get(&superseded_id).unwrap().state,
             ApprovalState::Superseded
         );
+    }
+
+    #[test]
+    fn test_mailbox_reissues_identical_request_after_denial() {
+        let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
+        let first = mailbox.request_decision(sample_request(), None);
+        let first_id = match first {
+            ApprovalCheck::Pending(entry) => entry.request.id,
+            other => panic!("expected pending entry, got {other:?}"),
+        };
+        mailbox
+            .deny(&first_id, Some("operator denied".into()))
+            .unwrap();
+
+        let second = mailbox.request_decision(sample_request(), None);
+        let second_entry = match second {
+            ApprovalCheck::Pending(entry) => entry,
+            other => panic!("expected a fresh pending entry, got {other:?}"),
+        };
+
+        assert_ne!(second_entry.request.id, first_id);
+        assert_eq!(second_entry.state, ApprovalState::Pending);
+        assert_eq!(mailbox.pending().len(), 1);
+    }
+
+    #[test]
+    fn test_mailbox_reissues_identical_request_after_approval() {
+        let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
+        let first = mailbox.request_decision(sample_request(), None);
+        let first_id = match first {
+            ApprovalCheck::Pending(entry) => entry.request.id,
+            other => panic!("expected pending entry, got {other:?}"),
+        };
+        mailbox
+            .approve(&first_id, Some("operator approved".into()))
+            .unwrap();
+
+        let second = mailbox.request_decision(sample_request(), None);
+        let second_entry = match second {
+            ApprovalCheck::Pending(entry) => entry,
+            other => panic!("expected a fresh pending entry, got {other:?}"),
+        };
+
+        assert_ne!(second_entry.request.id, first_id);
+        assert_eq!(second_entry.state, ApprovalState::Pending);
+        assert_eq!(mailbox.pending().len(), 1);
     }
 }

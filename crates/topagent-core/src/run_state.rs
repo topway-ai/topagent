@@ -153,16 +153,31 @@ impl AgentRunState {
             proof_of_work_anchors.push(format!("changed files: {}", changed_files.join(", ")));
         }
 
-        for (command, _output, exit_code) in self.bash_history.borrow().iter().rev() {
-            if !behavior.is_verification_command(command) {
-                continue;
-            }
-            proof_of_work_anchors.push(format!("verification: {} (exit {})", command, exit_code));
-            if proof_of_work_anchors.len() >= behavior.compaction.max_recent_proof_of_work_anchors {
-                break;
-            }
+        let mut verification_anchors = self
+            .bash_history
+            .borrow()
+            .iter()
+            .rev()
+            .filter_map(|(command, _output, exit_code)| {
+                behavior
+                    .is_verification_command(command)
+                    .then_some(format!("verification: {} (exit {})", command, exit_code))
+            })
+            .take(
+                behavior
+                    .compaction
+                    .max_recent_proof_of_work_anchors
+                    .saturating_sub(proof_of_work_anchors.len()),
+            )
+            .collect::<Vec<_>>();
+        verification_anchors.reverse();
+        let has_verification = !verification_anchors.is_empty();
+        proof_of_work_anchors.extend(verification_anchors);
+
+        if !changed_files.is_empty() && !has_verification {
+            proof_of_work_anchors
+                .push("Files were modified but no verification commands were run".to_string());
         }
-        proof_of_work_anchors.reverse();
 
         RunStateSnapshot {
             objective: self.current_objective.clone(),
@@ -175,13 +190,13 @@ impl AgentRunState {
         }
     }
 
-    pub(crate) fn build_proof_of_work(
+    pub(crate) fn build_task_result(
         &self,
-        behavior: &BehaviorContract,
         response: &str,
         workspace_root: &Path,
+        behavior: &BehaviorContract,
         generated_tool_warnings: &[String],
-    ) -> String {
+    ) -> TaskResult {
         let files = self.changed_files.borrow().clone();
         let unattributed_files = self.unattributed_pre_existing_dirty_files(workspace_root);
         let baseline = self.run_baseline.borrow();
@@ -249,22 +264,12 @@ impl AgentRunState {
                 .push(format!("Attribution uncertain: {}", details));
         }
 
-        if !behavior.should_attach_proof_of_work(
-            evidence.files_changed.len(),
-            evidence.verification_commands_run.len(),
-            evidence.unresolved_issues.len(),
-            generated_tool_warnings.len(),
-        ) {
-            return response.to_string();
-        }
-
         TaskResult::new(response.to_string())
             .with_files_changed(evidence.files_changed.clone())
             .with_diff_summary(evidence.diff_summary.clone())
             .with_verification_commands(evidence.verification_commands_run.clone())
             .with_unresolved_issues(evidence.unresolved_issues.clone())
             .with_workspace_warnings(generated_tool_warnings.to_vec())
-            .format_proof_of_work()
     }
 
     pub(crate) fn reconcile_changed_files(&self, workspace_root: &Path) -> bool {

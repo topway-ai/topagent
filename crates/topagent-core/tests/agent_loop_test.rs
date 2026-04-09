@@ -457,6 +457,63 @@ fn test_agent_surfaces_progress_for_tool_activity_and_completion() {
 }
 
 #[test]
+fn test_agent_surfaces_changed_file_progress_after_write() {
+    let (ctx, _temp) = make_test_context();
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "note.txt", "content": "hello"}),
+        },
+        ProviderResponse::Message(Message::assistant("done")),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+    let (updates, callback) = capture_progress_updates();
+    agent.set_progress_callback(Some(callback));
+
+    let result = agent.run(&ctx, "write a note");
+    assert!(result.is_ok());
+
+    let updates = updates.lock().unwrap();
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Editing file: note.txt")));
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Changed file: note.txt")));
+}
+
+#[test]
+fn test_agent_surfaces_verification_result_progress() {
+    let (ctx, _temp) = make_test_context();
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "cargo test --help >/dev/null 2>&1"}),
+        },
+        ProviderResponse::Message(Message::assistant("done")),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+    let (updates, callback) = capture_progress_updates();
+    agent.set_progress_callback(Some(callback));
+
+    let result = agent.run(&ctx, "verify the workspace");
+    assert!(result.is_ok());
+
+    let updates = updates.lock().unwrap();
+    assert!(updates.iter().any(|u| u
+        .message
+        .contains("Running verification: cargo test --help >/dev/null 2>&1")));
+    assert!(updates.iter().any(|u| {
+        u.message.contains("Verification")
+            && u.message.contains("cargo test --help >/dev/null 2>&1")
+    }));
+}
+
+#[test]
 fn test_agent_surfaces_retry_progress() {
     let (ctx, _temp) = make_test_context();
     let responses = vec![ProviderResponse::Message(Message::assistant(
@@ -1668,16 +1725,23 @@ fn test_non_trivial_task_can_plan_mutate_verify_and_complete() {
     let updates = updates.lock().unwrap();
     assert!(updates
         .iter()
-        .any(|u| u.message.contains("Running tool: read")));
+        .any(|u| u.message.contains("Reading file: README.md")));
     assert!(updates
         .iter()
         .any(|u| u.message.contains("Planning next steps")));
     assert!(updates
         .iter()
-        .any(|u| u.message.contains("Running tool: write")));
+        .any(|u| u.message.contains("Editing file: README.md")));
+    assert!(updates.iter().any(|u| u
+        .message
+        .contains("Running verification: cargo test --help >/dev/null 2>&1")));
     assert!(updates
         .iter()
-        .any(|u| u.message.contains("Running tool: bash (verification)")));
+        .any(|u| u.message.contains("Changed file: README.md")));
+    assert!(updates.iter().any(|u| {
+        u.message.contains("Verification")
+            && u.message.contains("cargo test --help >/dev/null 2>&1")
+    }));
     assert!(updates.iter().any(|u| u.kind == ProgressKind::Completed));
     assert!(!updates.iter().any(|u| u.kind == ProgressKind::Failed));
 }

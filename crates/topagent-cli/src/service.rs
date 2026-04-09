@@ -70,7 +70,7 @@ pub(crate) fn run_service_command(
 ) -> Result<()> {
     match command {
         crate::ServiceCommands::Install { token } => run_service_install(token, params),
-        crate::ServiceCommands::Status => run_service_status(),
+        crate::ServiceCommands::Status => run_service_status(params),
         crate::ServiceCommands::Start => run_service_start(),
         crate::ServiceCommands::Stop => run_service_stop(),
         crate::ServiceCommands::Restart => run_service_restart(),
@@ -80,8 +80,9 @@ pub(crate) fn run_service_command(
 
 pub(crate) fn run_model_command(command: crate::ModelCommands, params: CliParams) -> Result<()> {
     match command {
-        crate::ModelCommands::Status => run_model_status(),
+        crate::ModelCommands::Status => run_model_status(params),
         crate::ModelCommands::Set { model_id } => run_model_set(model_id),
+        crate::ModelCommands::Pick => run_model_pick(params),
         crate::ModelCommands::List => run_model_list(),
         crate::ModelCommands::Refresh => run_model_refresh(params),
     }
@@ -111,11 +112,10 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
         }),
         require_openrouter_api_key,
     )?;
-    let selected_model = if resolve_model_override(params.model.clone(), None, None).is_some() {
-        println!(
-            "OpenRouter model: {} (--model)",
-            build_route(params.model.clone()).model_id
-        );
+    let explicit_model = trim_nonempty(params.model.clone());
+    let selected_model = if explicit_model.is_some() {
+        let resolved = resolve_model_choice(params.model.clone(), None, defaults.model.clone());
+        println!("OpenRouter model: {} (--model)", resolved.model_id);
         None
     } else {
         Some(prompt_for_install_model(
@@ -131,10 +131,11 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
         require_telegram_token,
     )?;
 
+    let resolved_model = resolve_model_choice(params.model, selected_model, defaults.model.clone());
     let config = TelegramModeConfig {
         token,
         api_key,
-        route: build_route_with_install_selection(params.model, selected_model, &defaults),
+        route: build_route_from_resolved(&resolved_model),
         workspace,
         options: build_runtime_options_with_defaults(
             params.max_steps,
@@ -156,8 +157,8 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn run_status() -> Result<()> {
-    render_status()
+pub(crate) fn run_status(params: CliParams) -> Result<()> {
+    render_status(params)
 }
 
 pub(crate) fn run_uninstall() -> Result<()> {
@@ -315,7 +316,7 @@ fn build_install_model_prompt(
 ) -> Result<InstallModelPrompt> {
     let cache_path = openrouter_model_cache_path()?;
     let discovered = discover_install_openrouter_models(&cache_path, api_key)?;
-    let default_model = existing_model.unwrap_or_else(|| build_route(None).model_id);
+    let default_model = current_configured_model(existing_model).model_id;
     Ok(InstallModelPrompt {
         models: discovered.models,
         default_model,
@@ -494,8 +495,8 @@ fn run_service_install(token: Option<String>, params: CliParams) -> Result<()> {
     Ok(())
 }
 
-fn run_service_status() -> Result<()> {
-    render_status()
+fn run_service_status(params: CliParams) -> Result<()> {
+    render_status(params)
 }
 
 fn run_service_start() -> Result<()> {
@@ -584,18 +585,26 @@ fn install_service_with_config(config: &TelegramModeConfig, paths: &ServicePaths
 
 // ── Model commands ──
 
-fn run_model_status() -> Result<()> {
+fn run_model_status(params: CliParams) -> Result<()> {
     let paths = service_paths()?;
     let env_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
     let setup_installed = paths.env_path.exists() && is_topagent_managed_file(&paths.env_path)?;
     let service_installed = is_service_installed(&paths)?;
     let cache_path = openrouter_model_cache_path()?;
     let cached = load_cached_openrouter_models(&cache_path)?;
+    let model_selection =
+        resolve_runtime_model_selection(params.model, persisted_model_from_env_values(&env_values));
 
     println!("TopAgent model status");
     println!(
-        "Configured model: {}",
-        current_configured_model(&env_values)
+        "Configured default model: {} ({})",
+        model_selection.configured_default.model_id,
+        model_selection.configured_default.source.label()
+    );
+    println!(
+        "Effective model: {} ({})",
+        model_selection.effective.model_id,
+        model_selection.effective.source.label()
     );
     println!(
         "Setup installed: {}",
@@ -633,7 +642,8 @@ fn run_model_set(model_id: String) -> Result<()> {
     assert_managed_or_absent(&paths.env_path, "service env file")?;
 
     let mut values = read_managed_env_metadata(&paths.env_path)?;
-    let previous_model = current_configured_model(&values);
+    let previous_model =
+        current_configured_model(persisted_model_from_env_values(&values)).model_id;
     values.insert(TOPAGENT_MODEL_KEY.to_string(), model_id.clone());
     write_managed_env_values(&paths.env_path, &values)?;
 
@@ -666,11 +676,90 @@ fn run_model_set(model_id: String) -> Result<()> {
     Ok(())
 }
 
+fn run_model_pick(params: CliParams) -> Result<()> {
+    let paths = service_paths()?;
+    if !paths.env_path.exists() {
+        return Err(anyhow::anyhow!(
+            "TopAgent is not set up yet. Run `topagent setup` first."
+        ));
+    }
+    assert_managed_or_absent(&paths.env_path, "service env file")?;
+
+    let mut values = read_managed_env_metadata(&paths.env_path)?;
+    let previous_model =
+        current_configured_model(persisted_model_from_env_values(&values)).model_id;
+    let api_key = trim_nonempty(params.api_key)
+        .or_else(|| trim_nonempty(std::env::var(OPENROUTER_API_KEY_KEY).ok()))
+        .or_else(|| {
+            values
+                .get(OPENROUTER_API_KEY_KEY)
+                .map(String::to_string)
+                .and_then(|value| trim_nonempty(Some(value)))
+        });
+
+    let explicit_model = trim_nonempty(params.model.clone());
+    let selected_model = if explicit_model.is_some() {
+        let resolved = resolve_model_choice(
+            params.model.clone(),
+            None,
+            persisted_model_from_env_values(&values),
+        );
+        println!("OpenRouter model: {} (--model)", resolved.model_id);
+        None
+    } else {
+        Some(prompt_for_install_model(
+            api_key.as_deref(),
+            persisted_model_from_env_values(&values),
+        )?)
+    };
+
+    let resolved_model = resolve_model_choice(
+        params.model,
+        selected_model,
+        persisted_model_from_env_values(&values),
+    );
+    values.insert(
+        TOPAGENT_MODEL_KEY.to_string(),
+        resolved_model.model_id.clone(),
+    );
+    write_managed_env_values(&paths.env_path, &values)?;
+
+    let service_installed = is_service_installed(&paths)?;
+    if service_installed {
+        if let Err(err) = run_service_restart() {
+            return Err(anyhow::anyhow!(
+                "Updated the configured model from {} to {} in {}, but failed to restart the TopAgent Telegram service. {}",
+                previous_model,
+                resolved_model.model_id,
+                paths.env_path.display(),
+                err
+            ));
+        }
+    }
+
+    println!("TopAgent model updated.");
+    println!("Previous model: {}", previous_model);
+    println!("Configured model: {}", resolved_model.model_id);
+    println!("Selection source: {}", resolved_model.source.label());
+    println!("Config file: {}", paths.env_path.display());
+    println!(
+        "Service restart: {}",
+        if service_installed {
+            "yes"
+        } else {
+            "not needed (service not installed)"
+        }
+    );
+
+    Ok(())
+}
+
 fn run_model_list() -> Result<()> {
     let paths = service_paths()?;
     let env_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
     let cache_path = openrouter_model_cache_path()?;
-    let current_model = current_configured_model(&env_values);
+    let current_model =
+        current_configured_model(persisted_model_from_env_values(&env_values)).model_id;
     let Some(cached) = load_cached_openrouter_models(&cache_path)? else {
         println!("TopAgent model list");
         println!("Current model: {}", current_model);
@@ -742,7 +831,7 @@ fn run_model_refresh(params: CliParams) -> Result<()> {
 
 // ── Status ──
 
-fn render_status() -> Result<()> {
+fn render_status(params: CliParams) -> Result<()> {
     let paths = service_paths()?;
     let env_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
     let config_installed = paths.env_path.exists() && is_topagent_managed_file(&paths.env_path)?;
@@ -772,6 +861,8 @@ fn render_status() -> Result<()> {
         .and_then(|status| status.fragment_path.as_ref())
         .map(PathBuf::from)
         .unwrap_or_else(|| paths.unit_path.clone());
+    let model_selection =
+        resolve_runtime_model_selection(params.model, persisted_model_from_env_values(&env_values));
 
     println!("TopAgent status");
     println!("Setup installed: {}", yes_no(setup_installed));
@@ -790,11 +881,16 @@ fn render_status() -> Result<()> {
     if let Some(workspace) = env_values.get(TOPAGENT_WORKSPACE_KEY) {
         println!("Workspace: {}", workspace);
     }
-    let model = env_values
-        .get(TOPAGENT_MODEL_KEY)
-        .map(String::as_str)
-        .unwrap_or("(default)");
-    println!("Model: {}", model);
+    println!(
+        "Configured default model: {} ({})",
+        model_selection.configured_default.model_id,
+        model_selection.configured_default.source.label()
+    );
+    println!(
+        "Effective model: {} ({})",
+        model_selection.effective.model_id,
+        model_selection.effective.source.label()
+    );
     if let Some(enabled) = parse_env_bool(
         env_values
             .get(TOPAGENT_TOOL_AUTHORING_KEY)
@@ -1167,12 +1263,11 @@ fn trim_nonempty(value: Option<String>) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn current_configured_model(values: &HashMap<String, String>) -> String {
+fn persisted_model_from_env_values(values: &HashMap<String, String>) -> Option<String> {
     values
         .get(TOPAGENT_MODEL_KEY)
         .map(String::to_string)
         .and_then(|value| trim_nonempty(Some(value)))
-        .unwrap_or_else(|| build_route(None).model_id)
 }
 
 fn is_service_installed(paths: &ServicePaths) -> Result<bool> {
