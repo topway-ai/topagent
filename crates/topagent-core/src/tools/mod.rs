@@ -8,6 +8,7 @@ mod save_lesson;
 mod save_plan;
 mod write;
 
+pub(crate) use bash::risky_shell_changed_path_hints;
 pub use bash::BashTool;
 pub use edit::EditTool;
 pub use git::{GitAddTool, GitBranchTool, GitCommitTool, GitDiffTool, GitStatusTool};

@@ -1,9 +1,10 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use topagent_core::WorkspaceCheckpointStore;
+use topagent_core::{WorkspaceCheckpointRestoreReport, WorkspaceCheckpointStore};
 
 use crate::config::resolve_workspace_path;
+use crate::telegram::clear_workspace_telegram_history;
 
 pub(crate) fn run_checkpoint_command(
     command: crate::CheckpointCommands,
@@ -34,7 +35,20 @@ fn render_checkpoint_status(workspace: &Path, store: &WorkspaceCheckpointStore) 
         "Created: {}",
         format_checkpoint_time(status.created_at_unix_millis)
     );
-    println!("Captured files: {}", status.captured_paths.len());
+    println!("Capture events: {}", status.captures.len());
+    for capture in status.captures {
+        if let Some(detail) = capture.detail {
+            println!(
+                "- {}: {} ({})",
+                capture.source.label(),
+                capture.reason,
+                detail
+            );
+        } else {
+            println!("- {}: {}", capture.source.label(), capture.reason);
+        }
+    }
+    println!("Captured paths: {}", status.captured_paths.len());
     for path in status.captured_paths {
         println!("- {}", path);
     }
@@ -63,10 +77,7 @@ fn render_checkpoint_diff(workspace: &Path, store: &WorkspaceCheckpointStore) ->
 }
 
 fn restore_checkpoint(workspace: &Path, store: &WorkspaceCheckpointStore) -> Result<()> {
-    let report = store
-        .restore_latest()?
-        .ok_or_else(|| anyhow!("No active workspace checkpoint found."))?;
-    let cleared_transcripts = clear_workspace_telegram_history(workspace)?;
+    let (report, cleared_transcripts) = restore_checkpoint_and_clear_transcripts(workspace, store)?;
 
     println!("TopAgent checkpoint restore");
     println!("Workspace: {}", workspace.display());
@@ -87,6 +98,17 @@ fn restore_checkpoint(workspace: &Path, store: &WorkspaceCheckpointStore) -> Res
     Ok(())
 }
 
+fn restore_checkpoint_and_clear_transcripts(
+    workspace: &Path,
+    store: &WorkspaceCheckpointStore,
+) -> Result<(WorkspaceCheckpointRestoreReport, bool)> {
+    let report = store
+        .restore_latest()?
+        .ok_or_else(|| anyhow!("No active workspace checkpoint found."))?;
+    let cleared_transcripts = clear_workspace_telegram_history(workspace)?;
+    Ok((report, cleared_transcripts))
+}
+
 fn format_checkpoint_time(created_at_unix_millis: u128) -> String {
     let timestamp = i64::try_from(created_at_unix_millis / 1000).unwrap_or(i64::MAX);
     OffsetDateTime::from_unix_timestamp(timestamp)
@@ -95,13 +117,38 @@ fn format_checkpoint_time(created_at_unix_millis: u128) -> String {
         .unwrap_or_else(|| created_at_unix_millis.to_string())
 }
 
-fn clear_workspace_telegram_history(workspace: &Path) -> Result<bool> {
-    let history_dir = workspace.join(".topagent").join("telegram-history");
-    if !history_dir.exists() {
-        return Ok(false);
-    }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use topagent_core::checkpoint::{CheckpointCaptureMetadata, CheckpointCaptureSource};
 
-    std::fs::remove_dir_all(&history_dir)
-        .with_context(|| format!("failed to remove {}", history_dir.display()))?;
-    Ok(true)
+    #[test]
+    fn test_restore_checkpoint_clears_workspace_telegram_history() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path();
+        std::fs::write(workspace.join("notes.txt"), "before").unwrap();
+        let store = WorkspaceCheckpointStore::new(workspace.to_path_buf());
+        store
+            .capture_file(
+                "notes.txt",
+                CheckpointCaptureMetadata::new(CheckpointCaptureSource::Write, "structured write"),
+            )
+            .unwrap();
+        std::fs::write(workspace.join("notes.txt"), "after").unwrap();
+
+        let history_dir = workspace.join(".topagent").join("telegram-history");
+        std::fs::create_dir_all(&history_dir).unwrap();
+        std::fs::write(history_dir.join("chat-1.json"), "{}").unwrap();
+
+        let (report, cleared_transcripts) =
+            restore_checkpoint_and_clear_transcripts(workspace, &store).unwrap();
+
+        assert_eq!(report.restored_files, vec!["notes.txt"]);
+        assert!(cleared_transcripts);
+        assert!(!history_dir.exists());
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("notes.txt")).unwrap(),
+            "before"
+        );
+    }
 }

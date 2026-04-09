@@ -1,5 +1,6 @@
 use crate::approval::ApprovalCheck;
 use crate::behavior::{BashCommandClass, BehaviorContract, PreExecutionState};
+use crate::checkpoint::WorkspaceCheckpointStatus;
 use crate::command_exec::CommandSandboxPolicy;
 use crate::compaction::{CompactionRuntimeState, TranscriptCompactor};
 use crate::context::{ExecutionContext, ToolContext};
@@ -15,7 +16,8 @@ use crate::session::Session;
 use crate::task_result::TaskResult;
 use crate::tool_genesis::{load_generated_tool_inventory, register_generated_tool_authoring_tools};
 use crate::tools::{
-    ManageOperatorPreferenceTool, SaveLessonTool, SavePlanTool, Tool, ToolRegistry, UpdatePlanTool,
+    risky_shell_changed_path_hints, ManageOperatorPreferenceTool, SaveLessonTool, SavePlanTool,
+    Tool, ToolRegistry, UpdatePlanTool,
 };
 use crate::{Error, Message, Provider, ProviderResponse, Result, ToolSpec};
 use std::path::Path;
@@ -313,6 +315,25 @@ impl Agent {
         }
     }
 
+    fn bash_checkpoint_progress_update(
+        &self,
+        ctx: &ExecutionContext,
+        before: Option<&WorkspaceCheckpointStatus>,
+    ) -> Option<ProgressUpdate> {
+        let after = ctx.checkpoint_store()?.latest_status().ok().flatten()?;
+        let before_count = before.map_or(0, |status| status.captures.len());
+        if after.captures.len() <= before_count {
+            return None;
+        }
+
+        let capture = after.captures.last()?;
+        let detail = capture.detail.as_deref().unwrap_or(capture.reason.as_str());
+        Some(ProgressUpdate::working(format!(
+            "Checkpointed workspace before risky shell command: {}",
+            Self::summarize_progress_text(detail, 96)
+        )))
+    }
+
     fn blocked_progress(reason: &str) -> ProgressUpdate {
         if reason.contains("Planning required") {
             ProgressUpdate::blocked("Blocked: planning required before mutation.")
@@ -323,11 +344,13 @@ impl Agent {
 
     fn emit_post_tool_progress(
         &self,
+        ctx: &ExecutionContext,
         name: &str,
         args: &serde_json::Value,
         bash_cmd: Option<&str>,
         bash_exit_code: Option<i32>,
         changed_before: &[String],
+        checkpoint_status_before: Option<&WorkspaceCheckpointStatus>,
     ) {
         if matches!(name, "write" | "edit") {
             if let Some(path) = Self::extract_file_path(args) {
@@ -347,6 +370,11 @@ impl Agent {
                         }
                     }
                     BashCommandClass::MutationRisk => {
+                        if let Some(update) =
+                            self.bash_checkpoint_progress_update(ctx, checkpoint_status_before)
+                        {
+                            self.emit_progress(update);
+                        }
                         let changed_after = self.run_state.changed_files();
                         let new_files = Self::new_changed_files(changed_before, &changed_after)
                             .into_iter()
@@ -744,6 +772,12 @@ impl Agent {
 
         let tool = self.tools.get(&name).unwrap();
         let changed_before = self.run_state.changed_files();
+        let checkpoint_status_before = if name == "bash" {
+            ctx.checkpoint_store()
+                .and_then(|store| store.latest_status().ok().flatten())
+        } else {
+            None
+        };
 
         // ── Execute ──
         let tool_ctx = ToolContext::new(ctx, &self.options);
@@ -772,6 +806,7 @@ impl Agent {
         // ── Bash post-processing ──
         let mut execution_started_by_bash = false;
         if name == "bash" {
+            let mut found_new_change = false;
             let class = if let Some(cmd_str) = &bash_cmd {
                 Self::classify_bash_command(cmd_str)
             } else {
@@ -787,13 +822,24 @@ impl Agent {
                 class,
                 BashCommandClass::MutationRisk | BashCommandClass::Verification
             ) {
-                let found_new_change = self.run_state.reconcile_changed_files(&ctx.workspace_root);
+                found_new_change = self.run_state.reconcile_changed_files(&ctx.workspace_root);
                 if found_new_change {
                     execution_started_by_bash = true;
                 }
             }
             if class == BashCommandClass::MutationRisk {
+                if !found_new_change {
+                    if let Some(cmd) = bash_cmd.as_deref() {
+                        let hinted_paths = risky_shell_changed_path_hints(cmd);
+                        if self.run_state.track_inferred_changed_paths(&hinted_paths) {
+                            found_new_change = true;
+                        }
+                    }
+                }
                 execution_started_by_bash = true;
+            }
+            if found_new_change {
+                self.maybe_escalate_to_planning();
             }
         }
 
@@ -830,11 +876,13 @@ impl Agent {
         };
 
         self.emit_post_tool_progress(
+            ctx,
             &name,
             &args,
             bash_cmd.as_deref(),
             bash_exit_code,
             &changed_before,
+            checkpoint_status_before.as_ref(),
         );
         self.record_tool_result(id, name, args, result);
         Ok(())
@@ -1981,6 +2029,44 @@ path = "src/lib.rs"
         let result = agent.run(&ctx, "update src/lib.rs").unwrap();
 
         assert!(result.contains("Files were modified but no verification commands were run"));
+
+        let prompt = agent.build_run_system_prompt(&ctx).unwrap();
+        assert!(prompt.contains("Files were modified but no verification commands were run"));
+
+        let summary = agent
+            .session
+            .raw_messages()
+            .into_iter()
+            .find_map(|message| {
+                message
+                    .as_text()
+                    .filter(|text| text.starts_with("["))
+                    .map(str::to_string)
+            })
+            .expect("compaction summary should be present");
+        assert!(summary.contains("Files were modified but no verification commands were run"));
+    }
+
+    #[test]
+    fn test_compaction_preserves_bash_missing_verification_warning_in_snapshot() {
+        let (_temp, ctx) = create_temp_crate();
+        let provider = ScriptedProvider::new(vec![
+            tool_call(
+                "bash-1",
+                "bash",
+                serde_json::json!({"command": "printf 'pub fn answer() -> u32 {\\n    88\\n}\\n' > src/lib.rs"}),
+            ),
+            tool_call("read-1", "read", serde_json::json!({"path": "src/lib.rs"})),
+            tool_call("read-2", "read", serde_json::json!({"path": "src/lib.rs"})),
+            assistant_message("done"),
+        ]);
+        let mut agent = Agent::with_options(
+            Box::new(provider),
+            default_tools().into_inner(),
+            RuntimeOptions::default().with_max_messages_before_truncation(4),
+        );
+
+        agent.run(&ctx, "update src/lib.rs via bash").unwrap();
 
         let prompt = agent.build_run_system_prompt(&ctx).unwrap();
         assert!(prompt.contains("Files were modified but no verification commands were run"));

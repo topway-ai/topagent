@@ -770,7 +770,7 @@ Use the update_plan tool to create a plan with concrete steps, then execute it."
                 "Runs a filesystem-changing shell command directly through the shell."
                     .to_string(),
                 Some(
-                    "Rollback depends on the command; inspect git diff or restore affected files manually."
+                    "Use `topagent checkpoint restore` for the latest workspace checkpoint, then inspect git diff for any remaining shell-side effects."
                         .to_string(),
                 ),
             );
@@ -1256,6 +1256,11 @@ mod tests {
         );
         assert!(request.exact_action.contains("touch risky.txt"));
         assert!(request.expected_effect.contains("through the shell"));
+        assert!(request
+            .rollback_hint
+            .as_deref()
+            .unwrap_or_default()
+            .contains("topagent checkpoint restore"));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+use crate::checkpoint::{CheckpointCaptureMetadata, CheckpointCaptureSource};
 use crate::context::ToolContext;
 use crate::file_util::atomic_write;
 use crate::tool_spec::ToolSpec;
@@ -35,7 +36,10 @@ impl crate::tools::Tool for WriteTool {
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
         let full_path = ctx.exec.resolve_path(&args.path)?;
         if let Some(checkpoint_store) = ctx.exec.checkpoint_store() {
-            checkpoint_store.capture_file(&args.path)?;
+            checkpoint_store.capture_file(
+                &args.path,
+                CheckpointCaptureMetadata::new(CheckpointCaptureSource::Write, "structured write"),
+            )?;
         }
         atomic_write(&full_path, &args.content)?;
         Ok(format!(

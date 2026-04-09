@@ -1,7 +1,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
@@ -585,6 +585,19 @@ impl ChatHistoryStore {
             .with_context(|| format!("failed to remove {}", path.display()))?;
         Ok(true)
     }
+
+    fn clear_all(&self) -> Result<bool> {
+        if !self.history_dir.exists() {
+            return Ok(false);
+        }
+        std::fs::remove_dir_all(&self.history_dir)
+            .with_context(|| format!("failed to remove {}", self.history_dir.display()))?;
+        Ok(true)
+    }
+}
+
+pub(crate) fn clear_workspace_telegram_history(workspace_root: &Path) -> Result<bool> {
+    ChatHistoryStore::new(workspace_root.to_path_buf()).clear_all()
 }
 
 use anyhow::Context;
@@ -1542,5 +1555,25 @@ mod tests {
 
         assert!(!history_path.exists());
         assert!(!settings_path.exists());
+    }
+
+    #[test]
+    fn test_clear_workspace_telegram_history_removes_all_chat_transcripts() {
+        let workspace = TempDir::new().unwrap();
+        let history_store = ChatHistoryStore::new(workspace.path().to_path_buf());
+        history_store
+            .save(101, &[Message::user("hello"), Message::assistant("world")])
+            .unwrap();
+        history_store
+            .save(202, &[Message::user("goodbye"), Message::assistant("moon")])
+            .unwrap();
+
+        let history_dir = workspace.path().join(".topagent").join("telegram-history");
+        assert!(history_dir.is_dir());
+
+        let cleared = clear_workspace_telegram_history(workspace.path()).unwrap();
+
+        assert!(cleared);
+        assert!(!history_dir.exists());
     }
 }

@@ -88,6 +88,23 @@ impl AgentRunState {
             .push((command, output, exit_code));
     }
 
+    pub(crate) fn track_inferred_changed_paths(&self, paths: &[String]) -> bool {
+        let mut found_new_change = false;
+        for path in paths {
+            let normalized = path.trim();
+            if normalized.is_empty() || normalized == "." || self.is_pre_existing_dirty(normalized)
+            {
+                continue;
+            }
+            let mut changed = self.changed_files.borrow_mut();
+            if !changed.iter().any(|entry| entry == normalized) {
+                changed.push(normalized.to_string());
+                found_new_change = true;
+            }
+        }
+        found_new_change
+    }
+
     pub(crate) fn build_snapshot(
         &self,
         behavior: &BehaviorContract,

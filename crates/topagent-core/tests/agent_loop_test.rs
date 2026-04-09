@@ -7,7 +7,7 @@ use topagent_core::{
     tools::{BashTool, EditTool, GitDiffTool, ReadTool, Tool, WriteTool},
     Agent, CancellationToken, Content, Error, ExecutionStage, Message, ModelRoute, ProgressKind,
     ProgressUpdate, Provider, ProviderResponse, Role, RuntimeOptions, TaskResult, ToolCallEntry,
-    ToolSpec,
+    ToolSpec, WorkspaceCheckpointStore,
 };
 
 fn make_test_context() -> (ExecutionContext, TempDir) {
@@ -308,6 +308,37 @@ fn test_agent_executes_tool_and_continues() {
     let result = agent.run(&ctx, "run a command");
     assert!(result.is_ok());
     assert!(result.unwrap().contains("Command executed successfully"));
+}
+
+#[test]
+fn test_risky_bash_emits_checkpoint_progress_update() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().to_path_buf();
+    let ctx = ExecutionContext::new(root.clone())
+        .with_workspace_checkpoint_store(WorkspaceCheckpointStore::new(root));
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "echo hello > notes.txt"}),
+        },
+        ProviderResponse::Message(Message::assistant("done")),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+    let (updates, callback) = capture_progress_updates();
+    agent.set_progress_callback(Some(callback));
+
+    let result = agent.run(&ctx, "create a file with bash");
+
+    assert!(result.is_ok());
+    let updates = updates.lock().unwrap();
+    assert!(updates.iter().any(|u| u
+        .message
+        .contains("Checkpointed workspace before risky shell command")));
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("echo hello > notes.txt")));
 }
 
 #[test]

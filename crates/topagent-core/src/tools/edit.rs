@@ -1,3 +1,4 @@
+use crate::checkpoint::{CheckpointCaptureMetadata, CheckpointCaptureSource};
 use crate::context::ToolContext;
 use crate::file_util::{atomic_write, read_text_file_for_edit};
 use crate::tool_spec::ToolSpec;
@@ -39,7 +40,10 @@ impl crate::tools::Tool for EditTool {
         let full_path = ctx.exec.resolve_path(&args.path)?;
         let content = read_text_file_for_edit(&full_path, ctx.runtime.max_read_bytes)?;
         if let Some(checkpoint_store) = ctx.exec.checkpoint_store() {
-            checkpoint_store.capture_file(&args.path)?;
+            checkpoint_store.capture_file(
+                &args.path,
+                CheckpointCaptureMetadata::new(CheckpointCaptureSource::Edit, "structured edit"),
+            )?;
         }
 
         let matches: Vec<usize> = content
