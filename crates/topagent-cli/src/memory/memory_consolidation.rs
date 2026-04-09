@@ -1,6 +1,7 @@
 use super::{
     compact_note, compact_text_line, display_memory_file, limit_text_block, memory_contract,
-    normalize_memory_file, WorkspaceMemory, AUTO_PROMOTED_TAG,
+    normalize_memory_file, procedures::parse_saved_procedure, procedures::ParsedProcedure,
+    procedures::ProcedureStatus, WorkspaceMemory, AUTO_PROMOTED_TAG,
 };
 use anyhow::{Context, Result};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -20,6 +21,7 @@ pub(crate) struct ConsolidationReport {
     pub stale_entries_pruned: usize,
     pub promoted_lessons: usize,
     pub promoted_plans: usize,
+    pub promoted_procedures: usize,
     pub normalized_dates: usize,
     pub pruned_entries: usize,
 }
@@ -35,6 +37,7 @@ pub(super) struct MemoryIndexEntry {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum DurableMemoryCategory {
+    ReusableProcedure,
     RepoOperational,
     OperatorPreference,
     ReusableLesson,
@@ -46,6 +49,7 @@ enum MemorySourceKind {
     ManualIndex,
     SavedLesson,
     SavedPlan,
+    SavedProcedure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +66,7 @@ struct MemoryOrientation {
     index_entries: Vec<MemoryIndexEntry>,
     lesson_files: Vec<PathBuf>,
     plan_files: Vec<PathBuf>,
+    procedure_files: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +138,7 @@ impl WorkspaceMemory {
 
         orientation.lesson_files = list_markdown_files(&self.lessons_dir)?;
         orientation.plan_files = list_markdown_files(&self.plans_dir)?;
+        orientation.procedure_files = list_markdown_files(&self.procedures_dir)?;
         Ok(orientation)
     }
 
@@ -171,6 +177,18 @@ impl WorkspaceMemory {
                 MemoryCandidate::from_saved_plan(&memory_contract(), plan)
             });
         candidates.extend(plan_candidates);
+
+        let procedure_candidates = orientation
+            .procedure_files
+            .iter()
+            .filter_map(|path| parse_saved_procedure(path).transpose())
+            .collect::<Result<Vec<_>>>()?
+            .into_iter()
+            .map(|procedure| {
+                report.normalized_dates += usize::from(procedure.saved_at.is_some());
+                MemoryCandidate::from_saved_procedure(&memory_contract(), procedure)
+            });
+        candidates.extend(procedure_candidates);
 
         Ok(candidates)
     }
@@ -264,6 +282,55 @@ impl MemoryCandidate {
             saved_at: plan.saved_at,
         }
     }
+
+    fn from_saved_procedure(contract: &BehaviorContract, procedure: ParsedProcedure) -> Self {
+        let date = procedure.saved_at.and_then(format_saved_date);
+        let tags = derived_tags(
+            &[
+                procedure.title.as_str(),
+                procedure.when_to_use.as_str(),
+                procedure.verification.as_str(),
+                procedure.source_task.as_deref().unwrap_or_default(),
+            ],
+            &["procedure", "workflow", "playbook", AUTO_PROMOTED_TAG],
+        );
+        let note = compact_note(
+            &[
+                date.map(|value| format!("saved {value}")),
+                Some(compact_text_line(&procedure.when_to_use, 72)),
+                Some(format!(
+                    "verify: {}",
+                    compact_text_line(&procedure.verification, 40)
+                )),
+                procedure
+                    .source_trajectory
+                    .as_ref()
+                    .map(|value| format!("trajectory: {value}")),
+            ],
+            contract.memory.max_index_note_chars,
+        );
+
+        Self {
+            entry: MemoryIndexEntry {
+                topic: procedure.title,
+                file: format!("procedures/{}", procedure.filename),
+                status: if procedure.status == ProcedureStatus::Superseded {
+                    "stale".to_string()
+                } else {
+                    "verified".to_string()
+                },
+                tags,
+                note,
+            },
+            category: if procedure.status == ProcedureStatus::Superseded {
+                DurableMemoryCategory::StaleCandidate
+            } else {
+                DurableMemoryCategory::ReusableProcedure
+            },
+            source: MemorySourceKind::SavedProcedure,
+            saved_at: procedure.saved_at,
+        }
+    }
 }
 
 fn parse_index_entry(line: &str) -> Option<MemoryIndexEntry> {
@@ -336,6 +403,10 @@ fn merge_group_key(candidate: &MemoryCandidate) -> String {
         MemorySourceKind::SavedPlan => {
             format!("plan|{}", candidate.entry.topic.trim().to_ascii_lowercase())
         }
+        MemorySourceKind::SavedProcedure => format!(
+            "procedure|{}",
+            candidate.entry.topic.trim().to_ascii_lowercase()
+        ),
         MemorySourceKind::ManualIndex => format!(
             "{}|{}",
             candidate.entry.topic.trim().to_ascii_lowercase(),
@@ -376,6 +447,15 @@ fn classify_entry_category(entry: &MemoryIndexEntry) -> DurableMemoryCategory {
         return DurableMemoryCategory::ReusableLesson;
     }
 
+    if entry.file.starts_with("procedures/")
+        || entry
+            .tags
+            .iter()
+            .any(|tag| matches!(tag.as_str(), "procedure" | "workflow" | "playbook"))
+    {
+        return DurableMemoryCategory::ReusableProcedure;
+    }
+
     if lower_topic.contains("operator")
         || lower_topic.contains("preference")
         || entry
@@ -392,14 +472,16 @@ fn classify_entry_category(entry: &MemoryIndexEntry) -> DurableMemoryCategory {
 fn candidate_priority(candidate: &MemoryCandidate) -> (usize, usize, usize, i64, &str) {
     let category = match candidate.category {
         DurableMemoryCategory::OperatorPreference => 4,
-        DurableMemoryCategory::RepoOperational => 3,
-        DurableMemoryCategory::ReusableLesson => 2,
+        DurableMemoryCategory::ReusableProcedure => 3,
+        DurableMemoryCategory::RepoOperational => 2,
+        DurableMemoryCategory::ReusableLesson => 1,
         DurableMemoryCategory::StaleCandidate => 1,
     };
     let source = match candidate.source {
         MemorySourceKind::ManualIndex => 3,
         MemorySourceKind::SavedLesson => 2,
         MemorySourceKind::SavedPlan => 1,
+        MemorySourceKind::SavedProcedure => 2,
     };
     (
         category,
@@ -495,6 +577,7 @@ fn prune_candidates(
     let mut kept = Vec::new();
     let mut kept_lessons = 0usize;
     let mut kept_plans = 0usize;
+    let mut kept_procedures = 0usize;
 
     for candidate in candidates {
         if candidate.category == DurableMemoryCategory::StaleCandidate {
@@ -514,12 +597,19 @@ fn prune_candidates(
                 report.pruned_entries += 1;
                 continue;
             }
+            MemorySourceKind::SavedProcedure
+                if kept_procedures >= contract.memory.max_curated_procedures =>
+            {
+                report.pruned_entries += 1;
+                continue;
+            }
             _ => {}
         }
 
         match candidate.source {
             MemorySourceKind::SavedLesson => kept_lessons += 1,
             MemorySourceKind::SavedPlan => kept_plans += 1,
+            MemorySourceKind::SavedProcedure => kept_procedures += 1,
             MemorySourceKind::ManualIndex => {}
         }
 
@@ -534,6 +624,7 @@ fn prune_candidates(
     kept.sort_by(|left, right| candidate_priority(right).cmp(&candidate_priority(left)));
     report.promoted_lessons = kept_lessons;
     report.promoted_plans = kept_plans;
+    report.promoted_procedures = kept_procedures;
     kept
 }
 
@@ -807,4 +898,78 @@ fn file_stem_or_default(path: &Path, default: &str) -> String {
         .and_then(|value| value.to_str())
         .unwrap_or(default)
         .replace('-', " ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::memory::{
+        WorkspaceMemory, MEMORY_INDEX_RELATIVE_PATH, MEMORY_PROCEDURES_RELATIVE_DIR,
+    };
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn write_memory_index(workspace: &Path, body: &str) {
+        let path = workspace.join(MEMORY_INDEX_RELATIVE_PATH);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+
+    fn write_procedure(workspace: &Path, name: &str, body: &str) {
+        let path = workspace.join(MEMORY_PROCEDURES_RELATIVE_DIR).join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+
+    #[test]
+    fn test_consolidate_promotes_active_procedure_into_index() {
+        let temp = TempDir::new().unwrap();
+        write_memory_index(temp.path(), "# TopAgent Memory Index\n\n");
+        write_procedure(
+            temp.path(),
+            "1700000300-approval-mailbox.md",
+            "# Approval Mailbox Procedure\n\n**Saved:** <t:1700000300>\n**Status:** active\n**When To Use:** Use for approval mailbox compaction with pending anchor retention.\n**Verification:** cargo test -p topagent-core approval\n**Source Task:** repair approval mailbox compaction workflow\n**Source Trajectory:** .topagent/trajectories/trj-1700000300-approval-mailbox.json\n\n---\n\n## Prerequisites\n\n- Stay inside the workspace.\n\n## Steps\n\n1. Inspect the mailbox state.\n2. Preserve pending approval anchors.\n\n## Pitfalls\n\n- Do not drop pending approvals during compaction.\n",
+        );
+
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let report = memory.consolidate_memory_if_needed().unwrap();
+        let rewritten = fs::read_to_string(temp.path().join(MEMORY_INDEX_RELATIVE_PATH)).unwrap();
+
+        assert_eq!(report.promoted_procedures, 1);
+        assert!(rewritten.contains("topic: Approval Mailbox Procedure"));
+        assert!(rewritten.contains("file: procedures/1700000300-approval-mailbox.md"));
+        assert!(rewritten.contains("status: verified"));
+        assert!(rewritten.contains("tags:"));
+    }
+
+    #[test]
+    fn test_consolidate_prunes_superseded_procedure_from_index() {
+        let temp = TempDir::new().unwrap();
+        write_memory_index(temp.path(), "# TopAgent Memory Index\n\n");
+        write_procedure(
+            temp.path(),
+            "1700000400-approval-old.md",
+            "# Approval Mailbox Procedure\n\n**Saved:** <t:1700000400>\n**Status:** superseded\n**When To Use:** Old approval mailbox compaction workflow.\n**Verification:** cargo test -p topagent-core approval\n**Superseded By:** .topagent/procedures/1700000500-approval-new.md\n\n---\n\n## Prerequisites\n\n- Stay inside the workspace.\n\n## Steps\n\n1. Inspect the old flow.\n\n## Pitfalls\n\n- Do not keep using this procedure.\n",
+        );
+        write_procedure(
+            temp.path(),
+            "1700000500-approval-new.md",
+            "# Approval Mailbox Procedure\n\n**Saved:** <t:1700000500>\n**Status:** active\n**When To Use:** Approval mailbox compaction with pending anchor retention.\n**Verification:** cargo test -p topagent-core approval\n\n---\n\n## Prerequisites\n\n- Stay inside the workspace.\n\n## Steps\n\n1. Preserve pending approval anchors.\n\n## Pitfalls\n\n- Do not drop pending approvals.\n",
+        );
+
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let report = memory.consolidate_memory_if_needed().unwrap();
+        let rewritten = fs::read_to_string(temp.path().join(MEMORY_INDEX_RELATIVE_PATH)).unwrap();
+
+        assert_eq!(report.promoted_procedures, 1);
+        assert!(report.stale_entries_pruned >= 1);
+        assert_eq!(
+            rewritten
+                .matches("topic: Approval Mailbox Procedure")
+                .count(),
+            1
+        );
+        assert!(rewritten.contains("file: procedures/1700000500-approval-new.md"));
+        assert!(!rewritten.contains("file: procedures/1700000400-approval-old.md"));
+    }
 }

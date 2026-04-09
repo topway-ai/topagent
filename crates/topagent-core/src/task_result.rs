@@ -5,6 +5,7 @@ pub struct TaskEvidence {
     pub files_changed: Vec<String>,
     pub diff_summary: String,
     pub verification_commands_run: Vec<VerificationCommand>,
+    pub tool_trace: Vec<ToolTraceStep>,
     pub unresolved_issues: Vec<String>,
     pub workspace_warnings: Vec<String>,
 }
@@ -15,6 +16,12 @@ pub struct VerificationCommand {
     pub output: String,
     pub exit_code: i32,
     pub succeeded: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolTraceStep {
+    pub tool_name: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -43,6 +50,11 @@ impl TaskResult {
 
     pub fn with_verification_commands(mut self, cmds: Vec<VerificationCommand>) -> Self {
         self.evidence.verification_commands_run.extend(cmds);
+        self
+    }
+
+    pub fn with_tool_trace(mut self, trace: Vec<ToolTraceStep>) -> Self {
+        self.evidence.tool_trace = trace;
         self
     }
 
@@ -76,6 +88,10 @@ impl TaskResult {
 
     pub fn unresolved_issues(&self) -> &[String] {
         &self.evidence.unresolved_issues
+    }
+
+    pub fn tool_trace(&self) -> &[ToolTraceStep] {
+        &self.evidence.tool_trace
     }
 
     pub fn has_files_changed(&self) -> bool {
@@ -276,6 +292,24 @@ mod tests {
         let proof = result.format_proof_of_work();
         assert!(proof.contains("Workspace Warnings"));
         assert!(proof.contains("broken_tool: missing script.sh"));
+    }
+
+    #[test]
+    fn test_task_result_tool_trace_does_not_change_proof_format() {
+        let baseline = TaskResult::new("Task completed".to_string()).format_proof_of_work();
+        let result = TaskResult::new("Task completed".to_string()).with_tool_trace(vec![
+            ToolTraceStep {
+                tool_name: "read".to_string(),
+                summary: "read README.md".to_string(),
+            },
+            ToolTraceStep {
+                tool_name: "bash".to_string(),
+                summary: "verification: cargo test -p topagent-cli".to_string(),
+            },
+        ]);
+
+        let proof = result.format_proof_of_work();
+        assert_eq!(proof, baseline);
     }
 
     #[test]

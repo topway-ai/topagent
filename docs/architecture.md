@@ -25,7 +25,7 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 | `behavior` | Typed behavior contract, approval trigger mapping, and runtime policy decisions |
 | `approval` | Approval mailbox, request/state transitions, runtime approval enforcement objects |
 | `compaction` | Layered transcript compaction and prompt rebuild support |
-| `run_state` | In-run objective, changed/active file tracking, bash verification history, baseline attribution, proof-of-work assembly |
+| `run_state` | In-run objective, changed/active file tracking, bash verification history, compact tool trace capture, baseline attribution, proof-of-work assembly |
 | `session` | Conversation history management, truncation |
 | `message` | Message types (user, assistant, system, tool_request, tool_result) |
 | `provider` | Provider trait, response types |
@@ -56,7 +56,7 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 | `config` | CliParams struct, parameter validation, route/options construction |
 | `run_setup` | Shared agent/provider/context assembly for one-shot CLI and Telegram runs |
 | `telegram` | Telegram polling loop, ChatSessionManager, per-chat transcript persistence |
-| `memory` | Workspace memory facade for index/topic loading, transcript evidence retrieval, and durable-memory consolidation |
+| `memory` | Workspace memory facade for index/topic/procedure loading, transcript evidence retrieval, verified-task promotion, trajectory export, and durable-memory consolidation |
 | `service` | systemd service install/status/start/stop/restart/uninstall |
 | `managed_files` | Managed file guards, env file I/O, safe file removal |
 | `progress` | LiveProgress: CLI and Telegram progress formatting |
@@ -68,7 +68,7 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 ```
 CLI parses args
   -> resolve workspace, API key, model route
-  -> build workspace memory briefing from .topagent/MEMORY.md + relevant topic files
+  -> build workspace memory briefing from .topagent/MEMORY.md + relevant procedures + relevant durable notes
   -> create ExecutionContext with workspace + cancel token + memory briefing
   -> read explicit tool-authoring mode from CLI/service config
   -> create Agent with provider + tools + options
@@ -83,6 +83,12 @@ CLI parses args
         4. execute tool, record result in session
         5. repeat until text response or max steps
      -> append proof-of-work (changed files, diff summary)
+  -> if the task was strongly verified, run the workspace promotion policy:
+     - save nothing, or
+     - save/update a lesson, or
+     - save/update a reusable procedure, or
+     - emit a compact trajectory artifact, or
+     - some narrow combination of the above
   -> print result
 ```
 
@@ -102,11 +108,13 @@ CLI parses args
         - /reset -> clear persisted transcript for that chat
         - text -> start_message:
           a. load `.topagent/MEMORY.md` (always)
-          b. load matching `.topagent/topics/*.md` files only if relevant
-          c. search the saved Telegram transcript and extract targeted snippets only if useful
-          d. build a fresh agent run with that memory briefing
-          e. append the filtered user-visible transcript to disk
-          f. send reply (split into chunks if >4000 chars)
+          b. load matching `.topagent/procedures/*.md` files only if relevant, capped to a small subset
+          c. load matching `.topagent/topics/*.md`, `.topagent/lessons/*.md`, or manual `.topagent/plans/*.md` artifacts only if relevant
+          d. search the saved Telegram transcript and extract targeted snippets only if useful
+          e. build a fresh agent run with that memory briefing
+          f. append the filtered user-visible transcript to disk
+          g. if the task was strongly verified, apply the same verified-task promotion policy used by one-shot runs
+          h. send reply (split into chunks if >4000 chars)
      3. on polling error: retry with backoff
 ```
 
@@ -153,29 +161,38 @@ Generated tools use the same workspace sandbox policy as bash. Workspace externa
 
 ### Memory and persistence flow
 
-TopAgent now uses three memory layers:
+TopAgent now uses four local memory layers:
 
 1. **Always-loaded index**: `workspace/.topagent/MEMORY.md`
    - one-line entries only
    - cheap enough to load at task start
-   - points to topic files instead of embedding large notes
-2. **Lazy topic files**: `workspace/.topagent/topics/*.md`
-   - compact durable notes by concern (`architecture`, `security`, `runtime`, etc.)
-   - loaded only when the current task overlaps the topic name/tags/summary
+   - points to durable artifacts instead of embedding large notes
+2. **Lazy durable artifacts**:
+   - `workspace/.topagent/topics/*.md` for compact notes by concern (`architecture`, `security`, `runtime`, etc.)
+   - `workspace/.topagent/lessons/*.md` for distilled facts, pitfalls, and rules
+   - `workspace/.topagent/procedures/*.md` for workspace-local reusable playbooks
+   - `workspace/.topagent/plans/*.md` for manual saved plans
+   - retrieval is narrow: only a small relevant subset is loaded, and superseded procedures are ignored
 3. **Raw transcript evidence**: `workspace/.topagent/telegram-history/chat-<chat_id>.json`
    - searchable per-chat transcript
    - stores user-visible text exchanges, not tool chatter
    - never replayed in full by default; retrieval returns targeted snippets only
+4. **Trajectory exports**: `workspace/.topagent/trajectories/*.json`
+   - compact structured records from strong verified runs
+   - include task intent, task mode, plan summary, key tool sequence, changed files, verification evidence, and linked lesson/procedure artifacts
+   - stay off the prompt hot path unless exported or reviewed manually
 
-`/reset` deletes only the per-chat transcript file. It does not touch `MEMORY.md`, topic files, plans, or lessons.
+`/reset` deletes only the per-chat transcript file. It does not touch `MEMORY.md`, topics, lessons, procedures, plans, or trajectories.
 
 Curated consolidation keeps the index practical:
 
-- saved plans and lessons can promote into durable memory when they have future value
+- strong verified tasks can promote into lessons or procedures when they have future value
+- procedures prefer supersession over accumulation, so later better workflows replace older ones instead of piling up
 - duplicate or conflicting durable entries are merged or pruned instead of accumulating forever
 - relative timestamps are normalized before durable promotion when TopAgent has enough evidence
 - missing or unreadable topic files are skipped during retrieval
 - the index load path caps injected bytes so startup memory stays cheap
+- trajectory artifacts are export-only and do not become a second prompt-memory system
 
 ### Planning flow
 
@@ -186,4 +203,4 @@ Curated consolidation keeps the index practical:
 5. Agent executes plan steps, updating status as it goes
 6. If the agent fails to plan within budget (10 steps or 5 blocked attempts), the system generates a fallback plan automatically
 
-Plans can be saved to `.topagent/plans/` for reuse. Lessons can be saved to `.topagent/lessons/`.
+Plans can still be saved manually to `.topagent/plans/` when the task-specific checklist itself matters. Verified-task promotion now uses lessons for facts and pitfalls, procedures for reusable workflows, and trajectories for compact export records.

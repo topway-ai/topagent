@@ -180,6 +180,10 @@ impl Agent {
         self.last_task_result.as_ref()
     }
 
+    pub fn task_mode(&self) -> plan::TaskMode {
+        self.task_mode
+    }
+
     pub fn durable_memory_written_this_run(&self) -> bool {
         self.durable_memory_written_this_run
     }
@@ -789,7 +793,7 @@ impl Agent {
         let mut bash_exit_code = None;
         self.emit_progress(self.tool_progress(&name, &args));
         self.check_cancelled(ctx)?;
-        let result = match tool.execute(args.clone(), &tool_ctx) {
+        let raw_result = match tool.execute(args.clone(), &tool_ctx) {
             Ok(r) => r,
             Err(e) => {
                 self.record_tool_result(
@@ -805,6 +809,17 @@ impl Agent {
 
         // ── Bash post-processing ──
         let mut execution_started_by_bash = false;
+        if let Some(cmd) = bash_cmd.as_ref() {
+            bash_exit_code = Some(extract_exit_code(&raw_result));
+            if name == "bash" {
+                self.run_state
+                    .record_tool_trace(&name, &args, Some(cmd), &self.behavior);
+            }
+        } else {
+            self.run_state
+                .record_tool_trace(&name, &args, None, &self.behavior);
+        }
+
         if name == "bash" {
             let mut found_new_change = false;
             let class = if let Some(cmd_str) = &bash_cmd {
@@ -812,12 +827,6 @@ impl Agent {
             } else {
                 BashCommandClass::MutationRisk
             };
-            if let Some(cmd) = bash_cmd.as_ref() {
-                let exit_code = extract_exit_code(&result);
-                bash_exit_code = Some(exit_code);
-                self.run_state
-                    .record_bash_result(cmd.clone(), result.clone(), exit_code);
-            }
             if matches!(
                 class,
                 BashCommandClass::MutationRisk | BashCommandClass::Verification
@@ -870,10 +879,15 @@ impl Agent {
 
         // Redact secrets from tool output before it enters the
         // model context — defense-in-depth against exfiltration.
-        let result = match ctx.secrets().redact(&result) {
+        let result = match ctx.secrets().redact(&raw_result) {
             std::borrow::Cow::Owned(s) => s,
-            std::borrow::Cow::Borrowed(_) => result,
+            std::borrow::Cow::Borrowed(_) => raw_result,
         };
+
+        if let (Some(cmd), Some(exit_code)) = (bash_cmd.as_ref(), bash_exit_code) {
+            self.run_state
+                .record_bash_result(cmd.clone(), result.clone(), exit_code);
+        }
 
         self.emit_post_tool_progress(
             ctx,
@@ -933,6 +947,8 @@ impl Agent {
 
         let result_str = match result {
             Ok(r) => {
+                self.run_state
+                    .record_tool_trace(&name, &args, None, &self.behavior);
                 if matches!(r.effect, ExternalToolEffect::ExecutionStarted) {
                     self.mark_execution_started();
                 }

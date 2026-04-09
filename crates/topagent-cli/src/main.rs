@@ -31,7 +31,7 @@ use crate::config::{
     build_route_from_resolved, build_runtime_options, load_persisted_telegram_defaults,
     require_openrouter_api_key, resolve_runtime_model_selection, resolve_workspace_path, CliParams,
 };
-use crate::memory::distill_verified_task;
+use crate::memory::promote_verified_task;
 use crate::progress::LiveProgress;
 use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
 use crate::service::{
@@ -279,25 +279,30 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
         Ok(result) => {
             if let Some(task_result) = agent.last_task_result().cloned() {
                 match agent.plan().lock() {
-                    Ok(plan) => match distill_verified_task(
+                    Ok(plan) => match promote_verified_task(
                         &workspace_memory,
                         &ctx,
                         &distill_options,
                         &instruction,
+                        agent.task_mode(),
                         &task_result,
                         &plan.clone(),
                         agent.durable_memory_written_this_run(),
                     ) {
                         Ok(report) => {
-                            if report.lesson_file.is_some() || report.plan_file.is_some() {
+                            if report.lesson_file.is_some()
+                                || report.procedure_file.is_some()
+                                || report.trajectory_file.is_some()
+                            {
                                 info!(
                                     lesson = report.lesson_file.as_deref().unwrap_or(""),
-                                    plan = report.plan_file.as_deref().unwrap_or(""),
-                                    "saved distilled workspace memory artifacts"
+                                    procedure = report.procedure_file.as_deref().unwrap_or(""),
+                                    trajectory = report.trajectory_file.as_deref().unwrap_or(""),
+                                    "saved promoted workspace learning artifacts"
                                 );
                             }
                         }
-                        Err(err) => warn!("failed to distill verified task memory: {}", err),
+                        Err(err) => warn!("failed to promote verified task memory: {}", err),
                     },
                     Err(err) => warn!("failed to lock agent plan for distillation: {}", err),
                 }

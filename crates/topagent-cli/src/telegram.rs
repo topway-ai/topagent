@@ -17,7 +17,7 @@ use tracing::{error, info, warn};
 
 use crate::config::*;
 use crate::managed_files::write_managed_file;
-use crate::memory::{distill_verified_task, WorkspaceMemory};
+use crate::memory::{promote_verified_task, WorkspaceMemory};
 use crate::progress::LiveProgress;
 use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
 
@@ -914,33 +914,38 @@ impl ChatSessionManager {
             if let Ok(_response) = &result {
                 if let Some(task_result) = agent.last_task_result().cloned() {
                     match agent.plan().lock() {
-                        Ok(plan) => match distill_verified_task(
+                        Ok(plan) => match promote_verified_task(
                             &memory,
                             &run_ctx,
                             &distill_options,
                             &instruction,
+                            agent.task_mode(),
                             &task_result,
                             &plan.clone(),
                             agent.durable_memory_written_this_run(),
                         ) {
                             Ok(report) => {
-                                if report.lesson_file.is_some() || report.plan_file.is_some() {
+                                if report.lesson_file.is_some()
+                                    || report.procedure_file.is_some()
+                                    || report.trajectory_file.is_some()
+                                {
                                     info!(
                                         lesson = report.lesson_file.as_deref().unwrap_or(""),
-                                        plan = report.plan_file.as_deref().unwrap_or(""),
+                                        procedure = report.procedure_file.as_deref().unwrap_or(""),
+                                        trajectory =
+                                            report.trajectory_file.as_deref().unwrap_or(""),
                                         chat_id,
-                                        "saved distilled workspace memory artifacts"
+                                        "saved promoted workspace learning artifacts"
                                     );
                                 }
                             }
                             Err(err) => {
-                                warn!("failed to distill verified Telegram task memory: {}", err)
+                                warn!("failed to promote verified Telegram task memory: {}", err)
                             }
                         },
-                        Err(err) => warn!(
-                            "failed to lock agent plan for Telegram distillation: {}",
-                            err
-                        ),
+                        Err(err) => {
+                            warn!("failed to lock agent plan for Telegram promotion: {}", err)
+                        }
                     }
                 }
             }

@@ -47,8 +47,10 @@ Then open a private chat with your bot and send a message.
 TopAgent keeps Telegram memory in three layers:
 
 - a tiny always-loaded workspace index at `workspace/.topagent/MEMORY.md`
-- compact durable notes under `workspace/.topagent/topics/`, plus archived lessons and saved plans under `workspace/.topagent/lessons/` and `workspace/.topagent/plans/`, loaded only when relevant
+- compact durable notes under `workspace/.topagent/topics/`, plus archived lessons, reusable procedures, and saved plans under `workspace/.topagent/lessons/`, `workspace/.topagent/procedures/`, and `workspace/.topagent/plans/`, loaded only when relevant
 - a per-chat raw transcript under `workspace/.topagent/telegram-history/`, used as searchable evidence rather than replayed wholesale
+
+For strong verified runs, TopAgent can also emit compact trajectory artifacts under `workspace/.topagent/trajectories/`. These are structured export records for later eval or training work, not prompt memory.
 
 ### Bot commands
 
@@ -101,9 +103,15 @@ Workspace memory is separate from `TOPAGENT.md`:
 
 - `TOPAGENT.md` is for always-on project instructions
 - `.topagent/MEMORY.md` is a tiny durable memory index
-- `.topagent/topics/`, `.topagent/lessons/`, and `.topagent/plans/` hold compact durable notes and archived artifacts that get curated back into the index when useful
+- `.topagent/topics/` holds compact durable notes by concern
+- `.topagent/lessons/` holds distilled facts, pitfalls, and rules from verified work
+- `.topagent/procedures/` holds reusable workspace-local playbooks distilled from strong verified runs and loaded lazily in small batches
+- `.topagent/plans/` holds manual saved plans; auto-promotion no longer uses plans as the reusable workflow artifact
+- `.topagent/trajectories/` holds compact structured execution traces from high-quality verified runs; they are export artifacts, not hot-path prompt memory
 - `.topagent/telegram-history/` stores searchable per-chat transcript evidence
 - `.topagent/checkpoints/` stores the most recent automatic workspace checkpoints for restore
+
+TopAgent does not promote every successful task. Weak, trivial, failed, or ambiguous runs save nothing. It still does not provide a skills marketplace, subagents, online training, or multi-provider routing.
 
 ## Troubleshooting
 

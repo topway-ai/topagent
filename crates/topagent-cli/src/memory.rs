@@ -1,17 +1,24 @@
 mod memory_consolidation;
+mod procedures;
+mod trajectories;
 
 use self::memory_consolidation::{
     parse_saved_lesson, parse_saved_plan, render_saved_lesson_excerpt, render_saved_plan_excerpt,
     MemoryIndexEntry,
 };
+use self::procedures::{
+    mark_procedure_superseded, parse_saved_procedure, procedure_haystack,
+    render_saved_procedure_excerpt, save_procedure, set_procedure_source_trajectory,
+    ParsedProcedure, ProcedureDraft, ProcedureStatus,
+};
+use self::trajectories::{save_trajectory, TrajectoryDraft};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use topagent_core::context::ToolContext;
-use topagent_core::tools::{SaveLessonArgs, SaveLessonTool, SavePlanArgs, SavePlanTool, Tool};
+use topagent_core::tools::{SaveLessonArgs, SaveLessonTool, Tool};
 use topagent_core::{
-    BehaviorContract, ExecutionContext, Message, Plan, Role, RuntimeOptions, TaskResult,
+    BehaviorContract, ExecutionContext, Message, Plan, Role, RuntimeOptions, TaskMode, TaskResult,
 };
 use tracing::warn;
 
@@ -22,6 +29,8 @@ pub(crate) const MEMORY_INDEX_RELATIVE_PATH: &str = ".topagent/MEMORY.md";
 pub(crate) const MEMORY_TOPICS_RELATIVE_DIR: &str = ".topagent/topics";
 pub(crate) const MEMORY_LESSONS_RELATIVE_DIR: &str = ".topagent/lessons";
 pub(crate) const MEMORY_PLANS_RELATIVE_DIR: &str = ".topagent/plans";
+pub(crate) const MEMORY_PROCEDURES_RELATIVE_DIR: &str = ".topagent/procedures";
+pub(crate) const MEMORY_TRAJECTORIES_RELATIVE_DIR: &str = ".topagent/trajectories";
 const AUTO_PROMOTED_TAG: &str = "curated";
 
 const STOP_WORDS: &[&str] = &[
@@ -103,6 +112,8 @@ pub(crate) struct WorkspaceMemory {
     topics_dir: PathBuf,
     lessons_dir: PathBuf,
     plans_dir: PathBuf,
+    procedures_dir: PathBuf,
+    trajectories_dir: PathBuf,
 }
 
 impl WorkspaceMemory {
@@ -112,6 +123,8 @@ impl WorkspaceMemory {
             topics_dir: workspace_root.join(MEMORY_TOPICS_RELATIVE_DIR),
             lessons_dir: workspace_root.join(MEMORY_LESSONS_RELATIVE_DIR),
             plans_dir: workspace_root.join(MEMORY_PLANS_RELATIVE_DIR),
+            procedures_dir: workspace_root.join(MEMORY_PROCEDURES_RELATIVE_DIR),
+            trajectories_dir: workspace_root.join(MEMORY_TRAJECTORIES_RELATIVE_DIR),
             workspace_root,
         }
     }
@@ -123,6 +136,14 @@ impl WorkspaceMemory {
     pub(crate) fn ensure_layout(&self) -> Result<()> {
         std::fs::create_dir_all(&self.topics_dir)
             .with_context(|| format!("failed to create {}", self.topics_dir.display()))?;
+        std::fs::create_dir_all(&self.lessons_dir)
+            .with_context(|| format!("failed to create {}", self.lessons_dir.display()))?;
+        std::fs::create_dir_all(&self.plans_dir)
+            .with_context(|| format!("failed to create {}", self.plans_dir.display()))?;
+        std::fs::create_dir_all(&self.procedures_dir)
+            .with_context(|| format!("failed to create {}", self.procedures_dir.display()))?;
+        std::fs::create_dir_all(&self.trajectories_dir)
+            .with_context(|| format!("failed to create {}", self.trajectories_dir.display()))?;
 
         if !self.index_path.exists() {
             if let Some(parent) = self.index_path.parent() {
@@ -144,11 +165,15 @@ impl WorkspaceMemory {
         let contract = memory_contract();
         let entries = self.load_index_entries()?;
         let index_section = render_index_section(&contract, &entries);
+        let procedure_load = self.render_procedure_section(&contract, instruction, &entries)?;
         let durable_load = self.render_durable_notes_section(&contract, instruction, &entries)?;
         let transcript_section = transcript_messages
             .and_then(|messages| render_transcript_section(&contract, instruction, messages));
 
-        if index_section.is_none() && durable_load.section.is_none() && transcript_section.is_none()
+        if index_section.is_none()
+            && procedure_load.section.is_none()
+            && durable_load.section.is_none()
+            && transcript_section.is_none()
         {
             return Ok(MemoryPrompt::default());
         }
@@ -164,8 +189,14 @@ impl WorkspaceMemory {
             prompt.push_str(&index_section);
         }
 
+        if let Some(procedure_section) = procedure_load.section {
+            stats.loaded_items.extend(procedure_load.loaded_items);
+            prompt.push_str("\n### Relevant Procedures\n");
+            prompt.push_str(&procedure_section);
+        }
+
         if let Some(durable_section) = durable_load.section {
-            stats.loaded_items = durable_load.loaded_items;
+            stats.loaded_items.extend(durable_load.loaded_items);
             prompt.push_str("\n### Curated Durable Notes\n");
             prompt.push_str(&durable_section);
         }
@@ -183,6 +214,73 @@ impl WorkspaceMemory {
         })
     }
 
+    fn render_procedure_section(
+        &self,
+        contract: &BehaviorContract,
+        instruction: &str,
+        entries: &[MemoryIndexEntry],
+    ) -> Result<TopicLoad> {
+        let mut scored_entries = entries
+            .iter()
+            .filter(|entry| is_procedure_entry(entry))
+            .filter_map(|entry| {
+                let score = score_entry_relevance(instruction, entry);
+                (score > 0).then_some((score, entry))
+            })
+            .collect::<Vec<_>>();
+        scored_entries.sort_by(|(left_score, left_entry), (right_score, right_entry)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| left_entry.topic.cmp(&right_entry.topic))
+        });
+
+        let mut section = String::new();
+        let mut loaded_items = Vec::new();
+
+        for (_, entry) in scored_entries
+            .into_iter()
+            .take(contract.memory.max_procedures_to_load)
+        {
+            let Some(path) = self.resolve_memory_path(contract, &entry.file) else {
+                warn!(
+                    "ignoring unsafe procedure path `{}` from {}",
+                    entry.file,
+                    self.index_path.display()
+                );
+                continue;
+            };
+
+            let Some(procedure) = parse_saved_procedure(&path)? else {
+                continue;
+            };
+            if procedure.status == ProcedureStatus::Superseded {
+                continue;
+            }
+
+            let excerpt = render_saved_procedure_excerpt(contract, &procedure);
+            if excerpt.is_empty() {
+                continue;
+            }
+
+            if !section.is_empty() {
+                section.push('\n');
+            }
+            section.push_str(&format!(
+                "[{}] {} ({})\n{}\n",
+                entry.status,
+                procedure.title,
+                display_memory_file(&entry.file),
+                excerpt
+            ));
+            loaded_items.push(procedure.title);
+        }
+
+        Ok(TopicLoad {
+            section: (!section.is_empty()).then_some(section),
+            loaded_items,
+        })
+    }
+
     fn render_durable_notes_section(
         &self,
         contract: &BehaviorContract,
@@ -191,6 +289,7 @@ impl WorkspaceMemory {
     ) -> Result<TopicLoad> {
         let mut scored_entries = entries
             .iter()
+            .filter(|entry| !is_procedure_entry(entry))
             .filter_map(|entry| {
                 let score = score_entry_relevance(instruction, entry);
                 (score > 0).then_some((score, entry))
@@ -293,6 +392,11 @@ impl WorkspaceMemory {
                 return Ok(render_saved_plan_excerpt(contract, &parsed));
             }
         }
+        if display_path.starts_with("procedures/") {
+            if let Some(parsed) = parse_saved_procedure(path)? {
+                return Ok(render_saved_procedure_excerpt(contract, &parsed));
+            }
+        }
 
         let raw = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
@@ -310,9 +414,24 @@ struct TopicLoad {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct TaskDistillationReport {
+pub(crate) struct TaskPromotionReport {
     pub lesson_file: Option<String>,
-    pub plan_file: Option<String>,
+    pub procedure_file: Option<String>,
+    pub superseded_procedure_file: Option<String>,
+    pub trajectory_file: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PromotionDecision {
+    lesson: bool,
+    procedure: bool,
+    trajectory: bool,
+}
+
+impl PromotionDecision {
+    fn is_empty(&self) -> bool {
+        !self.lesson && !self.procedure && !self.trajectory
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -321,74 +440,88 @@ struct TranscriptSection {
     snippet_count: usize,
 }
 
-pub(crate) fn distill_verified_task(
+pub(crate) fn promote_verified_task(
     memory: &WorkspaceMemory,
     ctx: &ExecutionContext,
     options: &RuntimeOptions,
     instruction: &str,
+    task_mode: TaskMode,
     task_result: &TaskResult,
     plan: &Plan,
     durable_memory_written: bool,
-) -> Result<TaskDistillationReport> {
-    if durable_memory_written
-        || instruction.trim().is_empty()
-        || !task_result.final_verification_passed()
-        || !task_result.has_files_changed()
-        || task_result.has_unresolved_issues()
-    {
-        return Ok(TaskDistillationReport::default());
+) -> Result<TaskPromotionReport> {
+    let decision = evaluate_promotion(instruction, task_result, plan, durable_memory_written);
+    if decision.is_empty() {
+        return Ok(TaskPromotionReport::default());
     }
 
     memory.ensure_layout()?;
 
+    let stored_instruction = redact_for_storage(ctx, &normalize_task_text(instruction));
+    let stored_task_result = redact_task_result_for_storage(ctx, task_result);
     let tool_ctx = ToolContext::new(ctx, options);
-    let lesson_title = compact_text_line(&normalize_task_text(instruction), 72);
-    if lesson_title.is_empty() {
-        return Ok(TaskDistillationReport::default());
-    }
+    let mut report = TaskPromotionReport::default();
 
-    let changed_files = summarize_changed_files(task_result.files_changed());
-    let verification_command = task_result
-        .latest_verification_command()
-        .map(|command| compact_text_line(&command.command, 96));
-    let lesson_args = SaveLessonArgs {
-        title: lesson_title.clone(),
-        what_changed: build_distilled_what_changed(&task_result.outcome_summary, &changed_files),
-        what_learned: build_distilled_what_learned(&changed_files, verification_command.as_deref()),
-        reuse_next_time: verification_command
-            .map(|command| format!("Reuse `{command}` as the completion check for similar edits.")),
-        avoid_next_time: None,
-    };
-
-    let lesson_output = SaveLessonTool::new()
-        .execute(
-            serde_json::to_value(lesson_args).context("failed to serialize lesson args")?,
-            &tool_ctx,
-        )
-        .map_err(anyhow::Error::new)?;
-
-    let mut report = TaskDistillationReport {
-        lesson_file: extract_saved_artifact_path(&lesson_output, "Lesson saved to "),
-        plan_file: None,
-    };
-
-    if should_save_reusable_plan(plan) {
-        let plan_title = compact_text_line(&format!("{lesson_title} procedure"), 80);
-        let plan_tool = SavePlanTool::with_plan(Arc::new(Mutex::new(plan.clone())));
-        let plan_output = plan_tool
+    if decision.lesson {
+        let lesson_output = SaveLessonTool::new()
             .execute(
-                serde_json::to_value(SavePlanArgs {
-                    title: plan_title,
-                    task: Some(compact_text_line(&normalize_task_text(instruction), 160)),
-                })
-                .context("failed to serialize plan args")?,
+                serde_json::to_value(build_lesson_args(&stored_instruction, &stored_task_result)?)
+                    .context("failed to serialize lesson args")?,
                 &tool_ctx,
             )
             .map_err(anyhow::Error::new)?;
-        report.plan_file = extract_saved_artifact_path(&plan_output, "Plan saved to ");
+        report.lesson_file = extract_saved_artifact_path(&lesson_output, "Lesson saved to ");
     }
 
-    if report.lesson_file.is_some() || report.plan_file.is_some() {
+    if decision.procedure {
+        let matching = find_matching_active_procedure(memory, instruction)?;
+        let procedure_draft = build_procedure_draft(
+            &stored_instruction,
+            &stored_task_result,
+            plan,
+            report.lesson_file.as_deref(),
+            None,
+            matching
+                .as_ref()
+                .map(|procedure| format!(".topagent/procedures/{}", procedure.filename)),
+        )?;
+        let (procedure_file, _path) = save_procedure(&memory.procedures_dir, &procedure_draft)?;
+        report.procedure_file = Some(procedure_file.clone());
+        if let Some(existing) = matching {
+            report.superseded_procedure_file =
+                mark_procedure_superseded(&existing.path, &procedure_file)?;
+        }
+    }
+
+    if decision.trajectory {
+        let trajectory_draft = TrajectoryDraft {
+            task_intent: compact_text_line(&stored_instruction, 220),
+            task_mode,
+            plan_summary: summarize_plan_items(plan),
+            tool_sequence: stored_task_result.tool_trace().to_vec(),
+            changed_files: stored_task_result.files_changed().to_vec(),
+            verification: stored_task_result.verification_commands().to_vec(),
+            outcome_summary: compact_text_line(&stored_task_result.outcome_summary, 220),
+            lesson_file: report.lesson_file.clone(),
+            procedure_file: report.procedure_file.clone(),
+        };
+        let (trajectory_file, _path) =
+            save_trajectory(&memory.trajectories_dir, &trajectory_draft)?;
+        report.trajectory_file = Some(trajectory_file.clone());
+        if let Some(procedure_file) = report.procedure_file.clone() {
+            if let Some(filename) = artifact_filename(&procedure_file) {
+                set_procedure_source_trajectory(
+                    &memory.procedures_dir.join(filename),
+                    &trajectory_file,
+                )?;
+            }
+        }
+    }
+
+    if report.lesson_file.is_some()
+        || report.procedure_file.is_some()
+        || report.trajectory_file.is_some()
+    {
         memory.consolidate_memory_if_needed()?;
     }
 
@@ -397,6 +530,49 @@ pub(crate) fn distill_verified_task(
 
 fn normalize_task_text(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn redact_for_storage(ctx: &ExecutionContext, text: &str) -> String {
+    ctx.secrets().redact(text).into_owned()
+}
+
+fn redact_task_result_for_storage(ctx: &ExecutionContext, task_result: &TaskResult) -> TaskResult {
+    let mut redacted = task_result.clone();
+    redacted.outcome_summary = redact_for_storage(ctx, &redacted.outcome_summary);
+    redacted.evidence.diff_summary = redact_for_storage(ctx, &redacted.evidence.diff_summary);
+    redacted.evidence.unresolved_issues = redacted
+        .evidence
+        .unresolved_issues
+        .iter()
+        .map(|issue| redact_for_storage(ctx, issue))
+        .collect();
+    redacted.evidence.workspace_warnings = redacted
+        .evidence
+        .workspace_warnings
+        .iter()
+        .map(|warning| redact_for_storage(ctx, warning))
+        .collect();
+    redacted.evidence.tool_trace = redacted
+        .evidence
+        .tool_trace
+        .iter()
+        .map(|step| topagent_core::ToolTraceStep {
+            tool_name: step.tool_name.clone(),
+            summary: redact_for_storage(ctx, &step.summary),
+        })
+        .collect();
+    redacted.evidence.verification_commands_run = redacted
+        .evidence
+        .verification_commands_run
+        .iter()
+        .map(|command| topagent_core::VerificationCommand {
+            command: redact_for_storage(ctx, &command.command),
+            output: String::new(),
+            exit_code: command.exit_code,
+            succeeded: command.succeeded,
+        })
+        .collect();
+    redacted
 }
 
 fn summarize_changed_files(files: &[String]) -> String {
@@ -417,10 +593,30 @@ fn build_distilled_what_changed(outcome_summary: &str, changed_files: &str) -> S
     }
 }
 
-fn build_distilled_what_learned(changed_files: &str, verification_command: Option<&str>) -> String {
+fn build_distilled_what_learned(
+    changed_files: &str,
+    verification_command: Option<&str>,
+    had_failed_verification: bool,
+    touched_multiple_files: bool,
+) -> String {
+    if had_failed_verification {
+        return match verification_command {
+            Some(command) => format!(
+                "The task was only complete after rerunning `{command}` to a passing result; keep that final pass as the completion gate."
+            ),
+            None => "The task was only complete after rerunning the verification to a passing result.".to_string(),
+        };
+    }
+
+    if touched_multiple_files {
+        return format!(
+            "Related edits across {changed_files} need to stay synchronized before the final verification pass."
+        );
+    }
+
     match verification_command {
         Some(command) => format!(
-            "For similar work, finish changes in {changed_files} by rerunning `{command}` before considering the task complete."
+            "Use `{command}` as the completion check for similar changes in {changed_files}."
         ),
         None => format!(
             "For similar work, keep the edits in {changed_files} tied to an explicit passing verification step."
@@ -428,8 +624,240 @@ fn build_distilled_what_learned(changed_files: &str, verification_command: Optio
     }
 }
 
-fn should_save_reusable_plan(plan: &Plan) -> bool {
-    plan.items().len() >= 2
+fn build_lesson_title(instruction: &str, task_result: &TaskResult) -> String {
+    let changed_files = summarize_changed_files(task_result.files_changed());
+    if task_result
+        .verification_commands()
+        .iter()
+        .any(|command| !command.succeeded)
+    {
+        if let Some(command) = task_result.latest_verification_command() {
+            return compact_text_line(
+                &format!(
+                    "Finish {} only after `{}` passes",
+                    changed_files,
+                    compact_text_line(&command.command, 48)
+                ),
+                72,
+            );
+        }
+    }
+
+    if task_result.files_changed().len() >= 2 {
+        return compact_text_line(
+            &format!("Keep related edits synchronized across {changed_files}"),
+            72,
+        );
+    }
+
+    if let Some(command) = task_result.latest_verification_command() {
+        return compact_text_line(
+            &format!(
+                "Use `{}` as the completion check for {}",
+                compact_text_line(&command.command, 48),
+                changed_files
+            ),
+            72,
+        );
+    }
+
+    compact_text_line(&normalize_task_text(instruction), 72)
+}
+
+fn evaluate_promotion(
+    instruction: &str,
+    task_result: &TaskResult,
+    plan: &Plan,
+    durable_memory_written: bool,
+) -> PromotionDecision {
+    if durable_memory_written
+        || instruction.trim().is_empty()
+        || !task_result.final_verification_passed()
+        || !task_result.has_files_changed()
+        || task_result.has_unresolved_issues()
+        || task_result.verification_commands().is_empty()
+    {
+        return PromotionDecision::default();
+    }
+
+    let multi_step_plan = plan.items().len() >= 2;
+    let multi_file = task_result.files_changed().len() >= 2;
+    let repeated_verification = task_result.verification_commands().len() >= 2;
+    let lesson = multi_step_plan || multi_file || repeated_verification;
+    let procedure = lesson && multi_step_plan && task_result.tool_trace().len() >= 3;
+    let trajectory = procedure
+        && (plan.items().len() >= 3 || multi_file || repeated_verification)
+        && task_result.evidence.workspace_warnings.is_empty();
+
+    PromotionDecision {
+        lesson,
+        procedure,
+        trajectory,
+    }
+}
+
+fn build_lesson_args(instruction: &str, task_result: &TaskResult) -> Result<SaveLessonArgs> {
+    let lesson_title = build_lesson_title(instruction, task_result);
+    if lesson_title.is_empty() {
+        return Err(anyhow::anyhow!("lesson title is empty after normalization"));
+    }
+
+    let changed_files = summarize_changed_files(task_result.files_changed());
+    let verification_command = task_result
+        .latest_verification_command()
+        .map(|command| compact_text_line(&command.command, 96));
+    let avoid_next_time = task_result
+        .verification_commands()
+        .iter()
+        .filter(|command| !command.succeeded)
+        .last()
+        .map(|command| {
+            format!(
+                "Do not stop after `{}` fails; rerun the final verification until it passes.",
+                compact_text_line(&command.command, 96)
+            )
+        });
+    let had_failed_verification = task_result
+        .verification_commands()
+        .iter()
+        .any(|command| !command.succeeded);
+
+    Ok(SaveLessonArgs {
+        title: lesson_title,
+        what_changed: build_distilled_what_changed(&task_result.outcome_summary, &changed_files),
+        what_learned: build_distilled_what_learned(
+            &changed_files,
+            verification_command.as_deref(),
+            had_failed_verification,
+            task_result.files_changed().len() >= 2,
+        ),
+        reuse_next_time: verification_command
+            .map(|command| format!("Reuse `{command}` as the completion check for similar edits.")),
+        avoid_next_time,
+    })
+}
+
+fn build_procedure_draft(
+    instruction: &str,
+    task_result: &TaskResult,
+    plan: &Plan,
+    source_lesson: Option<&str>,
+    source_trajectory: Option<&str>,
+    supersedes: Option<String>,
+) -> Result<ProcedureDraft> {
+    let title = compact_text_line(&normalize_task_text(instruction), 80);
+    if title.is_empty() {
+        return Err(anyhow::anyhow!(
+            "procedure title is empty after normalization"
+        ));
+    }
+
+    let verification = task_result
+        .latest_verification_command()
+        .map(|command| compact_text_line(&command.command, 120))
+        .unwrap_or_else(|| "Use the repo's current passing verification command.".to_string());
+
+    let steps = if !plan.is_empty() {
+        plan.items()
+            .iter()
+            .take(6)
+            .map(|item| compact_text_line(&item.description, 120))
+            .collect::<Vec<_>>()
+    } else {
+        vec![
+            format!(
+                "Apply the requested changes in {}.",
+                summarize_changed_files(task_result.files_changed())
+            ),
+            format!("Run `{verification}` and confirm it passes."),
+        ]
+    };
+
+    let mut pitfalls = Vec::new();
+    if task_result
+        .verification_commands()
+        .iter()
+        .any(|command| !command.succeeded)
+    {
+        pitfalls.push(format!(
+            "Do not stop at the first failing verification; finish only after `{verification}` passes."
+        ));
+    }
+    if task_result.files_changed().len() >= 2 {
+        pitfalls.push(format!(
+            "Keep related edits synchronized across {}.",
+            summarize_changed_files(task_result.files_changed())
+        ));
+    }
+
+    Ok(ProcedureDraft {
+        title,
+        when_to_use: format!(
+            "Use when similar repo work needs to change {} and finish with `{}`.",
+            summarize_changed_files(task_result.files_changed()),
+            verification
+        ),
+        prerequisites: vec![
+            "Stay within the current workspace and preserve the existing operator-approved workflow."
+                .to_string(),
+        ],
+        steps,
+        pitfalls,
+        verification,
+        source_task: Some(compact_text_line(&normalize_task_text(instruction), 160)),
+        source_lesson: source_lesson.map(ToString::to_string),
+        source_trajectory: source_trajectory.map(ToString::to_string),
+        supersedes,
+    })
+}
+
+fn summarize_plan_items(plan: &Plan) -> Vec<String> {
+    plan.items()
+        .iter()
+        .take(6)
+        .map(|item| compact_text_line(&item.description, 120))
+        .collect()
+}
+
+fn find_matching_active_procedure(
+    memory: &WorkspaceMemory,
+    instruction: &str,
+) -> Result<Option<ParsedProcedure>> {
+    let mut best: Option<(usize, ParsedProcedure)> = None;
+    for path in list_markdown_files(&memory.procedures_dir)? {
+        let Some(procedure) = parse_saved_procedure(&path)? else {
+            continue;
+        };
+        if procedure.status == ProcedureStatus::Superseded {
+            continue;
+        }
+
+        let score = score_text_relevance(instruction, &procedure_haystack(&procedure));
+        if score < 4 {
+            continue;
+        }
+
+        match &best {
+            Some((best_score, _)) if *best_score >= score => {}
+            _ => best = Some((score, procedure)),
+        }
+    }
+
+    Ok(best.map(|(_, procedure)| procedure))
+}
+
+fn list_markdown_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut files = std::fs::read_dir(dir)
+        .with_context(|| format!("failed to read {}", dir.display()))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .collect::<Vec<_>>();
+    files.sort();
+    Ok(files)
 }
 
 fn extract_saved_artifact_path(output: &str, prefix: &str) -> Option<String> {
@@ -440,6 +868,10 @@ fn extract_saved_artifact_path(output: &str, prefix: &str) -> Option<String> {
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .map(ToString::to_string)
+}
+
+fn artifact_filename(path: &str) -> Option<&str> {
+    Path::new(path).file_name().and_then(|name| name.to_str())
 }
 
 fn render_index_section(
@@ -599,11 +1031,6 @@ fn match_windows(
 }
 
 fn score_entry_relevance(instruction: &str, entry: &MemoryIndexEntry) -> usize {
-    let instruction_tokens = tokenize(instruction);
-    if instruction_tokens.is_empty() {
-        return 0;
-    }
-
     let mut haystack = entry.topic.clone();
     haystack.push(' ');
     haystack.push_str(&entry.file);
@@ -611,20 +1038,27 @@ fn score_entry_relevance(instruction: &str, entry: &MemoryIndexEntry) -> usize {
     haystack.push_str(&entry.tags.join(" "));
     haystack.push(' ');
     haystack.push_str(&entry.note);
+    score_text_relevance(instruction, &haystack)
+        + usize::from(is_procedure_entry(entry))
+        + usize::from(
+            entry
+                .tags
+                .iter()
+                .any(|tag| matches!(tag.as_str(), "procedure" | "workflow" | "playbook")),
+        )
+}
 
-    let mut score = tokenize(&haystack)
-        .intersection(&instruction_tokens)
-        .count();
-    let lower_instruction = instruction.to_ascii_lowercase();
-    if lower_instruction.contains(&entry.topic.to_ascii_lowercase()) {
-        score += 2;
+fn score_text_relevance(instruction: &str, haystack: &str) -> usize {
+    let instruction_tokens = tokenize(instruction);
+    if instruction_tokens.is_empty() {
+        return 0;
     }
-    if entry
-        .tags
-        .iter()
-        .any(|tag| lower_instruction.contains(tag.as_str()))
-    {
-        score += 1;
+
+    let mut score = tokenize(haystack).intersection(&instruction_tokens).count();
+    let lower_instruction = instruction.to_ascii_lowercase();
+    let lower_haystack = haystack.to_ascii_lowercase();
+    if lower_haystack.contains(&lower_instruction) || lower_instruction.contains(&lower_haystack) {
+        score += 2;
     }
     score
 }
@@ -690,11 +1124,16 @@ fn display_memory_file(file: &str) -> String {
     if normalized.starts_with("topics/")
         || normalized.starts_with("lessons/")
         || normalized.starts_with("plans/")
+        || normalized.starts_with("procedures/")
     {
         normalized
     } else {
         format!("topics/{normalized}")
     }
+}
+
+fn is_procedure_entry(entry: &MemoryIndexEntry) -> bool {
+    normalize_memory_file(&entry.file).starts_with("procedures/")
 }
 
 fn allowed_memory_prefix(contract: &BehaviorContract, normalized: &str) -> bool {
@@ -764,7 +1203,10 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
-    use topagent_core::{ExecutionContext, RuntimeOptions, TaskResult, VerificationCommand};
+    use topagent_core::{
+        ExecutionContext, RuntimeOptions, SecretRegistry, TaskMode, TaskResult, ToolTraceStep,
+        VerificationCommand,
+    };
 
     fn write_memory_index(workspace: &Path, body: &str) {
         let path = workspace.join(MEMORY_INDEX_RELATIVE_PATH);
@@ -790,6 +1232,12 @@ mod tests {
         fs::write(path, body).unwrap();
     }
 
+    fn write_procedure(workspace: &Path, name: &str, body: &str) {
+        let path = workspace.join(MEMORY_PROCEDURES_RELATIVE_DIR).join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+    }
+
     fn verified_task_result() -> TaskResult {
         TaskResult::new("Unified the model control path and reran the CLI test suite.".to_string())
             .with_files_changed(vec![
@@ -802,6 +1250,51 @@ mod tests {
                 exit_code: 0,
                 succeeded: true,
             })
+    }
+
+    fn strong_verified_task_result(output: &str) -> TaskResult {
+        TaskResult::new(
+            "Hardened the approval mailbox compaction flow and reran the CLI test suite."
+                .to_string(),
+        )
+        .with_files_changed(vec![
+            "crates/topagent-core/src/approval.rs".to_string(),
+            "crates/topagent-core/src/run_state.rs".to_string(),
+        ])
+        .with_tool_trace(vec![
+            ToolTraceStep {
+                tool_name: "read".to_string(),
+                summary: "read crates/topagent-core/src/approval.rs".to_string(),
+            },
+            ToolTraceStep {
+                tool_name: "edit".to_string(),
+                summary: "edit crates/topagent-core/src/approval.rs".to_string(),
+            },
+            ToolTraceStep {
+                tool_name: "bash".to_string(),
+                summary: "verification: cargo test -p topagent-cli".to_string(),
+            },
+        ])
+        .with_verification_command(VerificationCommand {
+            command: "cargo test -p topagent-cli".to_string(),
+            output: format!("first pass failed: {output}"),
+            exit_code: 1,
+            succeeded: false,
+        })
+        .with_verification_command(VerificationCommand {
+            command: "cargo test -p topagent-cli".to_string(),
+            output: format!("final pass ok: {output}"),
+            exit_code: 0,
+            succeeded: true,
+        })
+    }
+
+    fn strong_plan() -> Plan {
+        let mut plan = Plan::new();
+        plan.add_item("Inspect the approval mailbox and compaction flow".to_string());
+        plan.add_item("Preserve pending approval anchors through the state transition".to_string());
+        plan.add_item("Rerun the CLI verification and confirm the proof stays honest".to_string());
+        plan
     }
 
     #[test]
@@ -953,42 +1446,53 @@ mod tests {
     }
 
     #[test]
-    fn test_distill_verified_task_saves_lesson_and_plan() {
+    fn test_promote_verified_task_creates_lesson_procedure_and_trajectory() {
         let temp = TempDir::new().unwrap();
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
         let ctx = ExecutionContext::new(temp.path().to_path_buf());
         let options = RuntimeOptions::default();
-        let mut plan = Plan::new();
-        plan.add_item("Inspect the model config path".to_string());
-        plan.add_item("Unify the CLI and Telegram resolution flow".to_string());
-
-        let report = distill_verified_task(
+        let report = promote_verified_task(
             &memory,
             &ctx,
             &options,
-            "Unify the model control path and rerun CLI tests",
-            &verified_task_result(),
-            &plan,
+            "Repair the approval mailbox compaction workflow",
+            TaskMode::PlanAndExecute,
+            &strong_verified_task_result("super-secret-output-value"),
+            &strong_plan(),
             false,
         )
         .unwrap();
 
         assert!(report.lesson_file.is_some());
-        assert!(report.plan_file.is_some());
+        assert!(report.procedure_file.is_some());
+        assert!(report.trajectory_file.is_some());
 
         let lesson_path = temp.path().join(report.lesson_file.unwrap());
-        let plan_path = temp.path().join(report.plan_file.unwrap());
+        let procedure_path = temp.path().join(report.procedure_file.unwrap());
+        let trajectory_path = temp.path().join(report.trajectory_file.unwrap());
         let memory_index =
             fs::read_to_string(temp.path().join(MEMORY_INDEX_RELATIVE_PATH)).unwrap();
+        let lesson = fs::read_to_string(&lesson_path).unwrap();
+        let procedure = fs::read_to_string(&procedure_path).unwrap();
+        let trajectory = fs::read_to_string(&trajectory_path).unwrap();
 
         assert!(lesson_path.is_file());
-        assert!(plan_path.is_file());
+        assert!(procedure_path.is_file());
+        assert!(trajectory_path.is_file());
         assert!(memory_index.contains("file: lessons/"));
-        assert!(memory_index.contains("file: plans/"));
+        assert!(memory_index.contains("file: procedures/"));
+        assert!(lesson.starts_with("# "));
+        assert!(procedure.contains("## Steps"));
+        assert!(procedure.contains("**Source Trajectory:** .topagent/trajectories/"));
+        assert_ne!(lesson.lines().next(), procedure.lines().next());
+        assert!(trajectory.contains("\"tool_sequence\""));
+        assert!(trajectory.contains("\"verification\""));
+        assert!(trajectory.contains("\"stored_outputs\": false"));
+        assert!(!trajectory.contains("super-secret-output-value"));
     }
 
     #[test]
-    fn test_distill_verified_task_skips_without_passing_verification() {
+    fn test_promote_verified_task_skips_without_passing_verification() {
         let temp = TempDir::new().unwrap();
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
         let ctx = ExecutionContext::new(temp.path().to_path_buf());
@@ -1001,46 +1505,265 @@ mod tests {
             succeeded: false,
         });
 
-        let report = distill_verified_task(
+        let report = promote_verified_task(
             &memory,
             &ctx,
             &options,
             "Unify the model control path and rerun CLI tests",
+            TaskMode::PlanAndExecute,
             &failed,
             &Plan::new(),
             false,
         )
         .unwrap();
 
-        assert_eq!(report, TaskDistillationReport::default());
+        assert_eq!(report, TaskPromotionReport::default());
         assert!(!temp.path().join(MEMORY_LESSONS_RELATIVE_DIR).exists());
-        assert!(!temp.path().join(MEMORY_PLANS_RELATIVE_DIR).exists());
+        assert!(!temp.path().join(MEMORY_PROCEDURES_RELATIVE_DIR).exists());
+        assert!(!temp.path().join(MEMORY_TRAJECTORIES_RELATIVE_DIR).exists());
     }
 
     #[test]
-    fn test_distill_verified_task_skips_when_memory_was_already_written() {
+    fn test_promote_verified_task_skips_trivial_verified_work() {
         let temp = TempDir::new().unwrap();
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
         let ctx = ExecutionContext::new(temp.path().to_path_buf());
         let options = RuntimeOptions::default();
-        let mut plan = Plan::new();
-        plan.add_item("Inspect the config path".to_string());
-        plan.add_item("Rerun the CLI tests".to_string());
-
-        let report = distill_verified_task(
+        let trivial = TaskResult::new("Updated one file and reran one verification.".to_string())
+            .with_files_changed(vec!["README.md".to_string()])
+            .with_verification_command(VerificationCommand {
+                command: "cargo test -p topagent-cli".to_string(),
+                output: "ok".to_string(),
+                exit_code: 0,
+                succeeded: true,
+            });
+        let report = promote_verified_task(
             &memory,
             &ctx,
             &options,
-            "Unify the model control path and rerun CLI tests",
-            &verified_task_result(),
-            &plan,
+            "Update one README line and rerun the CLI test",
+            TaskMode::PlanAndExecute,
+            &trivial,
+            &Plan::new(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(report, TaskPromotionReport::default());
+        assert!(!temp.path().join(MEMORY_LESSONS_RELATIVE_DIR).exists());
+        assert!(!temp.path().join(MEMORY_PROCEDURES_RELATIVE_DIR).exists());
+        assert!(!temp.path().join(MEMORY_TRAJECTORIES_RELATIVE_DIR).exists());
+    }
+
+    #[test]
+    fn test_promote_verified_task_skips_when_memory_was_already_written() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let ctx = ExecutionContext::new(temp.path().to_path_buf());
+        let options = RuntimeOptions::default();
+
+        let report = promote_verified_task(
+            &memory,
+            &ctx,
+            &options,
+            "Repair the approval mailbox compaction workflow",
+            TaskMode::PlanAndExecute,
+            &strong_verified_task_result("already saved elsewhere"),
+            &strong_plan(),
             true,
         )
         .unwrap();
 
-        assert_eq!(report, TaskDistillationReport::default());
+        assert_eq!(report, TaskPromotionReport::default());
         assert!(!temp.path().join(MEMORY_LESSONS_RELATIVE_DIR).exists());
-        assert!(!temp.path().join(MEMORY_PLANS_RELATIVE_DIR).exists());
+        assert!(!temp.path().join(MEMORY_PROCEDURES_RELATIVE_DIR).exists());
+        assert!(!temp.path().join(MEMORY_TRAJECTORIES_RELATIVE_DIR).exists());
+    }
+
+    #[test]
+    fn test_promote_verified_task_supersedes_matching_procedure() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let ctx = ExecutionContext::new(temp.path().to_path_buf());
+        let options = RuntimeOptions::default();
+
+        let first = promote_verified_task(
+            &memory,
+            &ctx,
+            &options,
+            "Repair approval mailbox compaction workflow",
+            TaskMode::PlanAndExecute,
+            &strong_verified_task_result("first output"),
+            &strong_plan(),
+            false,
+        )
+        .unwrap();
+        let second = promote_verified_task(
+            &memory,
+            &ctx,
+            &options,
+            "Repair approval mailbox compaction workflow with pending anchor retention",
+            TaskMode::PlanAndExecute,
+            &strong_verified_task_result("second output"),
+            &strong_plan(),
+            false,
+        )
+        .unwrap();
+
+        let first_procedure = first.procedure_file.unwrap();
+        let second_procedure = second.procedure_file.unwrap();
+        assert_eq!(
+            second.superseded_procedure_file.as_deref(),
+            Some(first_procedure.as_str())
+        );
+
+        let old = parse_saved_procedure(&temp.path().join(&first_procedure))
+            .unwrap()
+            .unwrap();
+        let new = parse_saved_procedure(&temp.path().join(&second_procedure))
+            .unwrap()
+            .unwrap();
+        assert_eq!(old.status, ProcedureStatus::Superseded);
+        assert_eq!(new.status, ProcedureStatus::Active);
+
+        let prompt = memory
+            .build_prompt("repair approval mailbox compaction workflow", None)
+            .unwrap();
+        assert!(prompt.stats.loaded_items.contains(&new.title));
+        assert!(!prompt.stats.loaded_items.contains(&old.title));
+    }
+
+    #[test]
+    fn test_build_prompt_loads_only_small_relevant_procedure_subset() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        memory.ensure_layout().unwrap();
+
+        let procedures = [
+            ProcedureDraft {
+                title: "Approval mailbox compaction playbook".to_string(),
+                when_to_use: "Use for approval mailbox compaction work.".to_string(),
+                prerequisites: vec!["Stay within the workspace.".to_string()],
+                steps: vec![
+                    "Inspect the mailbox.".to_string(),
+                    "Compact safely.".to_string(),
+                ],
+                pitfalls: vec!["Do not drop pending approvals.".to_string()],
+                verification: "cargo test -p topagent-core approval".to_string(),
+                source_task: Some("approval mailbox compaction".to_string()),
+                source_lesson: None,
+                source_trajectory: None,
+                supersedes: None,
+            },
+            ProcedureDraft {
+                title: "Approval mailbox restore flow".to_string(),
+                when_to_use: "Use for restoring approval mailbox state.".to_string(),
+                prerequisites: vec!["Stay within the workspace.".to_string()],
+                steps: vec![
+                    "Restore the checkpoint.".to_string(),
+                    "Rebuild anchors.".to_string(),
+                ],
+                pitfalls: vec!["Do not keep stale transcript state.".to_string()],
+                verification: "cargo test -p topagent-cli telegram".to_string(),
+                source_task: Some("approval mailbox restore".to_string()),
+                source_lesson: None,
+                source_trajectory: None,
+                supersedes: None,
+            },
+            ProcedureDraft {
+                title: "Operator response tone guide".to_string(),
+                when_to_use: "Use when editing operator-facing prose.".to_string(),
+                prerequisites: vec!["Match repo tone.".to_string()],
+                steps: vec!["Keep answers concise.".to_string()],
+                pitfalls: vec!["Do not add fluff.".to_string()],
+                verification: "cargo test -p topagent-cli".to_string(),
+                source_task: Some("operator response tone".to_string()),
+                source_lesson: None,
+                source_trajectory: None,
+                supersedes: None,
+            },
+        ];
+
+        for procedure in procedures {
+            save_procedure(&memory.procedures_dir, &procedure).unwrap();
+        }
+        memory.consolidate_memory_if_needed().unwrap();
+
+        let prompt = memory
+            .build_prompt("repair approval mailbox compaction and restore flow", None)
+            .unwrap();
+        assert_eq!(prompt.stats.loaded_items.len(), 2);
+        assert!(prompt
+            .stats
+            .loaded_items
+            .contains(&"Approval mailbox compaction playbook".to_string()));
+        assert!(prompt
+            .stats
+            .loaded_items
+            .contains(&"Approval mailbox restore flow".to_string()));
+        assert!(!prompt
+            .stats
+            .loaded_items
+            .contains(&"Operator response tone guide".to_string()));
+    }
+
+    #[test]
+    fn test_build_prompt_skips_superseded_procedure_entries() {
+        let temp = TempDir::new().unwrap();
+        write_memory_index(temp.path(), "# TopAgent Memory Index\n\n");
+        write_procedure(
+            temp.path(),
+            "100-approval-old.md",
+            "# Old Approval Mailbox Procedure\n\n**Saved:** <t:100>\n**Status:** superseded\n**When To Use:** Use for old approval mailbox compaction work.\n**Verification:** cargo test -p topagent-core approval\n**Superseded By:** .topagent/procedures/200-approval-new.md\n\n---\n\n## Prerequisites\n\n- Stay inside the workspace.\n\n## Steps\n\n1. Inspect the old flow.\n\n## Pitfalls\n\n- Do not use this anymore.\n",
+        );
+        write_procedure(
+            temp.path(),
+            "200-approval-new.md",
+            "# New Approval Mailbox Procedure\n\n**Saved:** <t:200>\n**Status:** active\n**When To Use:** Use for approval mailbox compaction with pending anchor retention.\n**Verification:** cargo test -p topagent-core approval\n\n---\n\n## Prerequisites\n\n- Stay inside the workspace.\n\n## Steps\n\n1. Preserve pending anchors.\n\n## Pitfalls\n\n- Do not drop pending approvals.\n",
+        );
+
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        memory.consolidate_memory_if_needed().unwrap();
+
+        let prompt = memory
+            .build_prompt("approval mailbox compaction", None)
+            .unwrap();
+        let rendered = prompt.prompt.unwrap();
+        assert!(rendered.contains("New Approval Mailbox Procedure"));
+        assert!(!rendered.contains("Old Approval Mailbox Procedure"));
+    }
+
+    #[test]
+    fn test_promote_verified_task_redacts_registered_secrets_from_saved_artifacts() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let mut secrets = SecretRegistry::new();
+        secrets.register("super-secret-output-value");
+        let ctx = ExecutionContext::new(temp.path().to_path_buf()).with_secrets(secrets);
+        let options = RuntimeOptions::default();
+
+        let report = promote_verified_task(
+            &memory,
+            &ctx,
+            &options,
+            "Repair approval mailbox compaction workflow",
+            TaskMode::PlanAndExecute,
+            &strong_verified_task_result("super-secret-output-value"),
+            &strong_plan(),
+            false,
+        )
+        .unwrap();
+
+        let lesson = fs::read_to_string(temp.path().join(report.lesson_file.unwrap())).unwrap();
+        let procedure =
+            fs::read_to_string(temp.path().join(report.procedure_file.unwrap())).unwrap();
+        let trajectory =
+            fs::read_to_string(temp.path().join(report.trajectory_file.unwrap())).unwrap();
+
+        assert!(!lesson.contains("super-secret-output-value"));
+        assert!(!procedure.contains("super-secret-output-value"));
+        assert!(!trajectory.contains("super-secret-output-value"));
+        assert!(trajectory.contains("[REDACTED]") || !trajectory.contains("first pass failed"));
     }
 
     #[test]

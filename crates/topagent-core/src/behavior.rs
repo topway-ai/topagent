@@ -155,6 +155,8 @@ pub struct MemoryPolicy {
     pub max_transcript_message_bytes: usize,
     pub max_curated_lessons: usize,
     pub max_curated_plans: usize,
+    pub max_curated_procedures: usize,
+    pub max_procedures_to_load: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -439,7 +441,7 @@ Use the update_plan tool to create a plan with concrete steps, then execute it."
                 keep_index_tiny: true,
                 index_is_pointer_only: true,
                 topic_file_relative_dir: "topics",
-                archival_relative_dirs: &["lessons", "plans"],
+                archival_relative_dirs: &["lessons", "plans", "procedures"],
                 index_entry_format:
                     "- topic: <name> | file: topics/<name>.md | status: verified|tentative|stale | tags: tag1, tag2 | note: short pointer",
                 max_index_entries: 24,
@@ -452,6 +454,8 @@ Use the update_plan tool to create a plan with concrete steps, then execute it."
                 max_transcript_message_bytes: 220,
                 max_curated_lessons: 6,
                 max_curated_plans: 4,
+                max_curated_procedures: 4,
+                max_procedures_to_load: 2,
             },
             generated_tools: GeneratedToolPolicy {
                 authoring_enabled: options.enable_generated_tool_authoring,

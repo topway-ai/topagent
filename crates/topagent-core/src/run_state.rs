@@ -1,18 +1,21 @@
 use crate::approval::ApprovalState;
 use crate::behavior::{BehaviorContract, RunStateSnapshot};
 use crate::context::ExecutionContext;
-use crate::task_result::{TaskEvidence, TaskResult, VerificationCommand};
+use crate::task_result::{TaskEvidence, TaskResult, ToolTraceStep, VerificationCommand};
+use crate::tools::risky_shell_changed_path_hints;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 
 const MAX_ACTIVE_FILES: usize = 12;
+const MAX_TOOL_TRACE_STEPS: usize = 16;
 
 pub(crate) struct AgentRunState {
     current_objective: Option<String>,
     changed_files: RefCell<Vec<String>>,
     active_files: RefCell<Vec<String>>,
     bash_history: RefCell<Vec<(String, String, i32)>>,
+    tool_trace: RefCell<Vec<ToolTraceStep>>,
     run_baseline: RefCell<Option<RunBaseline>>,
 }
 
@@ -29,6 +32,7 @@ impl Default for AgentRunState {
             changed_files: RefCell::new(Vec::new()),
             active_files: RefCell::new(Vec::new()),
             bash_history: RefCell::new(Vec::new()),
+            tool_trace: RefCell::new(Vec::new()),
             run_baseline: RefCell::new(None),
         }
     }
@@ -48,6 +52,7 @@ impl AgentRunState {
         self.changed_files.borrow_mut().clear();
         self.active_files.borrow_mut().clear();
         self.bash_history.borrow_mut().clear();
+        self.tool_trace.borrow_mut().clear();
         self.capture_run_baseline(workspace_root);
     }
 
@@ -86,6 +91,28 @@ impl AgentRunState {
         self.bash_history
             .borrow_mut()
             .push((command, output, exit_code));
+    }
+
+    pub(crate) fn record_tool_trace(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        bash_command: Option<&str>,
+        behavior: &BehaviorContract,
+    ) {
+        let Some(summary) = self.tool_trace_summary(tool_name, args, bash_command, behavior) else {
+            return;
+        };
+
+        let mut trace = self.tool_trace.borrow_mut();
+        trace.push(ToolTraceStep {
+            tool_name: tool_name.to_string(),
+            summary,
+        });
+        if trace.len() > MAX_TOOL_TRACE_STEPS {
+            let excess = trace.len() - MAX_TOOL_TRACE_STEPS;
+            trace.drain(0..excess);
+        }
     }
 
     pub(crate) fn track_inferred_changed_paths(&self, paths: &[String]) -> bool {
@@ -241,6 +268,7 @@ impl AgentRunState {
             files_changed: labeled_files,
             diff_summary,
             verification_commands_run: Vec::new(),
+            tool_trace: self.tool_trace.borrow().clone(),
             unresolved_issues: Vec::new(),
             workspace_warnings: Vec::new(),
         };
@@ -285,6 +313,7 @@ impl AgentRunState {
             .with_files_changed(evidence.files_changed.clone())
             .with_diff_summary(evidence.diff_summary.clone())
             .with_verification_commands(evidence.verification_commands_run.clone())
+            .with_tool_trace(evidence.tool_trace.clone())
             .with_unresolved_issues(evidence.unresolved_issues.clone())
             .with_workspace_warnings(generated_tool_warnings.to_vec())
     }
@@ -431,6 +460,47 @@ impl AgentRunState {
         dirty
     }
 
+    fn tool_trace_summary(
+        &self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        bash_command: Option<&str>,
+        behavior: &BehaviorContract,
+    ) -> Option<String> {
+        match tool_name {
+            "read" | "write" | "edit" => args
+                .get("path")
+                .and_then(|value| value.as_str())
+                .map(|path| format!("{tool_name} {path}")),
+            "update_plan" => {
+                let item_count = args
+                    .get("items")
+                    .and_then(|value| value.as_array())
+                    .map_or(0, |items| items.len());
+                Some(format!("update_plan ({item_count} items)"))
+            }
+            "save_lesson" | "save_plan" | "manage_operator_preference" => {
+                Some(tool_name.to_string())
+            }
+            "bash" => bash_command.map(|command| {
+                if behavior.is_verification_command(command) {
+                    format!("verification: {}", compact_trace_text(command, 96))
+                } else {
+                    let hinted_paths = risky_shell_changed_path_hints(command);
+                    if hinted_paths.is_empty() {
+                        format!("shell mutation: {}", compact_trace_text(command, 72))
+                    } else {
+                        format!(
+                            "shell mutation on {}",
+                            compact_trace_text(&hinted_paths.join(", "), 72)
+                        )
+                    }
+                }
+            }),
+            name => Some(name.to_string()),
+        }
+    }
+
     fn generate_diff_summary(workspace_root: &Path, changed_files: &[String]) -> String {
         if changed_files.is_empty() {
             return String::new();
@@ -477,4 +547,19 @@ impl AgentRunState {
         }
         summary_parts.join("\n")
     }
+}
+
+fn compact_trace_text(text: &str, max_chars: usize) -> String {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.len() <= max_chars {
+        return compact;
+    }
+
+    let mut end = max_chars;
+    while end > 0 && !compact.is_char_boundary(end) {
+        end -= 1;
+    }
+    let mut limited = compact[..end].trim_end().to_string();
+    limited.push_str("...");
+    limited
 }
