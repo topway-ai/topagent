@@ -2,6 +2,7 @@
 // Run: topagent "task" or topagent telegram
 mod checkpoint;
 mod config;
+mod learning;
 mod managed_files;
 mod memory;
 mod openrouter_models;
@@ -31,6 +32,7 @@ use crate::config::{
     build_route_from_resolved, build_runtime_options, load_persisted_telegram_defaults,
     require_openrouter_api_key, resolve_runtime_model_selection, resolve_workspace_path, CliParams,
 };
+use crate::learning::{run_memory_command, run_procedure_command, run_trajectory_command};
 use crate::memory::promote_verified_task;
 use crate::progress::LiveProgress;
 use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
@@ -126,6 +128,21 @@ enum Commands {
         #[command(subcommand)]
         command: ModelCommands,
     },
+    /// Inspect workspace memory layers.
+    Memory {
+        #[command(subcommand)]
+        command: MemoryCommands,
+    },
+    /// Inspect and govern reusable procedures.
+    Procedure {
+        #[command(subcommand)]
+        command: ProcedureCommands,
+    },
+    /// Inspect, review, and export saved trajectories.
+    Trajectory {
+        #[command(subcommand)]
+        command: TrajectoryCommands,
+    },
     /// Inspect and restore the latest workspace checkpoint.
     Checkpoint {
         #[command(subcommand)]
@@ -180,6 +197,43 @@ pub(crate) enum CheckpointCommands {
     Restore,
 }
 
+#[derive(Subcommand)]
+pub(crate) enum MemoryCommands {
+    /// Show workspace learning artifact status.
+    Status,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ProcedureCommands {
+    /// List saved procedures.
+    List {
+        #[arg(long, help = "Include superseded and disabled procedures")]
+        all: bool,
+    },
+    /// Show one saved procedure.
+    Show { id: String },
+    /// Remove superseded and disabled procedures.
+    Prune,
+    /// Mark a procedure disabled.
+    Disable {
+        id: String,
+        #[arg(long, help = "Reason for disabling the procedure")]
+        reason: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum TrajectoryCommands {
+    /// List saved trajectories.
+    List,
+    /// Show one saved trajectory.
+    Show { id: String },
+    /// Mark a trajectory ready for export after review.
+    Review { id: String },
+    /// Export a reviewed trajectory.
+    Export { id: String },
+}
+
 fn main() -> Result<()> {
     init_tracing();
 
@@ -201,6 +255,9 @@ fn main() -> Result<()> {
         Some(Commands::Install) => run_install(params),
         Some(Commands::Status) => run_status(params),
         Some(Commands::Model { command }) => run_model_command(command, params),
+        Some(Commands::Memory { command }) => run_memory_command(command, params.workspace),
+        Some(Commands::Procedure { command }) => run_procedure_command(command, params.workspace),
+        Some(Commands::Trajectory { command }) => run_trajectory_command(command, params.workspace),
         Some(Commands::Checkpoint { command }) => run_checkpoint_command(command, params.workspace),
         Some(Commands::Uninstall) => run_uninstall(),
         Some(Commands::Service { command }) => run_service_command(command, params),
@@ -255,7 +312,9 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
     let route = build_route_from_resolved(&model_selection.effective);
     let api_key = require_openrouter_api_key(params.api_key)?;
     let workspace_memory = prepare_workspace_memory(ctx.workspace_root.clone());
-    ctx = prepare_run_context(&ctx, &workspace_memory, &instruction, None);
+    let prepared_run = prepare_run_context(&ctx, &workspace_memory, &instruction, None);
+    let loaded_procedure_files = prepared_run.loaded_procedure_files.clone();
+    ctx = prepared_run.run_ctx;
 
     info!(
         "starting one-shot run | model: {} | workspace: {}",
@@ -288,6 +347,7 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
                         &task_result,
                         &plan.clone(),
                         agent.durable_memory_written_this_run(),
+                        &loaded_procedure_files,
                     ) {
                         Ok(report) => {
                             if report.lesson_file.is_some()

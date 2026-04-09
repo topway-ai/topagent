@@ -10,6 +10,7 @@ pub struct BehaviorPromptContext<'a> {
     pub available_tools: &'a [ToolSpec],
     pub external_tools: &'a [ToolSpec],
     pub project_instructions: Option<&'a str>,
+    pub operator_context: Option<&'a str>,
     pub memory_context: Option<&'a str>,
     pub current_plan: Option<&'a Plan>,
     pub run_state: Option<&'a RunStateSnapshot>,
@@ -23,6 +24,7 @@ pub fn build_system_prompt(tools: &[ToolSpec], external_tools: &[ToolSpec]) -> S
         available_tools: tools,
         external_tools,
         project_instructions: None,
+        operator_context: None,
         memory_context: None,
         current_plan: None,
         run_state: None,
@@ -58,6 +60,12 @@ All file paths are relative to this workspace root.\n\n",
                 prompt.push('\n');
             }
             None => prompt.push_str(NO_PROJECT_INSTRUCTIONS_NOTE),
+        }
+
+        if let Some(operator_context) = ctx.operator_context {
+            prompt.push_str("\n## Operator Model\n\n");
+            prompt.push_str(operator_context);
+            prompt.push('\n');
         }
 
         if let Some(memory_context) = ctx.memory_context {
@@ -409,6 +417,9 @@ mod tests {
             available_tools: &[ToolSpec::read()],
             external_tools: &[],
             project_instructions: Some("# Repo rules"),
+            operator_context: Some(
+                "[response_style] concise final answers :: Keep final responses concise.",
+            ),
             memory_context: Some("Treat memory as hints, not truth."),
             current_plan: Some(&plan),
             run_state: Some(&RunStateSnapshot {
@@ -426,6 +437,7 @@ mod tests {
         });
 
         assert!(prompt.contains("## Product Identity"));
+        assert!(prompt.contains("## Operator Model"));
         assert!(prompt.contains("## Active Run State"));
         assert!(prompt.contains("## Output Contract"));
         assert!(prompt.contains("## Memory Write Rules"));

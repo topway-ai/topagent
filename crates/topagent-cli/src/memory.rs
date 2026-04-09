@@ -1,24 +1,28 @@
 mod memory_consolidation;
-mod procedures;
-mod trajectories;
+pub(crate) mod procedures;
+pub(crate) mod trajectories;
 
 use self::memory_consolidation::{
     parse_saved_lesson, parse_saved_plan, render_saved_lesson_excerpt, render_saved_plan_excerpt,
     MemoryIndexEntry,
 };
-use self::procedures::{
-    mark_procedure_superseded, parse_saved_procedure, procedure_haystack,
-    render_saved_procedure_excerpt, save_procedure, set_procedure_source_trajectory,
-    ParsedProcedure, ProcedureDraft, ProcedureStatus,
+pub(crate) use self::procedures::{
+    disable_procedure, mark_procedure_superseded, parse_saved_procedure, procedure_haystack,
+    record_procedure_reuse, render_saved_procedure_excerpt, revise_procedure, save_procedure,
+    set_procedure_source_trajectory, ParsedProcedure, ProcedureDraft, ProcedureStatus,
 };
-use self::trajectories::{save_trajectory, TrajectoryDraft};
+pub(crate) use self::trajectories::{
+    export_trajectory as write_exported_trajectory, mark_trajectory_ready, parse_saved_trajectory,
+    save_trajectory, TrajectoryDraft, TrajectoryReviewState, TRAJECTORY_EXPORTS_RELATIVE_DIR,
+};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use topagent_core::context::ToolContext;
 use topagent_core::tools::{SaveLessonArgs, SaveLessonTool, Tool};
 use topagent_core::{
-    BehaviorContract, ExecutionContext, Message, Plan, Role, RuntimeOptions, TaskMode, TaskResult,
+    load_operator_profile, migrate_legacy_operator_preferences, BehaviorContract, ExecutionContext,
+    Message, Plan, PreferenceCategory, Role, RuntimeOptions, TaskMode, TaskResult,
 };
 use tracing::warn;
 
@@ -95,13 +99,16 @@ fn memory_index_template() -> String {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct MemoryPrompt {
     pub prompt: Option<String>,
+    pub operator_prompt: Option<String>,
     pub stats: MemoryPromptStats,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct MemoryPromptStats {
     pub index_prompt_bytes: usize,
+    pub loaded_operator_items: Vec<String>,
     pub loaded_items: Vec<String>,
+    pub loaded_procedure_files: Vec<String>,
     pub transcript_snippets: usize,
 }
 
@@ -144,6 +151,8 @@ impl WorkspaceMemory {
             .with_context(|| format!("failed to create {}", self.procedures_dir.display()))?;
         std::fs::create_dir_all(&self.trajectories_dir)
             .with_context(|| format!("failed to create {}", self.trajectories_dir.display()))?;
+        migrate_legacy_operator_preferences(&self.workspace_root)
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
         if !self.index_path.exists() {
             if let Some(parent) = self.index_path.parent() {
@@ -164,13 +173,15 @@ impl WorkspaceMemory {
     ) -> Result<MemoryPrompt> {
         let contract = memory_contract();
         let entries = self.load_index_entries()?;
+        let operator_load = self.render_operator_section(&contract, instruction)?;
         let index_section = render_index_section(&contract, &entries);
         let procedure_load = self.render_procedure_section(&contract, instruction, &entries)?;
         let durable_load = self.render_durable_notes_section(&contract, instruction, &entries)?;
         let transcript_section = transcript_messages
             .and_then(|messages| render_transcript_section(&contract, instruction, messages));
 
-        if index_section.is_none()
+        if operator_load.section.is_none()
+            && index_section.is_none()
             && procedure_load.section.is_none()
             && durable_load.section.is_none()
             && transcript_section.is_none()
@@ -182,6 +193,16 @@ impl WorkspaceMemory {
         prompt.push_str(&contract.render_memory_prompt_preamble());
 
         let mut stats = MemoryPromptStats::default();
+        let operator_prompt;
+
+        if let Some(operator_section) = operator_load.section {
+            stats
+                .loaded_operator_items
+                .extend(operator_load.loaded_items);
+            operator_prompt = Some(operator_section);
+        } else {
+            operator_prompt = None;
+        }
 
         if let Some(index_section) = index_section {
             stats.index_prompt_bytes = index_section.len();
@@ -191,6 +212,9 @@ impl WorkspaceMemory {
 
         if let Some(procedure_section) = procedure_load.section {
             stats.loaded_items.extend(procedure_load.loaded_items);
+            stats
+                .loaded_procedure_files
+                .extend(procedure_load.loaded_files);
             prompt.push_str("\n### Relevant Procedures\n");
             prompt.push_str(&procedure_section);
         }
@@ -210,7 +234,76 @@ impl WorkspaceMemory {
 
         Ok(MemoryPrompt {
             prompt: Some(prompt.trim_end().to_string()),
+            operator_prompt,
             stats,
+        })
+    }
+
+    fn render_operator_section(
+        &self,
+        contract: &BehaviorContract,
+        instruction: &str,
+    ) -> Result<TopicLoad> {
+        let profile = load_operator_profile(&self.workspace_root)
+            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
+        if profile.preferences.is_empty() {
+            return Ok(TopicLoad::default());
+        }
+
+        let mut scored = profile
+            .preferences
+            .iter()
+            .filter_map(|record| {
+                let score = match record.category {
+                    PreferenceCategory::ResponseStyle => usize::MAX / 4,
+                    _ => {
+                        let mut haystack =
+                            format!("{} {}", record.key.replace('_', " "), record.value);
+                        if let Some(rationale) = &record.rationale {
+                            haystack.push(' ');
+                            haystack.push_str(rationale);
+                        }
+                        score_text_relevance(instruction, &haystack)
+                    }
+                };
+                (score > 0).then_some((score, record))
+            })
+            .collect::<Vec<_>>();
+        scored.sort_by(|(left_score, left), (right_score, right)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| left.key.cmp(&right.key))
+        });
+
+        let mut section = String::new();
+        let mut loaded_items = Vec::new();
+
+        for (_, record) in scored
+            .into_iter()
+            .take(contract.memory.max_operator_preferences_to_load)
+        {
+            let mut excerpt = format!(
+                "[{}] {} :: {}",
+                record.category.as_str(),
+                record.key.replace('_', " "),
+                compact_text_line(&record.value, 120)
+            );
+            if let Some(rationale) = &record.rationale {
+                excerpt.push_str(&format!(" | why: {}", compact_text_line(rationale, 80)));
+            }
+            let excerpt = compact_text_line(&excerpt, contract.memory.max_operator_prompt_bytes);
+            if !section.is_empty() {
+                section.push('\n');
+            }
+            section.push_str(&excerpt);
+            section.push('\n');
+            loaded_items.push(record.key.clone());
+        }
+
+        Ok(TopicLoad {
+            section: (!section.is_empty()).then_some(section),
+            loaded_items,
+            loaded_files: Vec::new(),
         })
     }
 
@@ -236,6 +329,7 @@ impl WorkspaceMemory {
 
         let mut section = String::new();
         let mut loaded_items = Vec::new();
+        let mut loaded_files = Vec::new();
 
         for (_, entry) in scored_entries
             .into_iter()
@@ -253,7 +347,7 @@ impl WorkspaceMemory {
             let Some(procedure) = parse_saved_procedure(&path)? else {
                 continue;
             };
-            if procedure.status == ProcedureStatus::Superseded {
+            if procedure.status != ProcedureStatus::Active {
                 continue;
             }
 
@@ -273,11 +367,13 @@ impl WorkspaceMemory {
                 excerpt
             ));
             loaded_items.push(procedure.title);
+            loaded_files.push(format!(".topagent/procedures/{}", procedure.filename));
         }
 
         Ok(TopicLoad {
             section: (!section.is_empty()).then_some(section),
             loaded_items,
+            loaded_files,
         })
     }
 
@@ -343,6 +439,7 @@ impl WorkspaceMemory {
         Ok(TopicLoad {
             section: (!section.is_empty()).then_some(section),
             loaded_items,
+            loaded_files: Vec::new(),
         })
     }
 
@@ -411,6 +508,7 @@ impl WorkspaceMemory {
 struct TopicLoad {
     section: Option<String>,
     loaded_items: Vec<String>,
+    loaded_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -426,6 +524,13 @@ struct PromotionDecision {
     lesson: bool,
     procedure: bool,
     trajectory: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProcedureRevisionAction {
+    Keep,
+    Refine,
+    Supersede,
 }
 
 impl PromotionDecision {
@@ -449,6 +554,7 @@ pub(crate) fn promote_verified_task(
     task_result: &TaskResult,
     plan: &Plan,
     durable_memory_written: bool,
+    loaded_procedure_files: &[String],
 ) -> Result<TaskPromotionReport> {
     let decision = evaluate_promotion(instruction, task_result, plan, durable_memory_written);
     if decision.is_empty() {
@@ -474,22 +580,50 @@ pub(crate) fn promote_verified_task(
     }
 
     if decision.procedure {
-        let matching = find_matching_active_procedure(memory, instruction)?;
+        let reused = find_matching_loaded_procedure(memory, instruction, loaded_procedure_files)?;
         let procedure_draft = build_procedure_draft(
             &stored_instruction,
             &stored_task_result,
             plan,
             report.lesson_file.as_deref(),
             None,
-            matching
+            reused
                 .as_ref()
                 .map(|procedure| format!(".topagent/procedures/{}", procedure.filename)),
         )?;
-        let (procedure_file, _path) = save_procedure(&memory.procedures_dir, &procedure_draft)?;
-        report.procedure_file = Some(procedure_file.clone());
-        if let Some(existing) = matching {
-            report.superseded_procedure_file =
-                mark_procedure_superseded(&existing.path, &procedure_file)?;
+        match reused {
+            Some(existing) => match evaluate_procedure_revision(&existing, &procedure_draft) {
+                ProcedureRevisionAction::Keep => {
+                    report.procedure_file = record_procedure_reuse(&existing.path, None)?
+                        .or(Some(format!(".topagent/procedures/{}", existing.filename)));
+                }
+                ProcedureRevisionAction::Refine => {
+                    report.procedure_file = revise_procedure(
+                        &existing.path,
+                        &procedure_draft,
+                        report.lesson_file.as_deref(),
+                        None,
+                    )?
+                    .or(Some(format!(".topagent/procedures/{}", existing.filename)));
+                }
+                ProcedureRevisionAction::Supersede => {
+                    let (procedure_file, _path) =
+                        save_procedure(&memory.procedures_dir, &procedure_draft)?;
+                    report.procedure_file = Some(procedure_file.clone());
+                    report.superseded_procedure_file =
+                        mark_procedure_superseded(&existing.path, &procedure_file)?;
+                }
+            },
+            None => {
+                if let Some(existing) = find_matching_active_procedure(memory, instruction)? {
+                    report.procedure_file =
+                        Some(format!(".topagent/procedures/{}", existing.filename));
+                } else {
+                    let (procedure_file, _path) =
+                        save_procedure(&memory.procedures_dir, &procedure_draft)?;
+                    report.procedure_file = Some(procedure_file);
+                }
+            }
         }
     }
 
@@ -828,11 +962,11 @@ fn find_matching_active_procedure(
         let Some(procedure) = parse_saved_procedure(&path)? else {
             continue;
         };
-        if procedure.status == ProcedureStatus::Superseded {
+        if procedure.status != ProcedureStatus::Active {
             continue;
         }
 
-        let score = score_text_relevance(instruction, &procedure_haystack(&procedure));
+        let score = procedure_match_score(instruction, &procedure);
         if score < 4 {
             continue;
         }
@@ -844,6 +978,84 @@ fn find_matching_active_procedure(
     }
 
     Ok(best.map(|(_, procedure)| procedure))
+}
+
+fn find_matching_loaded_procedure(
+    memory: &WorkspaceMemory,
+    instruction: &str,
+    loaded_procedure_files: &[String],
+) -> Result<Option<ParsedProcedure>> {
+    let mut best: Option<(usize, ParsedProcedure)> = None;
+    for relative_path in loaded_procedure_files {
+        let Some(filename) = artifact_filename(relative_path) else {
+            continue;
+        };
+        let path = memory.procedures_dir.join(filename);
+        let Some(procedure) = parse_saved_procedure(&path)? else {
+            continue;
+        };
+        if procedure.status != ProcedureStatus::Active {
+            continue;
+        }
+
+        let score = procedure_match_score(instruction, &procedure);
+        if score < 4 {
+            continue;
+        }
+
+        match &best {
+            Some((best_score, _)) if *best_score >= score => {}
+            _ => best = Some((score, procedure)),
+        }
+    }
+
+    Ok(best.map(|(_, procedure)| procedure))
+}
+
+fn procedure_match_score(instruction: &str, procedure: &ParsedProcedure) -> usize {
+    score_text_relevance(instruction, &procedure_haystack(procedure))
+}
+
+fn evaluate_procedure_revision(
+    existing: &ParsedProcedure,
+    draft: &ProcedureDraft,
+) -> ProcedureRevisionAction {
+    let same_verification = existing
+        .verification
+        .trim()
+        .eq_ignore_ascii_case(draft.verification.trim());
+    let overlapping_steps = draft
+        .steps
+        .iter()
+        .filter(|step| {
+            existing
+                .steps
+                .iter()
+                .any(|existing_step| existing_step.eq_ignore_ascii_case(step))
+        })
+        .count();
+    let has_new_steps = draft.steps.iter().any(|step| {
+        !existing
+            .steps
+            .iter()
+            .any(|existing_step| existing_step.eq_ignore_ascii_case(step))
+    });
+    let has_new_pitfalls = draft.pitfalls.iter().any(|pitfall| {
+        !existing
+            .pitfalls
+            .iter()
+            .any(|existing_pitfall| existing_pitfall.eq_ignore_ascii_case(pitfall))
+    });
+
+    if same_verification && overlapping_steps > 0 {
+        if has_new_steps || has_new_pitfalls {
+            ProcedureRevisionAction::Refine
+        } else {
+            ProcedureRevisionAction::Keep
+        }
+    } else {
+        ProcedureRevisionAction::Supersede
+    }
 }
 
 fn list_markdown_files(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -1253,6 +1465,10 @@ mod tests {
     }
 
     fn strong_verified_task_result(output: &str) -> TaskResult {
+        strong_verified_task_result_with_command(output, "cargo test -p topagent-cli")
+    }
+
+    fn strong_verified_task_result_with_command(output: &str, command: &str) -> TaskResult {
         TaskResult::new(
             "Hardened the approval mailbox compaction flow and reran the CLI test suite."
                 .to_string(),
@@ -1272,17 +1488,17 @@ mod tests {
             },
             ToolTraceStep {
                 tool_name: "bash".to_string(),
-                summary: "verification: cargo test -p topagent-cli".to_string(),
+                summary: format!("verification: {command}"),
             },
         ])
         .with_verification_command(VerificationCommand {
-            command: "cargo test -p topagent-cli".to_string(),
+            command: command.to_string(),
             output: format!("first pass failed: {output}"),
             exit_code: 1,
             succeeded: false,
         })
         .with_verification_command(VerificationCommand {
-            command: "cargo test -p topagent-cli".to_string(),
+            command: command.to_string(),
             output: format!("final pass ok: {output}"),
             exit_code: 0,
             succeeded: true,
@@ -1294,6 +1510,12 @@ mod tests {
         plan.add_item("Inspect the approval mailbox and compaction flow".to_string());
         plan.add_item("Preserve pending approval anchors through the state transition".to_string());
         plan.add_item("Rerun the CLI verification and confirm the proof stays honest".to_string());
+        plan
+    }
+
+    fn strong_plan_with_extra_item() -> Plan {
+        let mut plan = strong_plan();
+        plan.add_item("Clear stale transcript state before finishing the workflow".to_string());
         plan
     }
 
@@ -1446,6 +1668,46 @@ mod tests {
     }
 
     #[test]
+    fn test_build_prompt_keeps_operator_model_separate_from_workspace_memory() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".topagent")).unwrap();
+        fs::write(
+            temp.path().join(".topagent/USER.md"),
+            "# Operator Model\n\n## concise_final_answers\n**Category:** response_style\n**Updated:** <t:1>\n**Preference:** Keep final answers concise.\n",
+        )
+        .unwrap();
+        write_memory_index(
+            temp.path(),
+            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/architecture.md | status: verified | note: runtime details\n",
+        );
+        write_topic(
+            temp.path(),
+            "architecture.md",
+            "# Architecture\nruntime details",
+        );
+
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let prompt = memory
+            .build_prompt(
+                "inspect runtime architecture and keep the answer concise",
+                None,
+            )
+            .unwrap();
+
+        assert!(prompt
+            .operator_prompt
+            .as_deref()
+            .unwrap()
+            .contains("concise final answers"));
+        assert!(prompt.prompt.as_deref().unwrap().contains("# Architecture"));
+        assert!(!prompt
+            .prompt
+            .as_deref()
+            .unwrap()
+            .contains("concise final answers"));
+    }
+
+    #[test]
     fn test_promote_verified_task_creates_lesson_procedure_and_trajectory() {
         let temp = TempDir::new().unwrap();
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
@@ -1460,6 +1722,7 @@ mod tests {
             &strong_verified_task_result("super-secret-output-value"),
             &strong_plan(),
             false,
+            &[],
         )
         .unwrap();
 
@@ -1489,6 +1752,7 @@ mod tests {
         assert!(trajectory.contains("\"verification\""));
         assert!(trajectory.contains("\"stored_outputs\": false"));
         assert!(!trajectory.contains("super-secret-output-value"));
+        assert!(!temp.path().join(".topagent/USER.md").exists());
     }
 
     #[test]
@@ -1514,6 +1778,7 @@ mod tests {
             &failed,
             &Plan::new(),
             false,
+            &[],
         )
         .unwrap();
 
@@ -1546,6 +1811,7 @@ mod tests {
             &trivial,
             &Plan::new(),
             false,
+            &[],
         )
         .unwrap();
 
@@ -1571,6 +1837,7 @@ mod tests {
             &strong_verified_task_result("already saved elsewhere"),
             &strong_plan(),
             true,
+            &[],
         )
         .unwrap();
 
@@ -1581,7 +1848,7 @@ mod tests {
     }
 
     #[test]
-    fn test_promote_verified_task_supersedes_matching_procedure() {
+    fn test_promote_verified_task_reuses_matching_loaded_procedure() {
         let temp = TempDir::new().unwrap();
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
         let ctx = ExecutionContext::new(temp.path().to_path_buf());
@@ -1596,8 +1863,12 @@ mod tests {
             &strong_verified_task_result("first output"),
             &strong_plan(),
             false,
+            &[],
         )
         .unwrap();
+        let prompt = memory
+            .build_prompt("repair approval mailbox compaction workflow", None)
+            .unwrap();
         let second = promote_verified_task(
             &memory,
             &ctx,
@@ -1607,6 +1878,112 @@ mod tests {
             &strong_verified_task_result("second output"),
             &strong_plan(),
             false,
+            &prompt.stats.loaded_procedure_files,
+        )
+        .unwrap();
+
+        let first_procedure = first.procedure_file.unwrap();
+        let second_procedure = second.procedure_file.unwrap();
+        assert_eq!(second.superseded_procedure_file, None);
+        assert_eq!(second_procedure, first_procedure);
+
+        let reused = parse_saved_procedure(&temp.path().join(&first_procedure))
+            .unwrap()
+            .unwrap();
+        assert_eq!(reused.status, ProcedureStatus::Active);
+        assert_eq!(reused.reuse_count, 1);
+        assert_eq!(reused.revision_count, 0);
+        assert!(prompt
+            .stats
+            .loaded_procedure_files
+            .contains(&first_procedure));
+    }
+
+    #[test]
+    fn test_promote_verified_task_refines_loaded_procedure_after_verified_reuse() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let ctx = ExecutionContext::new(temp.path().to_path_buf());
+        let options = RuntimeOptions::default();
+
+        let first = promote_verified_task(
+            &memory,
+            &ctx,
+            &options,
+            "Repair approval mailbox compaction workflow",
+            TaskMode::PlanAndExecute,
+            &strong_verified_task_result("first output"),
+            &strong_plan(),
+            false,
+            &[],
+        )
+        .unwrap();
+        let prompt = memory
+            .build_prompt("repair approval mailbox compaction workflow", None)
+            .unwrap();
+        let second = promote_verified_task(
+            &memory,
+            &ctx,
+            &options,
+            "Repair approval mailbox compaction workflow",
+            TaskMode::PlanAndExecute,
+            &strong_verified_task_result("second output"),
+            &strong_plan_with_extra_item(),
+            false,
+            &prompt.stats.loaded_procedure_files,
+        )
+        .unwrap();
+
+        let procedure_path = temp.path().join(first.procedure_file.unwrap());
+        let refined = parse_saved_procedure(&procedure_path).unwrap().unwrap();
+        assert_eq!(
+            second.procedure_file,
+            Some(".topagent/procedures/".to_string() + &refined.filename)
+        );
+        assert_eq!(refined.status, ProcedureStatus::Active);
+        assert_eq!(refined.reuse_count, 1);
+        assert_eq!(refined.revision_count, 1);
+        assert!(refined
+            .steps
+            .iter()
+            .any(|step| step.contains("Clear stale transcript state")));
+    }
+
+    #[test]
+    fn test_promote_verified_task_supersedes_loaded_procedure_when_verification_changes() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let ctx = ExecutionContext::new(temp.path().to_path_buf());
+        let options = RuntimeOptions::default();
+
+        let first = promote_verified_task(
+            &memory,
+            &ctx,
+            &options,
+            "Repair approval mailbox compaction workflow",
+            TaskMode::PlanAndExecute,
+            &strong_verified_task_result("first output"),
+            &strong_plan(),
+            false,
+            &[],
+        )
+        .unwrap();
+        let prompt = memory
+            .build_prompt("repair approval mailbox compaction workflow", None)
+            .unwrap();
+        let second = promote_verified_task(
+            &memory,
+            &ctx,
+            &options,
+            "Repair approval mailbox compaction workflow with restore verification",
+            TaskMode::PlanAndExecute,
+            &strong_verified_task_result_with_command(
+                "second output",
+                "cargo test -p topagent-core",
+            ),
+            &strong_plan(),
+            false,
+            &prompt.stats.loaded_procedure_files,
         )
         .unwrap();
 
@@ -1616,6 +1993,7 @@ mod tests {
             second.superseded_procedure_file.as_deref(),
             Some(first_procedure.as_str())
         );
+        assert_ne!(first_procedure, second_procedure);
 
         let old = parse_saved_procedure(&temp.path().join(&first_procedure))
             .unwrap()
@@ -1625,12 +2003,6 @@ mod tests {
             .unwrap();
         assert_eq!(old.status, ProcedureStatus::Superseded);
         assert_eq!(new.status, ProcedureStatus::Active);
-
-        let prompt = memory
-            .build_prompt("repair approval mailbox compaction workflow", None)
-            .unwrap();
-        assert!(prompt.stats.loaded_items.contains(&new.title));
-        assert!(!prompt.stats.loaded_items.contains(&old.title));
     }
 
     #[test]
@@ -1751,6 +2123,7 @@ mod tests {
             &strong_verified_task_result("super-secret-output-value"),
             &strong_plan(),
             false,
+            &[],
         )
         .unwrap();
 

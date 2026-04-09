@@ -68,8 +68,9 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 ```
 CLI parses args
   -> resolve workspace, API key, model route
+  -> build operator model briefing from .topagent/USER.md
   -> build workspace memory briefing from .topagent/MEMORY.md + relevant procedures + relevant durable notes
-  -> create ExecutionContext with workspace + cancel token + memory briefing
+  -> create ExecutionContext with workspace + cancel token + operator model + workspace memory briefing
   -> read explicit tool-authoring mode from CLI/service config
   -> create Agent with provider + tools + options
   -> agent.run(ctx, instruction)
@@ -111,7 +112,7 @@ CLI parses args
           b. load matching `.topagent/procedures/*.md` files only if relevant, capped to a small subset
           c. load matching `.topagent/topics/*.md`, `.topagent/lessons/*.md`, or manual `.topagent/plans/*.md` artifacts only if relevant
           d. search the saved Telegram transcript and extract targeted snippets only if useful
-          e. build a fresh agent run with that memory briefing
+          e. build a fresh agent run with the operator model plus that memory briefing
           f. append the filtered user-visible transcript to disk
           g. if the task was strongly verified, apply the same verified-task promotion policy used by one-shot runs
           h. send reply (split into chunks if >4000 chars)
@@ -161,25 +162,30 @@ Generated tools use the same workspace sandbox policy as bash. Workspace externa
 
 ### Memory and persistence flow
 
-TopAgent now uses four local memory layers:
+TopAgent now uses five local learning layers:
 
-1. **Always-loaded index**: `workspace/.topagent/MEMORY.md`
+1. **Operator Model**: `workspace/.topagent/USER.md`
+   - stable operator preferences and collaboration habits only
+   - loaded separately from workspace memory and capped tightly
+   - not for repo facts, task state, or transcript recall
+2. **Always-loaded index**: `workspace/.topagent/MEMORY.md`
    - one-line entries only
    - cheap enough to load at task start
    - points to durable artifacts instead of embedding large notes
-2. **Lazy durable artifacts**:
+3. **Lazy durable artifacts**:
    - `workspace/.topagent/topics/*.md` for compact notes by concern (`architecture`, `security`, `runtime`, etc.)
    - `workspace/.topagent/lessons/*.md` for distilled facts, pitfalls, and rules
-   - `workspace/.topagent/procedures/*.md` for workspace-local reusable playbooks
+   - `workspace/.topagent/procedures/*.md` for workspace-local reusable playbooks with explicit reuse/revision/supersession metadata
    - `workspace/.topagent/plans/*.md` for manual saved plans
    - retrieval is narrow: only a small relevant subset is loaded, and superseded procedures are ignored
-3. **Raw transcript evidence**: `workspace/.topagent/telegram-history/chat-<chat_id>.json`
+4. **Raw transcript evidence**: `workspace/.topagent/telegram-history/chat-<chat_id>.json`
    - searchable per-chat transcript
    - stores user-visible text exchanges, not tool chatter
    - never replayed in full by default; retrieval returns targeted snippets only
-4. **Trajectory exports**: `workspace/.topagent/trajectories/*.json`
+5. **Trajectory records**: `workspace/.topagent/trajectories/*.json`
    - compact structured records from strong verified runs
    - include task intent, task mode, plan summary, key tool sequence, changed files, verification evidence, and linked lesson/procedure artifacts
+   - saved locally first, then reviewed and exported explicitly into `workspace/.topagent/exports/trajectories/`
    - stay off the prompt hot path unless exported or reviewed manually
 
 `/reset` deletes only the per-chat transcript file. It does not touch `MEMORY.md`, topics, lessons, procedures, plans, or trajectories.
@@ -187,12 +193,13 @@ TopAgent now uses four local memory layers:
 Curated consolidation keeps the index practical:
 
 - strong verified tasks can promote into lessons or procedures when they have future value
-- procedures prefer supersession over accumulation, so later better workflows replace older ones instead of piling up
+- operator preferences live outside the workspace index, so repo memory and user memory do not share ownership
+- procedures prefer governed reuse: proven reuse can keep, refine, supersede, disable, or later prune a playbook instead of piling up duplicates
 - duplicate or conflicting durable entries are merged or pruned instead of accumulating forever
 - relative timestamps are normalized before durable promotion when TopAgent has enough evidence
 - missing or unreadable topic files are skipped during retrieval
 - the index load path caps injected bytes so startup memory stays cheap
-- trajectory artifacts are export-only and do not become a second prompt-memory system
+- trajectory review/export stays explicit and local; saved artifacts do not become a second prompt-memory system
 
 ### Planning flow
 

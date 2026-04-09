@@ -157,6 +157,8 @@ pub struct MemoryPolicy {
     pub max_curated_plans: usize,
     pub max_curated_procedures: usize,
     pub max_procedures_to_load: usize,
+    pub max_operator_preferences_to_load: usize,
+    pub max_operator_prompt_bytes: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -456,6 +458,8 @@ Use the update_plan tool to create a plan with concrete steps, then execute it."
                 max_curated_plans: 4,
                 max_curated_procedures: 4,
                 max_procedures_to_load: 2,
+                max_operator_preferences_to_load: 2,
+                max_operator_prompt_bytes: 600,
             },
             generated_tools: GeneratedToolPolicy {
                 authoring_enabled: options.enable_generated_tool_authoring,

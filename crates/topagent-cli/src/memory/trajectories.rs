@@ -7,6 +7,7 @@ use topagent_core::{TaskMode, ToolTraceStep, VerificationCommand};
 use crate::managed_files::write_managed_file;
 
 const TRAJECTORY_VERSION: u32 = 1;
+pub(crate) const TRAJECTORY_EXPORTS_RELATIVE_DIR: &str = ".topagent/exports/trajectories";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct TrajectoryArtifact {
@@ -23,6 +24,8 @@ pub(crate) struct TrajectoryArtifact {
     pub(crate) lesson_file: Option<String>,
     pub(crate) procedure_file: Option<String>,
     pub(crate) redaction: TrajectoryRedaction,
+    #[serde(default)]
+    pub(crate) governance: TrajectoryGovernance,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -42,6 +45,34 @@ pub(crate) struct TrajectoryVerification {
 pub(crate) struct TrajectoryRedaction {
     pub(crate) secret_safe: bool,
     pub(crate) stored_outputs: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TrajectoryReviewState {
+    #[default]
+    LocalOnly,
+    ReadyForExport,
+    Exported,
+}
+
+impl TrajectoryReviewState {
+    pub(crate) fn as_str(&self) -> &'static str {
+        match self {
+            Self::LocalOnly => "local_only",
+            Self::ReadyForExport => "ready_for_export",
+            Self::Exported => "exported",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub(crate) struct TrajectoryGovernance {
+    #[serde(default)]
+    pub(crate) review_state: TrajectoryReviewState,
+    pub(crate) reviewed_at_unix_secs: Option<i64>,
+    pub(crate) exported_at_unix_secs: Option<i64>,
+    pub(crate) exported_file: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -106,12 +137,81 @@ pub(crate) fn save_trajectory(
             secret_safe: true,
             stored_outputs: false,
         },
+        governance: TrajectoryGovernance::default(),
     };
 
-    let json = serde_json::to_string_pretty(&artifact)
-        .with_context(|| format!("failed to encode {}", path.display()))?;
-    write_managed_file(&path, &json, false)?;
+    write_trajectory_artifact(&path, &artifact)?;
     Ok((format!(".topagent/trajectories/{filename}"), path))
+}
+
+pub(crate) fn parse_saved_trajectory(path: &Path) -> Result<Option<TrajectoryArtifact>> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let artifact = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to decode {}", path.display()))?;
+    Ok(Some(artifact))
+}
+
+pub(crate) fn mark_trajectory_ready(path: &Path) -> Result<Option<String>> {
+    let Some(mut artifact) = parse_saved_trajectory(path)? else {
+        return Ok(None);
+    };
+    ensure_export_quality(&artifact)?;
+    artifact.governance.review_state = TrajectoryReviewState::ReadyForExport;
+    artifact.governance.reviewed_at_unix_secs = Some(unix_timestamp_secs());
+    write_trajectory_artifact(path, &artifact)?;
+    Ok(Some(format!(
+        ".topagent/trajectories/{}",
+        path.file_name().unwrap().to_string_lossy()
+    )))
+}
+
+pub(crate) fn export_trajectory(workspace_root: &Path, path: &Path) -> Result<Option<String>> {
+    let Some(mut artifact) = parse_saved_trajectory(path)? else {
+        return Ok(None);
+    };
+    ensure_export_quality(&artifact)?;
+    if artifact.governance.review_state != TrajectoryReviewState::ReadyForExport {
+        anyhow::bail!("trajectory must be reviewed and marked ready before export");
+    }
+
+    let exports_dir = workspace_root.join(TRAJECTORY_EXPORTS_RELATIVE_DIR);
+    std::fs::create_dir_all(&exports_dir)
+        .with_context(|| format!("failed to create {}", exports_dir.display()))?;
+    let export_path = exports_dir.join(path.file_name().unwrap());
+    let exported_at = unix_timestamp_secs();
+    artifact.governance.review_state = TrajectoryReviewState::Exported;
+    artifact.governance.exported_at_unix_secs = Some(exported_at);
+    artifact.governance.exported_file = Some(format!(
+        "{}/{}",
+        TRAJECTORY_EXPORTS_RELATIVE_DIR,
+        export_path.file_name().unwrap().to_string_lossy()
+    ));
+    write_trajectory_artifact(&export_path, &artifact)?;
+    write_trajectory_artifact(path, &artifact)?;
+    Ok(artifact.governance.exported_file)
+}
+
+fn ensure_export_quality(artifact: &TrajectoryArtifact) -> Result<()> {
+    if !artifact.redaction.secret_safe || artifact.redaction.stored_outputs {
+        anyhow::bail!("trajectory is not secret-safe for export");
+    }
+    if artifact.verification.is_empty() {
+        anyhow::bail!("trajectory has no verification evidence");
+    }
+    if artifact.tool_sequence.len() < 3 {
+        anyhow::bail!("trajectory is too weak to export");
+    }
+    Ok(())
+}
+
+fn write_trajectory_artifact(path: &Path, artifact: &TrajectoryArtifact) -> Result<()> {
+    let json = serde_json::to_string_pretty(artifact)
+        .with_context(|| format!("failed to encode {}", path.display()))?;
+    write_managed_file(path, &json, false)
 }
 
 fn slugify(input: &str) -> String {

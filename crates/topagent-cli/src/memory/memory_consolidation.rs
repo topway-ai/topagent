@@ -120,6 +120,10 @@ impl WorkspaceMemory {
         Ok(raw.lines().filter_map(parse_index_entry).collect())
     }
 
+    pub(crate) fn index_entry_count(&self) -> Result<usize> {
+        Ok(self.load_index_entries()?.len())
+    }
+
     fn orient_memory_state(&self) -> Result<MemoryOrientation> {
         let mut orientation = MemoryOrientation::default();
         if !self.index_path.exists() {
@@ -284,6 +288,7 @@ impl MemoryCandidate {
     }
 
     fn from_saved_procedure(contract: &BehaviorContract, procedure: ParsedProcedure) -> Self {
+        let is_live = procedure.status == ProcedureStatus::Active;
         let date = procedure.saved_at.and_then(format_saved_date);
         let tags = derived_tags(
             &[
@@ -314,18 +319,18 @@ impl MemoryCandidate {
             entry: MemoryIndexEntry {
                 topic: procedure.title,
                 file: format!("procedures/{}", procedure.filename),
-                status: if procedure.status == ProcedureStatus::Superseded {
-                    "stale".to_string()
-                } else {
+                status: if is_live {
                     "verified".to_string()
+                } else {
+                    "stale".to_string()
                 },
                 tags,
                 note,
             },
-            category: if procedure.status == ProcedureStatus::Superseded {
-                DurableMemoryCategory::StaleCandidate
-            } else {
+            category: if is_live {
                 DurableMemoryCategory::ReusableProcedure
+            } else {
+                DurableMemoryCategory::StaleCandidate
             },
             source: MemorySourceKind::SavedProcedure,
             saved_at: procedure.saved_at,

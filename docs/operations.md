@@ -77,6 +77,15 @@ topagent model set <id>      # update the configured OpenRouter model
 topagent model pick          # pick the configured OpenRouter model interactively
 topagent model list          # show cached top OpenRouter models
 topagent model refresh       # refresh the cached top OpenRouter models
+topagent memory status       # show operator/workspace learning artifact status
+topagent procedure list      # list live procedures
+topagent procedure show <id> # show one procedure
+topagent procedure prune     # remove superseded and disabled procedures
+topagent procedure disable <id> [--reason ...] # disable a procedure without deleting it
+topagent trajectory list     # list saved trajectories
+topagent trajectory show <id> # show one trajectory
+topagent trajectory review <id> # mark a trajectory ready for export
+topagent trajectory export <id> # export a reviewed trajectory
 topagent service start       # start the service
 topagent service stop        # stop the service
 topagent service restart     # restart the service (keeps current config)
@@ -102,7 +111,7 @@ topagent uninstall           # remove service, config, and installed binary
 
 ### Workspace checkpoints
 
-TopAgent now captures a lightweight workspace checkpoint automatically before `write` and `edit` tool mutations. Checkpoints are stored under `workspace/.topagent/checkpoints/` and keep only the original contents of files that were touched during that task.
+TopAgent now captures a lightweight workspace checkpoint automatically before `write`, `edit`, and risky shell mutations. Checkpoints are stored under `workspace/.topagent/checkpoints/` and keep only the original contents of files that were touched during that task, or the minimal broader workspace snapshot needed for an obvious shell rewrite.
 
 `topagent checkpoint status` shows the latest saved checkpoint and the files it captured.
 
@@ -143,13 +152,17 @@ The workspace must exist and be a directory. The agent creates a `.topagent/` su
 
 ```
 workspace/.topagent/
+  USER.md                    # operator model (stable user preferences)
   MEMORY.md                  # thin workspace memory index (always loaded)
   topics/                    # compact durable topic notes (lazy loaded)
-  plans/                      # saved plans (JSON)
-  lessons/                    # saved lesson notes (JSON)
-  checkpoints/                # automatic workspace checkpoints for restore
-  tools/                      # generated custom tools (manifests + scripts)
-  telegram-history/           # per-chat transcript evidence files (JSON)
+  plans/                     # manual saved plans (markdown)
+  lessons/                   # saved lesson notes (markdown)
+  procedures/                # governed reusable procedures (markdown)
+  trajectories/              # local saved trajectory records (JSON)
+  exports/trajectories/      # reviewed trajectory export packages (JSON)
+  checkpoints/               # automatic workspace checkpoints for restore
+  tools/                     # generated custom tools (manifests + scripts)
+  telegram-history/          # per-chat transcript evidence files (JSON)
   external-tools.json         # workspace external tool definitions (if present)
 ```
 
@@ -184,9 +197,18 @@ If `sandbox` is omitted, TopAgent rejects the external-tool config. Generated to
 
 ## Persistence and reset
 
-### Three memory layers
+### Governed learning layers
 
-#### 1. Always-loaded memory index
+#### 1. Operator model
+
+`workspace/.topagent/USER.md`
+
+- Stores stable operator preferences and collaboration habits only
+- Loaded separately from repo/workspace memory
+- Kept small and capped tightly in the prompt
+- Not used for repo facts, shell evidence, or task-local state
+
+#### 2. Always-loaded memory index
 
 `workspace/.topagent/MEMORY.md`
 
@@ -195,16 +217,21 @@ If `sandbox` is omitted, TopAgent rejects the external-tool config. Generated to
 - Safe to inject at task start
 - Should reference topic files or durable facts, not transcript dumps
 
-#### 2. Lazy topic files
+#### 3. Lazy durable workspace artifacts
 
-`workspace/.topagent/topics/*.md`
+`workspace/.topagent/topics/*.md`, `workspace/.topagent/lessons/*.md`, `workspace/.topagent/procedures/*.md`, `workspace/.topagent/plans/*.md`
 
 - Store compact durable notes by concern
 - Loaded only when the current task matches the topic
 - Good fits: architecture, runtime behavior, security constraints, open issues
 - Bad fits: shell logs, command dumps, transient plans, cheap repo summaries
+- Procedures are the reusable workflow layer: they track reuse count, revision count, supersession, and disablement
+- `topagent procedure list` shows live procedures by default
+- `topagent procedure show <id>` shows the raw on-disk playbook
+- `topagent procedure prune` removes superseded and disabled procedures
+- `topagent procedure disable <id>` demotes a noisy procedure without deleting it immediately
 
-#### 3. Raw Telegram transcript evidence
+#### 4. Raw Telegram transcript evidence
 
 `workspace/.topagent/telegram-history/chat-<chat_id>.json`
 
@@ -215,14 +242,26 @@ If `sandbox` is omitted, TopAgent rejects the external-tool config. Generated to
 - Retrieval returns targeted snippets only when useful
 - Trimmed to the most recent 100 persisted text messages
 
+#### 5. Trajectory records and export packages
+
+`workspace/.topagent/trajectories/*.json`
+
+- Compact structured records from strong verified runs
+- Saved locally first with review state `local_only`
+- `topagent trajectory review <id>` runs the explicit readiness gate and marks the artifact `ready_for_export`
+- `topagent trajectory export <id>` writes a copy to `workspace/.topagent/exports/trajectories/` and marks the local record `exported`
+- Trajectory export refuses weak or unsafe artifacts
+- Saved-local and exported trajectories are distinct states
+
 ### Retrieval behavior
 
 When a new Telegram message arrives, TopAgent:
 
-1. Loads `MEMORY.md`
-2. Selects only topic files whose topic/tags overlap the task
-3. Searches the raw transcript only when the task appears to refer to prior chat context
-4. Injects a small memory briefing that explicitly tells the model to treat memory as hints and re-check current code/runtime state
+1. Loads the capped operator model from `USER.md`
+2. Loads `MEMORY.md`
+3. Selects only the small set of procedures and durable artifacts whose topic/tags overlap the task
+4. Searches the raw transcript only when the task appears to refer to prior chat context
+5. Injects a small memory briefing that explicitly tells the model to treat memory as hints and re-check current code/runtime state
 
 If memory conflicts with the current repo, runtime, config, or service state, the current state wins.
 
@@ -232,8 +271,9 @@ If memory conflicts with the current repo, runtime, config, or service state, th
 
 - Clears `workspace/.topagent/telegram-history/chat-<chat_id>.json`
 - Clears any in-memory running state for that chat
+- Does **not** remove `USER.md`
 - Does **not** remove `MEMORY.md`
-- Does **not** remove topic files, plans, lessons, or tools
+- Does **not** remove topic files, plans, lessons, procedures, trajectories, or tools
 
 This keeps reset semantics simple and aligned with the current product shape.
 
@@ -241,7 +281,9 @@ This keeps reset semantics simple and aligned with the current product shape.
 
 TopAgent keeps memory lightweight with a bounded consolidation step:
 
-- saved plans and lessons can promote into the durable memory index when they have future value
+- saved lessons and procedures can promote into the durable memory index when they have future value
+- operator preferences stay in `USER.md`; they do not belong to workspace memory
+- procedure revision is governed by proven reuse rather than blind accumulation
 - duplicate or stale durable entries are merged, rewritten, or pruned instead of accumulating forever
 - transcript persistence strips tool chatter and other internal session noise
 - topic loading and transcript loading both cap how much can enter prompt context

@@ -6,6 +6,12 @@ use topagent_core::{
 };
 use tracing::warn;
 
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedRunContext {
+    pub run_ctx: ExecutionContext,
+    pub loaded_procedure_files: Vec<String>,
+}
+
 pub(crate) fn prepare_workspace_memory(workspace_root: PathBuf) -> WorkspaceMemory {
     let memory = WorkspaceMemory::new(workspace_root);
     if let Err(err) = memory.ensure_layout() {
@@ -23,8 +29,9 @@ pub(crate) fn prepare_run_context(
     memory: &WorkspaceMemory,
     instruction: &str,
     transcript_messages: Option<&[Message]>,
-) -> ExecutionContext {
+) -> PreparedRunContext {
     let mut run_ctx = base_ctx.clone();
+    let mut loaded_procedure_files = Vec::new();
     if let Err(err) = memory.consolidate_memory_if_needed() {
         warn!(
             "failed to consolidate workspace memory index in {}: {}",
@@ -34,6 +41,10 @@ pub(crate) fn prepare_run_context(
     }
     match memory.build_prompt(instruction, transcript_messages) {
         Ok(memory_prompt) => {
+            loaded_procedure_files = memory_prompt.stats.loaded_procedure_files;
+            if let Some(operator_context) = memory_prompt.operator_prompt {
+                run_ctx = run_ctx.with_operator_context(operator_context);
+            }
             if let Some(memory_context) = memory_prompt.prompt {
                 run_ctx = run_ctx.with_memory_context(memory_context);
             }
@@ -46,7 +57,10 @@ pub(crate) fn prepare_run_context(
             );
         }
     }
-    run_ctx
+    PreparedRunContext {
+        run_ctx,
+        loaded_procedure_files,
+    }
 }
 
 pub(crate) fn build_agent(route: &ModelRoute, api_key: &str, options: RuntimeOptions) -> Agent {
@@ -83,11 +97,14 @@ mod tests {
 
         let ctx = ExecutionContext::new(temp.path().to_path_buf());
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
-        let run_ctx = prepare_run_context(&ctx, &memory, "inspect runtime architecture", None);
+        let prepared = prepare_run_context(&ctx, &memory, "inspect runtime architecture", None);
+        let run_ctx = prepared.run_ctx;
 
+        assert!(run_ctx.operator_context().is_none());
         let memory_context = run_ctx.memory_context().unwrap();
         assert!(memory_context.contains("Always-Loaded Index"));
         assert!(memory_context.contains("# Architecture"));
+        assert!(prepared.loaded_procedure_files.is_empty());
     }
 
     #[test]

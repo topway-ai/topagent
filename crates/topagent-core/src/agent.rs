@@ -1347,6 +1347,7 @@ impl Agent {
             available_tools: &available_tools,
             external_tools: &external_tools,
             project_instructions: project_instructions.as_deref(),
+            operator_context: ctx.operator_context(),
             memory_context: ctx.memory_context(),
             current_plan,
             run_state: Some(&run_state),

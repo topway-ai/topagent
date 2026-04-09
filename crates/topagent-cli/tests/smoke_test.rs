@@ -174,6 +174,33 @@ fn test_cli_model_appears_in_help() {
 }
 
 #[test]
+fn test_cli_memory_appears_in_help() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("memory"));
+}
+
+#[test]
+fn test_cli_procedure_appears_in_help() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("procedure"));
+}
+
+#[test]
+fn test_cli_trajectory_appears_in_help() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("trajectory"));
+}
+
+#[test]
 fn test_cli_checkpoint_appears_in_help() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
     cmd.arg("--help")
@@ -207,6 +234,39 @@ fn test_cli_model_help_mentions_management_commands() {
 }
 
 #[test]
+fn test_cli_memory_help_mentions_status() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.args(["memory", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("status"));
+}
+
+#[test]
+fn test_cli_procedure_help_mentions_management_commands() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.args(["procedure", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("list"))
+        .stdout(predicates::str::contains("show"))
+        .stdout(predicates::str::contains("prune"))
+        .stdout(predicates::str::contains("disable"));
+}
+
+#[test]
+fn test_cli_trajectory_help_mentions_review_and_export_commands() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.args(["trajectory", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("list"))
+        .stdout(predicates::str::contains("show"))
+        .stdout(predicates::str::contains("review"))
+        .stdout(predicates::str::contains("export"));
+}
+
+#[test]
 fn test_cli_checkpoint_help_mentions_management_commands() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
     cmd.args(["checkpoint", "--help"])
@@ -215,6 +275,24 @@ fn test_cli_checkpoint_help_mentions_management_commands() {
         .stdout(predicates::str::contains("status"))
         .stdout(predicates::str::contains("diff"))
         .stdout(predicates::str::contains("restore"));
+}
+
+#[test]
+fn test_cli_memory_status_reports_learning_layers_for_fresh_workspace() {
+    let temp = TempDir::new().unwrap();
+    let (_isolated, mut cmd) = isolated_topagent_command();
+    cmd.arg("--workspace")
+        .arg(temp.path())
+        .args(["memory", "status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Operator model: 0 preference(s)"))
+        .stdout(predicates::str::contains(
+            "Procedures: 0 active, 0 superseded, 0 disabled",
+        ))
+        .stdout(predicates::str::contains(
+            "Trajectories: 0 local, 0 ready, 0 exported",
+        ));
 }
 
 #[test]
@@ -253,6 +331,13 @@ fn test_readme_documents_product_setup_commands() {
     assert!(readme.contains("topagent model status"));
     assert!(readme.contains("topagent model set <id>"));
     assert!(readme.contains("topagent model pick"));
+    assert!(readme.contains("topagent memory status"));
+    assert!(readme.contains("topagent procedure list"));
+    assert!(readme.contains("topagent procedure show <id>"));
+    assert!(readme.contains("topagent procedure prune"));
+    assert!(readme.contains("topagent trajectory list"));
+    assert!(readme.contains("topagent trajectory review <id>"));
+    assert!(readme.contains("topagent trajectory export <id>"));
     assert!(readme.contains("topagent uninstall"));
     assert!(readme.contains("topagent service start"));
     assert!(readme.contains("topagent service stop"));
@@ -342,6 +427,24 @@ fn test_operations_docs_cover_checkpoint_management() {
     assert!(operations.contains("topagent checkpoint status"));
     assert!(operations.contains("topagent checkpoint diff"));
     assert!(operations.contains("topagent checkpoint restore"));
+    assert!(operations.contains("topagent memory status"));
+    assert!(operations.contains("topagent procedure list"));
+    assert!(operations.contains("topagent procedure prune"));
+    assert!(operations.contains("topagent trajectory review"));
+    assert!(operations.contains("topagent trajectory export"));
     assert!(operations.contains(".topagent/checkpoints"));
     assert!(operations.contains("clears persisted Telegram transcripts"));
+}
+
+#[test]
+fn test_readme_and_architecture_document_governed_learning_layers() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let readme = std::fs::read_to_string(repo_root.join("README.md")).unwrap();
+    let architecture = std::fs::read_to_string(repo_root.join("docs/architecture.md")).unwrap();
+
+    assert!(readme.contains(".topagent/USER.md"));
+    assert!(readme.contains("reviewed and exported explicitly"));
+    assert!(architecture.contains("Operator Model"));
+    assert!(architecture.contains("trajectory review/export"));
 }

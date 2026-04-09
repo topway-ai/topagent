@@ -13,6 +13,7 @@ pub mod file_util;
 pub mod message;
 pub mod model;
 pub mod openrouter;
+pub mod operator_profile;
 pub mod plan;
 pub mod progress;
 pub mod project;
@@ -50,6 +51,11 @@ pub use external::{ExternalTool, ExternalToolEffect, ExternalToolRegistry, Exter
 pub use message::{Content, Message, Role};
 pub use model::ModelRoute;
 pub use openrouter::OpenRouterProvider;
+pub use operator_profile::{
+    load_operator_profile, migrate_legacy_operator_preferences, save_operator_profile,
+    user_profile_path, OperatorPreferenceRecord, OperatorProfile, OperatorProfileMigrationReport,
+    PreferenceCategory, USER_PROFILE_RELATIVE_PATH,
+};
 pub use plan::{Plan, TaskMode, TodoItem, TodoStatus};
 pub use progress::{ProgressCallback, ProgressKind, ProgressUpdate};
 pub use project::{

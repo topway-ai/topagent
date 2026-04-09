@@ -10,6 +10,7 @@ pub struct ExecutionContext {
     cancel_token: Option<CancellationToken>,
     secrets: SecretRegistry,
     memory_context: Option<String>,
+    operator_context: Option<String>,
     approval_mailbox: Option<ApprovalMailbox>,
     checkpoint_store: Option<WorkspaceCheckpointStore>,
 }
@@ -21,6 +22,7 @@ impl ExecutionContext {
             cancel_token: None,
             secrets: SecretRegistry::new(),
             memory_context: None,
+            operator_context: None,
             approval_mailbox: None,
             checkpoint_store: None,
         }
@@ -46,6 +48,16 @@ impl ExecutionContext {
         self
     }
 
+    pub fn with_operator_context(mut self, operator_context: impl Into<String>) -> Self {
+        let operator_context = operator_context.into();
+        self.operator_context = if operator_context.trim().is_empty() {
+            None
+        } else {
+            Some(operator_context)
+        };
+        self
+    }
+
     pub fn with_approval_mailbox(mut self, approval_mailbox: ApprovalMailbox) -> Self {
         self.approval_mailbox = Some(approval_mailbox);
         self
@@ -65,6 +77,10 @@ impl ExecutionContext {
 
     pub fn memory_context(&self) -> Option<&str> {
         self.memory_context.as_deref()
+    }
+
+    pub fn operator_context(&self) -> Option<&str> {
+        self.operator_context.as_deref()
     }
 
     pub fn approval_mailbox(&self) -> Option<&ApprovalMailbox> {
@@ -209,8 +225,11 @@ mod tests {
     #[test]
     fn test_memory_context_round_trip() {
         let (ctx, _temp) = create_context();
-        let ctx = ctx.with_memory_context("memory");
+        let ctx = ctx
+            .with_memory_context("memory")
+            .with_operator_context("operator");
         assert_eq!(ctx.memory_context(), Some("memory"));
+        assert_eq!(ctx.operator_context(), Some("operator"));
     }
 
     #[test]

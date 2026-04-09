@@ -19,7 +19,9 @@ use crate::config::*;
 use crate::managed_files::write_managed_file;
 use crate::memory::{promote_verified_task, WorkspaceMemory};
 use crate::progress::LiveProgress;
-use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
+use crate::run_setup::{
+    build_agent, prepare_run_context, prepare_workspace_memory, PreparedRunContext,
+};
 
 const TELEGRAM_HISTORY_VERSION: u32 = 1;
 const MAX_PERSISTED_TRANSCRIPT_MESSAGES: usize = 100;
@@ -684,12 +686,15 @@ impl ChatSessionManager {
         ctx: &ExecutionContext,
         chat_id: i64,
         instruction: &str,
-    ) -> ExecutionContext {
+    ) -> PreparedRunContext {
         let transcript = self.load_redacted_transcript(chat_id);
-        prepare_run_context(ctx, &self.memory, instruction, Some(&transcript))
-            .with_workspace_checkpoint_store(WorkspaceCheckpointStore::new(
-                ctx.workspace_root.clone(),
-            ))
+        let prepared = prepare_run_context(ctx, &self.memory, instruction, Some(&transcript));
+        PreparedRunContext {
+            run_ctx: prepared.run_ctx.with_workspace_checkpoint_store(
+                WorkspaceCheckpointStore::new(ctx.workspace_root.clone()),
+            ),
+            loaded_procedure_files: prepared.loaded_procedure_files,
+        }
     }
 
     #[cfg(test)]
@@ -878,13 +883,15 @@ impl ChatSessionManager {
                 Some(&approval_secrets),
             );
         }));
-        let run_ctx = self.build_run_context(
+        let prepared_run = self.build_run_context(
             &ctx.clone()
                 .with_cancel_token(cancel_token.clone())
                 .with_approval_mailbox(approval_mailbox.clone()),
             chat_id,
             text,
         );
+        let loaded_procedure_files = prepared_run.loaded_procedure_files.clone();
+        let run_ctx = prepared_run.run_ctx;
         let progress =
             match LiveProgress::for_telegram(heartbeat_interval, adapter.clone(), chat_id) {
                 Ok(progress) => Some(progress),
@@ -923,6 +930,7 @@ impl ChatSessionManager {
                             &task_result,
                             &plan.clone(),
                             agent.durable_memory_written_this_run(),
+                            &loaded_procedure_files,
                         ) {
                             Ok(report) => {
                                 if report.lesson_file.is_some()
@@ -1312,12 +1320,12 @@ mod tests {
         );
 
         let restarted_manager = test_manager(workspace.path().to_path_buf());
-        let run_ctx = restarted_manager.build_run_context(
+        let prepared_run = restarted_manager.build_run_context(
             &ExecutionContext::new(workspace.path().to_path_buf()),
             chat_id,
             "What was the maple phrase I mentioned earlier?",
         );
-        let memory_context = run_ctx.memory_context().unwrap();
+        let memory_context = prepared_run.run_ctx.memory_context().unwrap();
 
         assert!(memory_context.contains("maple comet"));
         assert!(!memory_context.contains("cedar echo"));

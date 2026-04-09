@@ -10,6 +10,7 @@ use crate::managed_files::write_managed_file;
 pub(crate) enum ProcedureStatus {
     Active,
     Superseded,
+    Disabled,
 }
 
 impl ProcedureStatus {
@@ -17,12 +18,14 @@ impl ProcedureStatus {
         match self {
             Self::Active => "active",
             Self::Superseded => "superseded",
+            Self::Disabled => "disabled",
         }
     }
 
     fn from_str(value: &str) -> Self {
         match value.trim().to_ascii_lowercase().as_str() {
             "superseded" => Self::Superseded,
+            "disabled" => Self::Disabled,
             _ => Self::Active,
         }
     }
@@ -39,11 +42,15 @@ pub(crate) struct ParsedProcedure {
     pub(crate) steps: Vec<String>,
     pub(crate) pitfalls: Vec<String>,
     pub(crate) verification: String,
+    pub(crate) reuse_count: u32,
+    pub(crate) revision_count: u32,
+    pub(crate) last_verified_reuse_at: Option<i64>,
     pub(crate) source_task: Option<String>,
     pub(crate) source_lesson: Option<String>,
     pub(crate) source_trajectory: Option<String>,
     pub(crate) supersedes: Option<String>,
     pub(crate) superseded_by: Option<String>,
+    pub(crate) disabled_reason: Option<String>,
     pub(crate) path: PathBuf,
 }
 
@@ -81,11 +88,15 @@ pub(crate) fn save_procedure(
         steps: draft.steps.clone(),
         pitfalls: draft.pitfalls.clone(),
         verification: draft.verification.clone(),
+        reuse_count: 0,
+        revision_count: 0,
+        last_verified_reuse_at: None,
         source_task: draft.source_task.clone(),
         source_lesson: draft.source_lesson.clone(),
         source_trajectory: draft.source_trajectory.clone(),
         supersedes: draft.supersedes.clone(),
         superseded_by: None,
+        disabled_reason: None,
         path: path.clone(),
     });
     write_managed_file(&path, &content, false)?;
@@ -117,11 +128,27 @@ pub(crate) fn parse_saved_procedure(path: &Path) -> Result<Option<ParsedProcedur
         steps: parse_list_section(&raw, "Steps"),
         pitfalls: parse_list_section(&raw, "Pitfalls"),
         verification: parse_named_field(&raw, "**Verification:**").unwrap_or_default(),
+        reuse_count: parse_named_field(&raw, "**Reuse Count:**")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_default(),
+        revision_count: parse_named_field(&raw, "**Revision Count:**")
+            .and_then(|value| value.parse().ok())
+            .unwrap_or_default(),
+        last_verified_reuse_at: parse_named_field(&raw, "**Last Verified Reuse:**").and_then(
+            |value| {
+                value
+                    .trim_start_matches("<t:")
+                    .trim_end_matches('>')
+                    .parse()
+                    .ok()
+            },
+        ),
         source_task: parse_named_field(&raw, "**Source Task:**"),
         source_lesson: parse_named_field(&raw, "**Source Lesson:**"),
         source_trajectory: parse_named_field(&raw, "**Source Trajectory:**"),
         supersedes: parse_named_field(&raw, "**Supersedes:**"),
         superseded_by: parse_named_field(&raw, "**Superseded By:**"),
+        disabled_reason: parse_named_field(&raw, "**Disabled Reason:**"),
         path: path.to_path_buf(),
     }))
 }
@@ -140,6 +167,54 @@ pub(crate) fn mark_procedure_superseded(
     Ok(Some(format!(".topagent/procedures/{}", procedure.filename)))
 }
 
+pub(crate) fn revise_procedure(
+    path: &Path,
+    draft: &ProcedureDraft,
+    source_lesson: Option<&str>,
+    source_trajectory: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(mut procedure) = parse_saved_procedure(path)? else {
+        return Ok(None);
+    };
+    procedure.status = ProcedureStatus::Active;
+    procedure.disabled_reason = None;
+    procedure.when_to_use = draft.when_to_use.clone();
+    procedure.verification = draft.verification.clone();
+    procedure.prerequisites = merge_unique_items(&procedure.prerequisites, &draft.prerequisites, 6);
+    procedure.steps = merge_unique_items(&procedure.steps, &draft.steps, 8);
+    procedure.pitfalls = merge_unique_items(&procedure.pitfalls, &draft.pitfalls, 6);
+    procedure.reuse_count = procedure.reuse_count.saturating_add(1);
+    procedure.revision_count = procedure.revision_count.saturating_add(1);
+    procedure.last_verified_reuse_at = Some(unix_timestamp_secs());
+    procedure.source_task = draft.source_task.clone().or(procedure.source_task);
+    if let Some(source_lesson) = source_lesson {
+        procedure.source_lesson = Some(source_lesson.to_string());
+    }
+    if let Some(source_trajectory) = source_trajectory {
+        procedure.source_trajectory = Some(source_trajectory.to_string());
+    }
+    let content = render_procedure_markdown(&procedure);
+    write_managed_file(path, &content, false)?;
+    Ok(Some(format!(".topagent/procedures/{}", procedure.filename)))
+}
+
+pub(crate) fn record_procedure_reuse(
+    path: &Path,
+    source_trajectory: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(mut procedure) = parse_saved_procedure(path)? else {
+        return Ok(None);
+    };
+    procedure.reuse_count = procedure.reuse_count.saturating_add(1);
+    procedure.last_verified_reuse_at = Some(unix_timestamp_secs());
+    if let Some(source_trajectory) = source_trajectory {
+        procedure.source_trajectory = Some(source_trajectory.to_string());
+    }
+    let content = render_procedure_markdown(&procedure);
+    write_managed_file(path, &content, false)?;
+    Ok(Some(format!(".topagent/procedures/{}", procedure.filename)))
+}
+
 pub(crate) fn set_procedure_source_trajectory(path: &Path, trajectory_file: &str) -> Result<()> {
     let Some(mut procedure) = parse_saved_procedure(path)? else {
         return Ok(());
@@ -148,6 +223,17 @@ pub(crate) fn set_procedure_source_trajectory(path: &Path, trajectory_file: &str
     let content = render_procedure_markdown(&procedure);
     write_managed_file(path, &content, false)?;
     Ok(())
+}
+
+pub(crate) fn disable_procedure(path: &Path, reason: Option<&str>) -> Result<Option<String>> {
+    let Some(mut procedure) = parse_saved_procedure(path)? else {
+        return Ok(None);
+    };
+    procedure.status = ProcedureStatus::Disabled;
+    procedure.disabled_reason = reason.map(ToString::to_string);
+    let content = render_procedure_markdown(&procedure);
+    write_managed_file(path, &content, false)?;
+    Ok(Some(format!(".topagent/procedures/{}", procedure.filename)))
 }
 
 pub(crate) fn render_saved_procedure_excerpt(
@@ -172,6 +258,9 @@ pub(crate) fn render_saved_procedure_excerpt(
             "Verify with: {}",
             compact_text_line(&procedure.verification, 96)
         ));
+    }
+    if procedure.reuse_count > 0 {
+        lines.push(format!("Verified reuses: {}", procedure.reuse_count));
     }
     if let Some(pitfall) = procedure.pitfalls.first() {
         lines.push(format!("Pitfall: {}", compact_text_line(pitfall, 96)));
@@ -214,6 +303,14 @@ fn render_procedure_markdown(procedure: &ParsedProcedure) -> String {
     content.push_str(&format!("**Status:** {}\n", procedure.status.as_str()));
     content.push_str(&format!("**When To Use:** {}\n", procedure.when_to_use));
     content.push_str(&format!("**Verification:** {}\n", procedure.verification));
+    content.push_str(&format!("**Reuse Count:** {}\n", procedure.reuse_count));
+    content.push_str(&format!(
+        "**Revision Count:** {}\n",
+        procedure.revision_count
+    ));
+    if let Some(last_reuse) = procedure.last_verified_reuse_at {
+        content.push_str(&format!("**Last Verified Reuse:** <t:{}>\n", last_reuse));
+    }
     if let Some(source_task) = &procedure.source_task {
         content.push_str(&format!("**Source Task:** {}\n", source_task));
     }
@@ -228,6 +325,9 @@ fn render_procedure_markdown(procedure: &ParsedProcedure) -> String {
     }
     if let Some(superseded_by) = &procedure.superseded_by {
         content.push_str(&format!("**Superseded By:** {}\n", superseded_by));
+    }
+    if let Some(disabled_reason) = &procedure.disabled_reason {
+        content.push_str(&format!("**Disabled Reason:** {}\n", disabled_reason));
     }
     content.push_str("\n---\n\n");
     content.push_str("## Prerequisites\n\n");
@@ -321,6 +421,23 @@ fn parse_saved_timestamp(raw: &str) -> Option<i64> {
             .parse()
             .ok()
     })
+}
+
+fn merge_unique_items(existing: &[String], incoming: &[String], max_items: usize) -> Vec<String> {
+    let mut merged = existing.to_vec();
+    for item in incoming {
+        if merged
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(item))
+        {
+            continue;
+        }
+        merged.push(item.clone());
+        if merged.len() >= max_items {
+            break;
+        }
+    }
+    merged
 }
 
 fn slugify_title(title: &str) -> String {

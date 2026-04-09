@@ -46,11 +46,12 @@ Then open a private chat with your bot and send a message.
 
 TopAgent keeps Telegram memory in three layers:
 
+- a small operator model at `workspace/.topagent/USER.md` for stable collaboration preferences, loaded separately and capped tightly
 - a tiny always-loaded workspace index at `workspace/.topagent/MEMORY.md`
 - compact durable notes under `workspace/.topagent/topics/`, plus archived lessons, reusable procedures, and saved plans under `workspace/.topagent/lessons/`, `workspace/.topagent/procedures/`, and `workspace/.topagent/plans/`, loaded only when relevant
 - a per-chat raw transcript under `workspace/.topagent/telegram-history/`, used as searchable evidence rather than replayed wholesale
 
-For strong verified runs, TopAgent can also emit compact trajectory artifacts under `workspace/.topagent/trajectories/`. These are structured export records for later eval or training work, not prompt memory.
+For strong verified runs, TopAgent can also emit compact trajectory artifacts under `workspace/.topagent/trajectories/`. These are structured export records for later eval or training work, not prompt memory, and they stay local until reviewed and exported explicitly.
 
 ### Bot commands
 
@@ -70,6 +71,14 @@ topagent model set <id>      # change the configured OpenRouter model
 topagent model pick          # pick the configured OpenRouter model interactively
 topagent model list          # show cached starter models
 topagent model refresh       # refresh cached starter models
+topagent memory status       # show operator/workspace learning artifact status
+topagent procedure list      # list live procedures
+topagent procedure show <id> # show one procedure
+topagent procedure prune     # remove superseded and disabled procedures
+topagent trajectory list     # list saved trajectories
+topagent trajectory show <id> # show one trajectory
+topagent trajectory review <id> # mark a trajectory ready for export
+topagent trajectory export <id> # export a reviewed trajectory
 topagent service start       # start the background service
 topagent service stop        # stop the background service
 topagent service restart     # restart the background service
@@ -102,12 +111,14 @@ Place a `TOPAGENT.md` file in your workspace root to give the agent project-spec
 Workspace memory is separate from `TOPAGENT.md`:
 
 - `TOPAGENT.md` is for always-on project instructions
+- `.topagent/USER.md` is for stable operator preferences and collaboration habits that should not be mixed into repo memory
 - `.topagent/MEMORY.md` is a tiny durable memory index
 - `.topagent/topics/` holds compact durable notes by concern
 - `.topagent/lessons/` holds distilled facts, pitfalls, and rules from verified work
-- `.topagent/procedures/` holds reusable workspace-local playbooks distilled from strong verified runs and loaded lazily in small batches
+- `.topagent/procedures/` holds reusable workspace-local playbooks distilled from strong verified runs, revised through proven reuse, and loaded lazily in small batches
 - `.topagent/plans/` holds manual saved plans; auto-promotion no longer uses plans as the reusable workflow artifact
-- `.topagent/trajectories/` holds compact structured execution traces from high-quality verified runs; they are export artifacts, not hot-path prompt memory
+- `.topagent/trajectories/` holds compact structured execution traces from high-quality verified runs; they are reviewable export artifacts, not hot-path prompt memory
+- `.topagent/exports/trajectories/` holds reviewed trajectory export packages
 - `.topagent/telegram-history/` stores searchable per-chat transcript evidence
 - `.topagent/checkpoints/` stores the most recent automatic workspace checkpoints for restore
 
