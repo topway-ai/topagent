@@ -1,10 +1,10 @@
+use crate::behavior::default_memory_policy;
 use crate::context::ToolContext;
 use crate::operator_profile::{
     load_operator_profile, migrate_legacy_operator_preferences, save_operator_profile,
     OperatorPreferenceRecord, PreferenceCategory, USER_PROFILE_RELATIVE_PATH,
 };
 use crate::tool_spec::ToolSpec;
-use crate::BehaviorContract;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -110,7 +110,7 @@ impl crate::tools::Tool for ManageOperatorPreferenceTool {
 }
 
 fn set_preference(args: ManageOperatorPreferenceArgs, ctx: &ToolContext<'_>) -> Result<String> {
-    if let Some(reason) = BehaviorContract::default().memory_write_block_reason(
+    if let Some(reason) = default_memory_policy().memory_write_block_reason(
         "manage_operator_preference",
         ctx.exec.run_trust_context(),
         false,
@@ -179,7 +179,7 @@ fn set_preference(args: ManageOperatorPreferenceArgs, ctx: &ToolContext<'_>) -> 
 }
 
 fn remove_preference(args: ManageOperatorPreferenceArgs, ctx: &ToolContext<'_>) -> Result<String> {
-    if let Some(reason) = BehaviorContract::default().memory_write_block_reason(
+    if let Some(reason) = default_memory_policy().memory_write_block_reason(
         "manage_operator_preference",
         ctx.exec.run_trust_context(),
         false,

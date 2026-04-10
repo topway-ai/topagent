@@ -22,7 +22,7 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 | Module | Responsibility |
 |--------|---------------|
 | `agent` | Agent struct and orchestration shell; internal `agent/gates`, `agent/tool_execution`, and `agent/run_loop` keep loop control, gate sequencing, and tool-result application narrow |
-| `behavior` | Typed behavior contract, approval trigger mapping, and runtime policy decisions |
+| `behavior` | Typed behavior contract and policy root; internal task/action/approval/durability/compaction modules keep runtime policy seams narrow |
 | `approval` | Approval mailbox, request/state transitions, runtime approval enforcement objects |
 | `compaction` | Layered transcript compaction and prompt rebuild support |
 | `run_state` | In-run objective, changed/active file tracking, bash verification history, compact tool trace capture, baseline attribution, proof-of-work assembly |

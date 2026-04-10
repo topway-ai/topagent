@@ -1,4 +1,5 @@
-use crate::behavior::BehaviorContract;
+use crate::behavior::{default_planning_policy, default_task_policy};
+use crate::runtime::RuntimeOptions;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -118,15 +119,15 @@ impl Plan {
 /// `Some(false)` if it definitely does not, or `None` if the answer is
 /// ambiguous and an LLM classification call should be used.
 pub fn heuristic_fast_path(instruction: &str) -> Option<bool> {
-    BehaviorContract::default().classify_task_fast_path(instruction)
+    default_task_policy().classify_task_fast_path(instruction)
 }
 
 pub fn task_mode_fast_path(instruction: &str) -> Option<TaskMode> {
-    BehaviorContract::default().task_mode_fast_path(instruction)
+    default_task_policy().task_mode_fast_path(instruction)
 }
 
 pub fn build_task_mode_messages(instruction: &str) -> (String, String) {
-    BehaviorContract::default().build_task_mode_messages(instruction)
+    default_task_policy().build_task_mode_messages(instruction)
 }
 
 pub fn parse_task_mode_response(response: &str) -> Option<TaskMode> {
@@ -141,7 +142,7 @@ pub fn parse_task_mode_response(response: &str) -> Option<TaskMode> {
 
 /// Build the messages for an LLM classification call.
 pub fn build_classification_messages(instruction: &str) -> (String, String) {
-    BehaviorContract::default().build_task_classification_messages(instruction)
+    default_task_policy().build_task_classification_messages(instruction)
 }
 
 /// Parse the LLM classification response. Returns `true` if planning
@@ -156,7 +157,7 @@ pub fn parse_classification_response(response: &str) -> bool {
 
 /// Build messages for a dedicated plan-generation LLM call.
 pub fn build_plan_generation_prompt(instruction: &str) -> (String, String) {
-    BehaviorContract::default().build_plan_generation_prompt(instruction)
+    default_planning_policy(&RuntimeOptions::default()).build_plan_generation_prompt(instruction)
 }
 
 /// Parse the LLM plan-generation response into a list of step descriptions.
