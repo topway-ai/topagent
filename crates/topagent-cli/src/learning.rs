@@ -543,6 +543,7 @@ mod tests {
             outcome_summary: "Hardened the workflow and reran verification.".to_string(),
             lesson_file: None,
             procedure_file: None,
+            source_labels: Vec::new(),
         }
     }
 }

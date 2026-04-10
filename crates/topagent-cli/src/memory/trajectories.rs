@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
-use topagent_core::{TaskMode, ToolTraceStep, VerificationCommand};
+use topagent_core::{RunTrustContext, SourceLabel, TaskMode, ToolTraceStep, VerificationCommand};
 
 use crate::managed_files::write_managed_file;
 
@@ -24,6 +24,8 @@ pub(crate) struct TrajectoryArtifact {
     pub(crate) lesson_file: Option<String>,
     pub(crate) procedure_file: Option<String>,
     pub(crate) redaction: TrajectoryRedaction,
+    #[serde(default)]
+    pub(crate) source_labels: Vec<SourceLabel>,
     #[serde(default)]
     pub(crate) governance: TrajectoryGovernance,
 }
@@ -86,6 +88,7 @@ pub(crate) struct TrajectoryDraft {
     pub(crate) outcome_summary: String,
     pub(crate) lesson_file: Option<String>,
     pub(crate) procedure_file: Option<String>,
+    pub(crate) source_labels: Vec<SourceLabel>,
 }
 
 pub(crate) fn save_trajectory(
@@ -137,6 +140,7 @@ pub(crate) fn save_trajectory(
             secret_safe: true,
             stored_outputs: false,
         },
+        source_labels: draft.source_labels.clone(),
         governance: TrajectoryGovernance::default(),
     };
 
@@ -199,6 +203,18 @@ fn ensure_export_quality(artifact: &TrajectoryArtifact) -> Result<()> {
     if !artifact.redaction.secret_safe || artifact.redaction.stored_outputs {
         anyhow::bail!("trajectory is not secret-safe for export");
     }
+    let trust_context = RunTrustContext {
+        sources: artifact.source_labels.clone(),
+    };
+    if trust_context.has_low_trust_action_influence() {
+        let summary = trust_context
+            .low_trust_action_summary(2)
+            .unwrap_or_else(|| "low-trust content".to_string());
+        anyhow::bail!(
+            "trajectory is still influenced by low-trust content from: {}",
+            summary
+        );
+    }
     if artifact.verification.is_empty() {
         anyhow::bail!("trajectory has no verification evidence");
     }
@@ -235,4 +251,65 @@ fn unix_timestamp_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    use topagent_core::{InfluenceMode, SourceKind, TaskMode, ToolTraceStep, VerificationCommand};
+
+    fn sample_draft() -> TrajectoryDraft {
+        TrajectoryDraft {
+            task_intent: "Repair the approval mailbox workflow".to_string(),
+            task_mode: TaskMode::PlanAndExecute,
+            plan_summary: vec![
+                "Inspect the workflow".to_string(),
+                "Patch it".to_string(),
+                "Rerun verification".to_string(),
+            ],
+            tool_sequence: vec![
+                ToolTraceStep {
+                    tool_name: "read".to_string(),
+                    summary: "read approval.rs".to_string(),
+                },
+                ToolTraceStep {
+                    tool_name: "edit".to_string(),
+                    summary: "edit approval.rs".to_string(),
+                },
+                ToolTraceStep {
+                    tool_name: "bash".to_string(),
+                    summary: "verification: cargo test -p topagent-core".to_string(),
+                },
+            ],
+            changed_files: vec!["crates/topagent-core/src/approval.rs".to_string()],
+            verification: vec![VerificationCommand {
+                command: "cargo test -p topagent-core".to_string(),
+                output: "ok".to_string(),
+                exit_code: 0,
+                succeeded: true,
+            }],
+            outcome_summary: "Repaired the workflow and reran verification.".to_string(),
+            lesson_file: None,
+            procedure_file: None,
+            source_labels: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn test_mark_trajectory_ready_refuses_low_trust_artifact() {
+        let temp = TempDir::new().unwrap();
+        let trajectories_dir = temp.path().join(".topagent/trajectories");
+        let mut draft = sample_draft();
+        draft.source_labels.push(SourceLabel::low(
+            SourceKind::TranscriptPrior,
+            InfluenceMode::MayDriveAction,
+            "2 prior transcript snippet(s)",
+        ));
+        let (_saved, path) = save_trajectory(&trajectories_dir, &draft).unwrap();
+
+        let err = mark_trajectory_ready(&path).unwrap_err().to_string();
+        assert!(err.contains("low-trust content"));
+        assert!(err.contains("prior transcript"));
+    }
 }

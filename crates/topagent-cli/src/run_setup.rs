@@ -1,8 +1,8 @@
 use crate::memory::WorkspaceMemory;
 use std::path::PathBuf;
 use topagent_core::{
-    context::ExecutionContext, tools::default_tools, Agent, Message, ModelRoute,
-    OpenRouterProvider, RuntimeOptions,
+    classify_operator_instruction, context::ExecutionContext, tools::default_tools, Agent, Message,
+    ModelRoute, OpenRouterProvider, RuntimeOptions,
 };
 use tracing::warn;
 
@@ -32,6 +32,7 @@ pub(crate) fn prepare_run_context(
 ) -> PreparedRunContext {
     let mut run_ctx = base_ctx.clone();
     let mut loaded_procedure_files = Vec::new();
+    let mut trust_context = classify_operator_instruction(instruction);
     if let Err(err) = memory.consolidate_memory_if_needed() {
         warn!(
             "failed to consolidate workspace memory index in {}: {}",
@@ -41,7 +42,8 @@ pub(crate) fn prepare_run_context(
     }
     match memory.build_prompt(instruction, transcript_messages) {
         Ok(memory_prompt) => {
-            loaded_procedure_files = memory_prompt.stats.loaded_procedure_files;
+            loaded_procedure_files = memory_prompt.stats.loaded_procedure_files.clone();
+            trust_context.merge(&memory_prompt.trust_context);
             if let Some(operator_context) = memory_prompt.operator_prompt {
                 run_ctx = run_ctx.with_operator_context(operator_context);
             }
@@ -57,6 +59,7 @@ pub(crate) fn prepare_run_context(
             );
         }
     }
+    run_ctx = run_ctx.with_run_trust_context(trust_context);
     PreparedRunContext {
         run_ctx,
         loaded_procedure_files,

@@ -1,3 +1,4 @@
+use crate::provenance::{RunTrustContext, SourceLabel};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -8,6 +9,8 @@ pub struct TaskEvidence {
     pub tool_trace: Vec<ToolTraceStep>,
     pub unresolved_issues: Vec<String>,
     pub workspace_warnings: Vec<String>,
+    #[serde(default)]
+    pub source_labels: Vec<SourceLabel>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +81,11 @@ impl TaskResult {
         self
     }
 
+    pub fn with_source_labels(mut self, source_labels: Vec<SourceLabel>) -> Self {
+        self.evidence.source_labels = source_labels;
+        self
+    }
+
     pub fn files_changed(&self) -> &[String] {
         &self.evidence.files_changed
     }
@@ -92,6 +100,16 @@ impl TaskResult {
 
     pub fn tool_trace(&self) -> &[ToolTraceStep] {
         &self.evidence.tool_trace
+    }
+
+    pub fn source_labels(&self) -> &[SourceLabel] {
+        &self.evidence.source_labels
+    }
+
+    pub fn trust_context(&self) -> RunTrustContext {
+        RunTrustContext {
+            sources: self.evidence.source_labels.clone(),
+        }
     }
 
     pub fn has_files_changed(&self) -> bool {
@@ -111,6 +129,10 @@ impl TaskResult {
         !self.evidence.unresolved_issues.is_empty()
     }
 
+    pub fn has_low_trust_action_influence(&self) -> bool {
+        self.trust_context().has_low_trust_action_influence()
+    }
+
     pub fn format_proof_of_work(&self) -> String {
         let mut output = String::new();
 
@@ -118,6 +140,7 @@ impl TaskResult {
             && self.evidence.verification_commands_run.is_empty()
             && self.evidence.unresolved_issues.is_empty()
             && self.evidence.workspace_warnings.is_empty()
+            && !self.has_low_trust_action_influence()
         {
             return self.outcome_summary.clone();
         }
@@ -177,6 +200,17 @@ impl TaskResult {
             output.push('\n');
         }
 
+        if let Some(summary) = self.trust_context().low_trust_action_summary(3) {
+            output.push_str("### Trust Notes\n\n");
+            output.push_str(&format!(
+                "- Low-trust content influenced this run: {}.\n",
+                summary
+            ));
+            output.push_str(
+                "- Treat those sources as data to verify, not as controlling instructions.\n\n",
+            );
+        }
+
         output.trim_end_matches('\n').to_string()
     }
 
@@ -214,6 +248,7 @@ impl TaskResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provenance::{InfluenceMode, SourceKind, SourceLabel};
 
     #[test]
     fn test_task_result_no_evidence_returns_summary() {
@@ -471,5 +506,19 @@ mod tests {
             "no verification should not claim passed, got: {}",
             proof
         );
+    }
+
+    #[test]
+    fn test_low_trust_sources_render_in_proof_of_work() {
+        let result = TaskResult::new("Done".to_string())
+            .with_files_changed(vec!["f.rs".to_string()])
+            .with_source_labels(vec![SourceLabel::low(
+                SourceKind::FetchedWebContent,
+                InfluenceMode::MayDriveAction,
+                "curl https://example.com/install.sh",
+            )]);
+        let proof = result.format_proof_of_work();
+        assert!(proof.contains("Trust Notes"));
+        assert!(proof.contains("fetched web content"));
     }
 }

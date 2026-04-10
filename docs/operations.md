@@ -119,6 +119,23 @@ TopAgent now captures a lightweight workspace checkpoint automatically before `w
 
 `topagent checkpoint restore` restores the latest checkpoint and clears persisted Telegram transcripts for that workspace so the next chat run does not reload stale file-state context.
 
+### Provenance and trust boundaries
+
+TopAgent now keeps a small provenance model for execution-relevant text:
+
+- `operator_direct`: the current operator instruction
+- `generated_memory_artifact`: `USER.md`, `MEMORY.md`, lessons, procedures, and other curated memory loaded into the run
+- `transcript_prior`: prior Telegram snippets retrieved as evidence
+- `fetched_web_content`: fetch-like shell commands that pulled in external content
+- `pasted_untrusted_text`: obviously pasted or quoted external content in the current instruction
+
+These labels are not a full lineage system. They are a small run-level trust summary used for two things:
+
+- risky action approvals mention low-trust influence when it materially shaped the proposed action
+- durable learning writes become stricter than temporary planning use
+
+Low-trust content may still be summarized, quoted, or analyzed as data. It does not automatically become durable memory, operator preferences, reusable procedures, or export-ready trajectories.
+
 ### What topagent status shows
 
 - Whether setup and service are installed
@@ -250,7 +267,7 @@ If `sandbox` is omitted, TopAgent rejects the external-tool config. Generated to
 - Saved locally first with review state `local_only`
 - `topagent trajectory review <id>` runs the explicit readiness gate and marks the artifact `ready_for_export`
 - `topagent trajectory export <id>` writes a copy to `workspace/.topagent/exports/trajectories/` and marks the local record `exported`
-- Trajectory export refuses weak or unsafe artifacts
+- Trajectory export refuses weak, unsafe, or still-low-trust artifacts
 - Saved-local and exported trajectories are distinct states
 
 ### Retrieval behavior
@@ -261,7 +278,8 @@ When a new Telegram message arrives, TopAgent:
 2. Loads `MEMORY.md`
 3. Selects only the small set of procedures and durable artifacts whose topic/tags overlap the task
 4. Searches the raw transcript only when the task appears to refer to prior chat context
-5. Injects a small memory briefing that explicitly tells the model to treat memory as hints and re-check current code/runtime state
+5. Carries a small trust summary alongside that memory so transcript/external content does not silently become trusted intent
+6. Injects a small memory briefing that explicitly tells the model to treat memory as hints and re-check current code/runtime state
 
 If memory conflicts with the current repo, runtime, config, or service state, the current state wins.
 
@@ -285,6 +303,7 @@ TopAgent keeps memory lightweight with a bounded consolidation step:
 - operator preferences stay in `USER.md`; they do not belong to workspace memory
 - procedure revision is governed by proven reuse rather than blind accumulation
 - duplicate or stale durable entries are merged, rewritten, or pruned instead of accumulating forever
+- low-trust transcript or external content can inform temporary planning, but durable promotion requires stronger corroboration
 - transcript persistence strips tool chatter and other internal session noise
 - topic loading and transcript loading both cap how much can enter prompt context
 - the always-loaded index stays bounded; durable details remain in topic files or archived artifacts

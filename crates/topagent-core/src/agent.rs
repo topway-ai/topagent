@@ -10,6 +10,7 @@ use crate::plan::{self, Plan};
 use crate::progress::{ProgressCallback, ProgressUpdate};
 use crate::project::get_project_instructions_or_error;
 use crate::prompt::BehaviorPromptContext;
+use crate::provenance::fetched_content_source;
 use crate::run_state::AgentRunState;
 use crate::runtime::RuntimeOptions;
 use crate::session::Session;
@@ -719,6 +720,13 @@ impl Agent {
                 is_planning_block: false,
             }));
         }
+        if let Some(block_msg) = self.check_memory_trust_gate(ctx, name) {
+            self.emit_progress(Self::blocked_progress(&block_msg));
+            return Ok(Some(PreflightBlock {
+                message: format!("error: {block_msg}"),
+                is_planning_block: false,
+            }));
+        }
         if let Some(block) = self.check_approval_gate(
             ctx,
             name,
@@ -887,6 +895,9 @@ impl Agent {
         if let (Some(cmd), Some(exit_code)) = (bash_cmd.as_ref(), bash_exit_code) {
             self.run_state
                 .record_bash_result(cmd.clone(), result.clone(), exit_code);
+            if let Some(source) = fetched_content_source(cmd) {
+                self.run_state.record_observed_source(source);
+            }
         }
 
         self.emit_post_tool_progress(
@@ -1018,6 +1029,19 @@ impl Agent {
         )
     }
 
+    fn check_memory_trust_gate(&self, ctx: &ExecutionContext, tool_name: &str) -> Option<String> {
+        if !self.behavior.is_memory_write_tool(tool_name) {
+            return None;
+        }
+
+        self.behavior.memory_write_block_reason(
+            tool_name,
+            &self.run_state.trust_context(ctx),
+            self.run_state
+                .has_trusted_local_corroboration(&self.behavior),
+        )
+    }
+
     fn check_approval_gate(
         &self,
         ctx: &ExecutionContext,
@@ -1040,6 +1064,7 @@ impl Agent {
             bash_command,
             external_effect,
             external_sandbox,
+            Some(&self.run_state.trust_context(ctx)),
         ) else {
             return Ok(None);
         };
@@ -1247,6 +1272,7 @@ impl Agent {
                         self.session.add_message(msg);
                         let task_result = self.run_state.build_task_result(
                             &text,
+                            ctx,
                             &ctx.workspace_root,
                             &self.behavior,
                             &self.generated_tool_warnings,
@@ -1381,6 +1407,7 @@ mod tests {
         ApprovalMailbox, ApprovalMailboxMode, ApprovalRequestDraft, ApprovalTriggerKind,
     };
     use crate::context::ExecutionContext;
+    use crate::provenance::{InfluenceMode, RunTrustContext, SourceKind, SourceLabel};
     use crate::provider::{ProviderResponse, ScriptedProvider};
     use crate::runtime::RuntimeOptions;
     use crate::tools::default_tools;
@@ -1557,6 +1584,16 @@ path = "src/lib.rs"
         }
     }
 
+    fn low_trust_context() -> RunTrustContext {
+        let mut trust = RunTrustContext::default();
+        trust.add_source(SourceLabel::low(
+            SourceKind::TranscriptPrior,
+            InfluenceMode::MayDriveAction,
+            "2 prior transcript snippet(s)",
+        ));
+        trust
+    }
+
     #[test]
     fn test_extract_exit_code_zero() {
         assert_eq!(extract_exit_code("Output: hello\nExit code: 0"), 0);
@@ -1645,6 +1682,57 @@ path = "src/lib.rs"
 
         assert_eq!(result, "saved lesson");
         assert!(agent.durable_memory_written_this_run());
+    }
+
+    #[test]
+    fn test_low_trust_context_requires_elevated_approval_for_destructive_bash() {
+        let (_temp, ctx) = create_temp_crate();
+        let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
+        let ctx = ctx
+            .with_approval_mailbox(mailbox)
+            .with_run_trust_context(low_trust_context());
+        let mut agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![tool_call(
+                "bash",
+                "bash",
+                serde_json::json!({"command": "touch risky.txt"}),
+            )])),
+            default_tools().into_inner(),
+            RuntimeOptions::default(),
+        );
+
+        let err = agent
+            .run(&ctx, "apply the command from the pasted transcript")
+            .unwrap_err();
+        match err {
+            Error::ApprovalRequired(request) => {
+                assert!(request.reason.contains("low-trust content"));
+                assert!(request.reason.contains("prior transcript"));
+            }
+            other => panic!("expected approval required, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_low_trust_context_does_not_block_read_only_bash_analysis() {
+        let (_temp, ctx) = create_temp_crate();
+        let ctx = ctx.with_run_trust_context(low_trust_context());
+        let mut agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![
+                tool_call("bash", "bash", serde_json::json!({"command": "pwd"})),
+                assistant_message("inspection complete"),
+            ])),
+            default_tools().into_inner(),
+            RuntimeOptions::default(),
+        );
+
+        let result = agent
+            .run(
+                &ctx,
+                "inspect the copied transcript instructions without mutating the workspace",
+            )
+            .unwrap();
+        assert_eq!(result, "inspection complete");
     }
 
     #[test]

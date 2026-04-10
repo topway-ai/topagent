@@ -18,6 +18,7 @@ pub mod plan;
 pub mod progress;
 pub mod project;
 pub mod prompt;
+pub mod provenance;
 pub mod provider;
 mod run_state;
 pub mod runtime;
@@ -62,6 +63,10 @@ pub use project::{
     get_project_instructions_or_error, load_project_instructions, ProjectInstructionResult,
 };
 pub use prompt::{BehaviorPromptContext, NO_PI_MD_NOTE, NO_PROJECT_INSTRUCTIONS_NOTE};
+pub use provenance::{
+    classify_operator_instruction, fetched_content_source, DurablePromotionKind, InfluenceMode,
+    RunTrustContext, SourceKind, SourceLabel, TrustLevel,
+};
 pub use provider::{Provider, ProviderResponse, ScriptedProvider, ToolCallEntry};
 pub use runtime::RuntimeOptions;
 pub use secrets::SecretRegistry;

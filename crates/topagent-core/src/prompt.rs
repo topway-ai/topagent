@@ -159,6 +159,13 @@ All file paths are relative to this workspace root.\n\n",
                 prompt.push_str(&format!("  - {anchor}\n"));
             }
         }
+
+        if !run_state.trust_notes.is_empty() {
+            prompt.push_str("- Trust notes:\n");
+            for note in &run_state.trust_notes {
+                prompt.push_str(&format!("  - {note}\n"));
+            }
+        }
     }
 
     fn render_identity_section(&self, prompt: &mut String) {
@@ -429,6 +436,9 @@ mod tests {
                 recent_approval_decisions: vec!["apr-2 [denied] delete generated tool".to_string()],
                 active_files: vec!["src/lib.rs".to_string()],
                 proof_of_work_anchors: vec!["verification: cargo test --lib (exit 0)".to_string()],
+                trust_notes: vec![
+                    "Low-trust content is active in this run: prior transcript.".to_string()
+                ],
                 memory_context_loaded: true,
             }),
             generated_tool_warnings: &["broken_tool: missing script.sh".to_string()],
@@ -448,5 +458,6 @@ mod tests {
         assert!(prompt.contains("Current plan"));
         assert!(prompt.contains("broken_tool: missing script.sh"));
         assert!(prompt.contains("git ls-files"));
+        assert!(prompt.contains("Trust notes"));
     }
 }

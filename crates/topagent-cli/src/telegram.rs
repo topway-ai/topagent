@@ -912,6 +912,7 @@ impl ChatSessionManager {
 
         thread::spawn(move || {
             let has_progress = worker_progress_callback.is_some();
+            let mut promotion_notes = Vec::new();
             if let Some(callback) = &worker_progress_callback {
                 agent.set_progress_callback(Some(callback.clone()));
             }
@@ -946,6 +947,7 @@ impl ChatSessionManager {
                                         "saved promoted workspace learning artifacts"
                                     );
                                 }
+                                promotion_notes = report.notes;
                             }
                             Err(err) => {
                                 warn!("failed to promote verified Telegram task memory: {}", err)
@@ -962,7 +964,13 @@ impl ChatSessionManager {
             }
 
             match result {
-                Ok(response) => {
+                Ok(mut response) => {
+                    if !promotion_notes.is_empty() {
+                        response.push_str("\n\n### Trust Notes\n");
+                        for note in promotion_notes {
+                            response.push_str(&format!("- {}\n", note));
+                        }
+                    }
                     let max_len = 4000;
                     let chunks = if response.len() <= max_len {
                         vec![response.clone()]

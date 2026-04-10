@@ -4,6 +4,7 @@ use crate::operator_profile::{
     OperatorPreferenceRecord, PreferenceCategory, USER_PROFILE_RELATIVE_PATH,
 };
 use crate::tool_spec::ToolSpec;
+use crate::BehaviorContract;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -109,6 +110,17 @@ impl crate::tools::Tool for ManageOperatorPreferenceTool {
 }
 
 fn set_preference(args: ManageOperatorPreferenceArgs, ctx: &ToolContext<'_>) -> Result<String> {
+    if let Some(reason) = BehaviorContract::default().memory_write_block_reason(
+        "manage_operator_preference",
+        ctx.exec.run_trust_context(),
+        false,
+    ) {
+        return Err(Error::ToolFailed(format!(
+            "manage_operator_preference: {}",
+            reason
+        )));
+    }
+
     let raw_key = args.key.as_deref().ok_or_else(|| {
         Error::InvalidInput(
             "manage_operator_preference: key is required for action=set".to_string(),
@@ -167,6 +179,17 @@ fn set_preference(args: ManageOperatorPreferenceArgs, ctx: &ToolContext<'_>) -> 
 }
 
 fn remove_preference(args: ManageOperatorPreferenceArgs, ctx: &ToolContext<'_>) -> Result<String> {
+    if let Some(reason) = BehaviorContract::default().memory_write_block_reason(
+        "manage_operator_preference",
+        ctx.exec.run_trust_context(),
+        false,
+    ) {
+        return Err(Error::ToolFailed(format!(
+            "manage_operator_preference: {}",
+            reason
+        )));
+    }
+
     let raw_key = args.key.as_deref().ok_or_else(|| {
         Error::InvalidInput(
             "manage_operator_preference: key is required for action=remove".to_string(),
@@ -292,6 +315,7 @@ fn current_timestamp() -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provenance::{InfluenceMode, RunTrustContext, SourceKind, SourceLabel};
     use crate::tools::Tool;
     use tempfile::TempDir;
 
@@ -437,5 +461,38 @@ mod tests {
             .path()
             .join(".topagent/topics/operator-preference-concise_final_answers.md")
             .exists());
+    }
+
+    #[test]
+    fn test_manage_operator_preference_blocks_low_trust_writes() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+        let mut trust = RunTrustContext::default();
+        trust.add_source(SourceLabel::low(
+            SourceKind::TranscriptPrior,
+            InfluenceMode::MayDriveAction,
+            "2 prior transcript snippet(s)",
+        ));
+        let exec = Box::leak(Box::new(
+            crate::context::ExecutionContext::new(root).with_run_trust_context(trust),
+        ));
+        let runtime = Box::leak(Box::new(crate::runtime::RuntimeOptions::default()));
+        let ctx = ToolContext::new(exec, runtime);
+        let tool = ManageOperatorPreferenceTool::new();
+
+        let result = tool.execute(
+            serde_json::json!({
+                "action": "set",
+                "key": "concise final answers",
+                "category": "response_style",
+                "value": "Keep final responses concise."
+            }),
+            &ctx,
+        );
+
+        assert!(matches!(result, Err(Error::ToolFailed(_))));
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("low-trust content"));
+        assert!(err.contains("prior transcript"));
     }
 }

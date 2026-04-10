@@ -336,6 +336,7 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
 
     match result {
         Ok(result) => {
+            let mut final_output = result;
             if let Some(task_result) = agent.last_task_result().cloned() {
                 match agent.plan().lock() {
                     Ok(plan) => match promote_verified_task(
@@ -361,13 +362,19 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
                                     "saved promoted workspace learning artifacts"
                                 );
                             }
+                            if !report.notes.is_empty() {
+                                final_output.push_str("\n\n### Trust Notes\n");
+                                for note in report.notes {
+                                    final_output.push_str(&format!("- {}\n", note));
+                                }
+                            }
                         }
                         Err(err) => warn!("failed to promote verified task memory: {}", err),
                     },
                     Err(err) => warn!("failed to lock agent plan for distillation: {}", err),
                 }
             }
-            println!("{}", result);
+            println!("{}", final_output);
             Ok(())
         }
         Err(topagent_core::Error::Stopped(_)) => {

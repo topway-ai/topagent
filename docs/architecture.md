@@ -40,6 +40,7 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 | `plan` | Plan struct, TodoItem, task modes |
 | `project` | Load `TOPAGENT.md` project instructions |
 | `prompt` | Policy-driven system prompt rendering from the behavior contract, run state, plan, memory, and tool surface |
+| `provenance` | Compact source/trust labels and low-trust promotion/action policy inputs |
 | `external` | Workspace external tool registry loaded from `.topagent/external-tools.json` |
 | `channel/` | Telegram adapter and channel error types |
 | `cancel` | CancellationToken for graceful shutdown |
@@ -70,7 +71,8 @@ CLI parses args
   -> resolve workspace, API key, model route
   -> build operator model briefing from .topagent/USER.md
   -> build workspace memory briefing from .topagent/MEMORY.md + relevant procedures + relevant durable notes
-  -> create ExecutionContext with workspace + cancel token + operator model + workspace memory briefing
+  -> classify run-level trust context from operator instruction + loaded memory/transcript sources
+  -> create ExecutionContext with workspace + cancel token + operator model + workspace memory briefing + trust context
   -> read explicit tool-authoring mode from CLI/service config
   -> create Agent with provider + tools + options
   -> agent.run(ctx, instruction)
@@ -80,16 +82,18 @@ CLI parses args
      -> enter step loop:
         1. send conversation to LLM
         2. LLM returns text (final answer) or tool calls
-        3. tool calls: run preflight (planning gate, verification gate, approval enforcement)
+        3. tool calls: run preflight (planning gate, verification gate, provenance-aware approval/memory enforcement)
         4. execute tool, record result in session
+        5. if a fetch-like shell command introduced low-trust external content, keep that influence in run state
         5. repeat until text response or max steps
-     -> append proof-of-work (changed files, diff summary)
+     -> append proof-of-work (changed files, diff summary, trust notes when low-trust content shaped the run)
   -> if the task was strongly verified, run the workspace promotion policy:
      - save nothing, or
      - save/update a lesson, or
      - save/update a reusable procedure, or
      - emit a compact trajectory artifact, or
      - some narrow combination of the above
+     - but refuse durable promotions that are still primarily driven by low-trust content
   -> print result
 ```
 
@@ -112,7 +116,7 @@ CLI parses args
           b. load matching `.topagent/procedures/*.md` files only if relevant, capped to a small subset
           c. load matching `.topagent/topics/*.md`, `.topagent/lessons/*.md`, or manual `.topagent/plans/*.md` artifacts only if relevant
           d. search the saved Telegram transcript and extract targeted snippets only if useful
-          e. build a fresh agent run with the operator model plus that memory briefing
+          e. build a fresh agent run with the operator model plus that memory briefing and the merged trust context
           f. append the filtered user-visible transcript to disk
           g. if the task was strongly verified, apply the same verified-task promotion policy used by one-shot runs
           h. send reply (split into chunks if >4000 chars)
@@ -158,7 +162,13 @@ Generated tools use the same workspace sandbox policy as bash. Workspace externa
 
 7. **Approval enforcement**: risky actions such as destructive bash commands, `git_commit`, host-sandbox external tools, and generated-tool deletion must pass the central approval gate before execution
 
-8. **Prompt rules**: the system prompt instructs the LLM to never reveal credentials
+8. **Provenance-aware trust boundaries**:
+   - direct operator instructions, generated memory artifacts, transcripts, and fetched content are labeled at ingress with a small source/trust model
+   - low-trust content can be summarized or analyzed as data, but risky actions and durable memory writes become stricter when that content materially influences the run
+   - approvals mention the low-trust source briefly and concretely instead of failing silently
+   - durable promotion is stricter than temporary planning: low-trust content can block `USER.md`, procedure promotion, and trajectory review/export
+
+9. **Prompt rules**: the system prompt instructs the LLM to never reveal credentials
 
 ### Memory and persistence flow
 
@@ -185,6 +195,7 @@ TopAgent now uses five local learning layers:
 5. **Trajectory records**: `workspace/.topagent/trajectories/*.json`
    - compact structured records from strong verified runs
    - include task intent, task mode, plan summary, key tool sequence, changed files, verification evidence, and linked lesson/procedure artifacts
+   - carry the run's compact provenance labels so later review/export can reject low-trust artifacts
    - saved locally first, then reviewed and exported explicitly into `workspace/.topagent/exports/trajectories/`
    - stay off the prompt hot path unless exported or reviewed manually
 
@@ -196,6 +207,7 @@ Curated consolidation keeps the index practical:
 - operator preferences live outside the workspace index, so repo memory and user memory do not share ownership
 - procedures prefer governed reuse: proven reuse can keep, refine, supersede, disable, or later prune a playbook instead of piling up duplicates
 - duplicate or conflicting durable entries are merged or pruned instead of accumulating forever
+- provenance is tracked at run boundaries rather than per token; the goal is explainable trust gating, not a full lineage graph
 - relative timestamps are normalized before durable promotion when TopAgent has enough evidence
 - missing or unreadable topic files are skipped during retrieval
 - the index load path caps injected bytes so startup memory stays cheap

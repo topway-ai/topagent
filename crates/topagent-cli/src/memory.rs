@@ -21,8 +21,9 @@ use std::path::{Component, Path, PathBuf};
 use topagent_core::context::ToolContext;
 use topagent_core::tools::{SaveLessonArgs, SaveLessonTool, Tool};
 use topagent_core::{
-    load_operator_profile, migrate_legacy_operator_preferences, BehaviorContract, ExecutionContext,
-    Message, Plan, PreferenceCategory, Role, RuntimeOptions, TaskMode, TaskResult,
+    load_operator_profile, migrate_legacy_operator_preferences, BehaviorContract,
+    DurablePromotionKind, ExecutionContext, InfluenceMode, Message, Plan, PreferenceCategory, Role,
+    RunTrustContext, RuntimeOptions, SourceKind, SourceLabel, TaskMode, TaskResult,
 };
 use tracing::warn;
 
@@ -101,6 +102,7 @@ pub(crate) struct MemoryPrompt {
     pub prompt: Option<String>,
     pub operator_prompt: Option<String>,
     pub stats: MemoryPromptStats,
+    pub trust_context: RunTrustContext,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -193,6 +195,7 @@ impl WorkspaceMemory {
         prompt.push_str(&contract.render_memory_prompt_preamble());
 
         let mut stats = MemoryPromptStats::default();
+        let mut trust_context = RunTrustContext::default();
         let operator_prompt;
 
         if let Some(operator_section) = operator_load.section {
@@ -200,6 +203,11 @@ impl WorkspaceMemory {
                 .loaded_operator_items
                 .extend(operator_load.loaded_items);
             operator_prompt = Some(operator_section);
+            trust_context.add_source(SourceLabel::advisory(
+                SourceKind::GeneratedMemoryArtifact,
+                InfluenceMode::MayDriveAction,
+                "operator model from USER.md",
+            ));
         } else {
             operator_prompt = None;
         }
@@ -208,6 +216,11 @@ impl WorkspaceMemory {
             stats.index_prompt_bytes = index_section.len();
             prompt.push_str("\n### Always-Loaded Index\n");
             prompt.push_str(&index_section);
+            trust_context.add_source(SourceLabel::advisory(
+                SourceKind::GeneratedMemoryArtifact,
+                InfluenceMode::DataOnly,
+                "workspace memory index",
+            ));
         }
 
         if let Some(procedure_section) = procedure_load.section {
@@ -217,12 +230,22 @@ impl WorkspaceMemory {
                 .extend(procedure_load.loaded_files);
             prompt.push_str("\n### Relevant Procedures\n");
             prompt.push_str(&procedure_section);
+            trust_context.add_source(SourceLabel::advisory(
+                SourceKind::GeneratedMemoryArtifact,
+                InfluenceMode::MayDriveAction,
+                "curated procedures",
+            ));
         }
 
         if let Some(durable_section) = durable_load.section {
             stats.loaded_items.extend(durable_load.loaded_items);
             prompt.push_str("\n### Curated Durable Notes\n");
             prompt.push_str(&durable_section);
+            trust_context.add_source(SourceLabel::advisory(
+                SourceKind::GeneratedMemoryArtifact,
+                InfluenceMode::MayDriveAction,
+                "curated workspace memory notes",
+            ));
         }
 
         if let Some(transcript_section) = transcript_section {
@@ -230,12 +253,21 @@ impl WorkspaceMemory {
             prompt.push_str("\n### Transcript Evidence\n");
             prompt.push_str(&contract.render_memory_transcript_preamble());
             prompt.push_str(&transcript_section.section);
+            trust_context.add_source(SourceLabel::low(
+                SourceKind::TranscriptPrior,
+                InfluenceMode::MayDriveAction,
+                format!(
+                    "{} prior transcript snippet(s)",
+                    transcript_section.snippet_count
+                ),
+            ));
         }
 
         Ok(MemoryPrompt {
             prompt: Some(prompt.trim_end().to_string()),
             operator_prompt,
             stats,
+            trust_context,
         })
     }
 
@@ -517,6 +549,7 @@ pub(crate) struct TaskPromotionReport {
     pub procedure_file: Option<String>,
     pub superseded_procedure_file: Option<String>,
     pub trajectory_file: Option<String>,
+    pub notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -565,63 +598,88 @@ pub(crate) fn promote_verified_task(
 
     let stored_instruction = redact_for_storage(ctx, &normalize_task_text(instruction));
     let stored_task_result = redact_task_result_for_storage(ctx, task_result);
+    let trust_context = stored_task_result.trust_context();
+    let corroborated_by_trusted_local = stored_task_result.has_files_changed()
+        && stored_task_result.final_verification_passed()
+        && !stored_task_result.has_unresolved_issues();
+    let contract = memory_contract();
     let tool_ctx = ToolContext::new(ctx, options);
     let mut report = TaskPromotionReport::default();
 
     if decision.lesson {
-        let lesson_output = SaveLessonTool::new()
-            .execute(
-                serde_json::to_value(build_lesson_args(&stored_instruction, &stored_task_result)?)
+        if let Some(reason) = contract.durable_promotion_block_reason(
+            DurablePromotionKind::Lesson,
+            &trust_context,
+            corroborated_by_trusted_local,
+        ) {
+            report.notes.push(reason);
+        } else {
+            let lesson_output = SaveLessonTool::new()
+                .execute(
+                    serde_json::to_value(build_lesson_args(
+                        &stored_instruction,
+                        &stored_task_result,
+                    )?)
                     .context("failed to serialize lesson args")?,
-                &tool_ctx,
-            )
-            .map_err(anyhow::Error::new)?;
-        report.lesson_file = extract_saved_artifact_path(&lesson_output, "Lesson saved to ");
+                    &tool_ctx,
+                )
+                .map_err(anyhow::Error::new)?;
+            report.lesson_file = extract_saved_artifact_path(&lesson_output, "Lesson saved to ");
+        }
     }
 
     if decision.procedure {
-        let reused = find_matching_loaded_procedure(memory, instruction, loaded_procedure_files)?;
-        let procedure_draft = build_procedure_draft(
-            &stored_instruction,
-            &stored_task_result,
-            plan,
-            report.lesson_file.as_deref(),
-            None,
-            reused
-                .as_ref()
-                .map(|procedure| format!(".topagent/procedures/{}", procedure.filename)),
-        )?;
-        match reused {
-            Some(existing) => match evaluate_procedure_revision(&existing, &procedure_draft) {
-                ProcedureRevisionAction::Keep => {
-                    report.procedure_file = record_procedure_reuse(&existing.path, None)?
+        if let Some(reason) = contract.durable_promotion_block_reason(
+            DurablePromotionKind::Procedure,
+            &trust_context,
+            corroborated_by_trusted_local,
+        ) {
+            report.notes.push(reason);
+        } else {
+            let reused =
+                find_matching_loaded_procedure(memory, instruction, loaded_procedure_files)?;
+            let procedure_draft = build_procedure_draft(
+                &stored_instruction,
+                &stored_task_result,
+                plan,
+                report.lesson_file.as_deref(),
+                None,
+                reused
+                    .as_ref()
+                    .map(|procedure| format!(".topagent/procedures/{}", procedure.filename)),
+            )?;
+            match reused {
+                Some(existing) => match evaluate_procedure_revision(&existing, &procedure_draft) {
+                    ProcedureRevisionAction::Keep => {
+                        report.procedure_file = record_procedure_reuse(&existing.path, None)?
+                            .or(Some(format!(".topagent/procedures/{}", existing.filename)));
+                    }
+                    ProcedureRevisionAction::Refine => {
+                        report.procedure_file = revise_procedure(
+                            &existing.path,
+                            &procedure_draft,
+                            report.lesson_file.as_deref(),
+                            None,
+                        )?
                         .or(Some(format!(".topagent/procedures/{}", existing.filename)));
-                }
-                ProcedureRevisionAction::Refine => {
-                    report.procedure_file = revise_procedure(
-                        &existing.path,
-                        &procedure_draft,
-                        report.lesson_file.as_deref(),
-                        None,
-                    )?
-                    .or(Some(format!(".topagent/procedures/{}", existing.filename)));
-                }
-                ProcedureRevisionAction::Supersede => {
-                    let (procedure_file, _path) =
-                        save_procedure(&memory.procedures_dir, &procedure_draft)?;
-                    report.procedure_file = Some(procedure_file.clone());
-                    report.superseded_procedure_file =
-                        mark_procedure_superseded(&existing.path, &procedure_file)?;
-                }
-            },
-            None => {
-                if let Some(existing) = find_matching_active_procedure(memory, instruction)? {
-                    report.procedure_file =
-                        Some(format!(".topagent/procedures/{}", existing.filename));
-                } else {
-                    let (procedure_file, _path) =
-                        save_procedure(&memory.procedures_dir, &procedure_draft)?;
-                    report.procedure_file = Some(procedure_file);
+                    }
+                    ProcedureRevisionAction::Supersede => {
+                        let (procedure_file, _path) =
+                            save_procedure(&memory.procedures_dir, &procedure_draft)?;
+                        report.procedure_file = Some(procedure_file.clone());
+                        report.superseded_procedure_file =
+                            mark_procedure_superseded(&existing.path, &procedure_file)?;
+                    }
+                },
+                None => {
+                    if let Some(existing) = find_matching_active_procedure(memory, instruction)? {
+                        report.procedure_file =
+                            Some(format!(".topagent/procedures/{}", existing.filename));
+                    } else {
+                        let (procedure_file, _path) =
+                            save_procedure(&memory.procedures_dir, &procedure_draft)?;
+                        report.procedure_file = Some(procedure_file);
+                    }
                 }
             }
         }
@@ -638,10 +696,17 @@ pub(crate) fn promote_verified_task(
             outcome_summary: compact_text_line(&stored_task_result.outcome_summary, 220),
             lesson_file: report.lesson_file.clone(),
             procedure_file: report.procedure_file.clone(),
+            source_labels: stored_task_result.source_labels().to_vec(),
         };
         let (trajectory_file, _path) =
             save_trajectory(&memory.trajectories_dir, &trajectory_draft)?;
         report.trajectory_file = Some(trajectory_file.clone());
+        if let Some(summary) = trust_context.low_trust_action_summary(2) {
+            report.notes.push(format!(
+                "Trajectory saved locally with low-trust provenance from {}. Review and export stay blocked until trusted corroboration is established.",
+                summary
+            ));
+        }
         if let Some(procedure_file) = report.procedure_file.clone() {
             if let Some(filename) = artifact_filename(&procedure_file) {
                 set_procedure_source_trajectory(
@@ -704,6 +769,19 @@ fn redact_task_result_for_storage(ctx: &ExecutionContext, task_result: &TaskResu
             output: String::new(),
             exit_code: command.exit_code,
             succeeded: command.succeeded,
+        })
+        .collect();
+    redacted.evidence.source_labels = redacted
+        .evidence
+        .source_labels
+        .iter()
+        .map(|label| {
+            SourceLabel::new(
+                label.kind,
+                label.trust,
+                label.influence,
+                redact_for_storage(ctx, &label.summary),
+            )
         })
         .collect();
     redacted
@@ -1416,8 +1494,8 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
     use topagent_core::{
-        ExecutionContext, RuntimeOptions, SecretRegistry, TaskMode, TaskResult, ToolTraceStep,
-        VerificationCommand,
+        ExecutionContext, InfluenceMode, RuntimeOptions, SecretRegistry, SourceKind, SourceLabel,
+        TaskMode, TaskResult, ToolTraceStep, VerificationCommand,
     };
 
     fn write_memory_index(workspace: &Path, body: &str) {
@@ -1517,6 +1595,14 @@ mod tests {
         let mut plan = strong_plan();
         plan.add_item("Clear stale transcript state before finishing the workflow".to_string());
         plan
+    }
+
+    fn low_trust_transcript_source() -> SourceLabel {
+        SourceLabel::low(
+            SourceKind::TranscriptPrior,
+            InfluenceMode::MayDriveAction,
+            "2 prior transcript snippet(s)",
+        )
     }
 
     #[test]
@@ -1708,6 +1794,30 @@ mod tests {
     }
 
     #[test]
+    fn test_build_prompt_marks_transcript_snippets_as_low_trust() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let messages = vec![
+            Message::user("Remember this copied issue body."),
+            Message::assistant("Stored the copied issue body."),
+        ];
+
+        let prompt = memory
+            .build_prompt(
+                "what copied issue body did I mention earlier?",
+                Some(&messages),
+            )
+            .unwrap();
+
+        assert!(prompt.trust_context.has_low_trust_action_influence());
+        assert!(prompt
+            .trust_context
+            .low_trust_action_summary(2)
+            .unwrap_or_default()
+            .contains("prior transcript"));
+    }
+
+    #[test]
     fn test_promote_verified_task_creates_lesson_procedure_and_trajectory() {
         let temp = TempDir::new().unwrap();
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
@@ -1753,6 +1863,37 @@ mod tests {
         assert!(trajectory.contains("\"stored_outputs\": false"));
         assert!(!trajectory.contains("super-secret-output-value"));
         assert!(!temp.path().join(".topagent/USER.md").exists());
+    }
+
+    #[test]
+    fn test_promote_verified_task_blocks_procedure_under_low_trust_influence() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let ctx = ExecutionContext::new(temp.path().to_path_buf());
+        let options = RuntimeOptions::default();
+        let task_result = strong_verified_task_result("trusted local verification")
+            .with_source_labels(vec![low_trust_transcript_source()]);
+
+        let report = promote_verified_task(
+            &memory,
+            &ctx,
+            &options,
+            "Repair the approval mailbox compaction workflow",
+            TaskMode::PlanAndExecute,
+            &task_result,
+            &strong_plan(),
+            false,
+            &[],
+        )
+        .unwrap();
+
+        assert!(report.lesson_file.is_some());
+        assert!(report.procedure_file.is_none());
+        assert!(report.trajectory_file.is_some());
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("Procedure promotion blocked")));
     }
 
     #[test]

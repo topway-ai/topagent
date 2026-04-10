@@ -1,5 +1,6 @@
 use crate::approval::ApprovalMailbox;
 use crate::checkpoint::WorkspaceCheckpointStore;
+use crate::provenance::RunTrustContext;
 use crate::secrets::SecretRegistry;
 use crate::{cancel::CancellationToken, runtime::RuntimeOptions};
 use std::path::{Component, Path, PathBuf};
@@ -11,6 +12,7 @@ pub struct ExecutionContext {
     secrets: SecretRegistry,
     memory_context: Option<String>,
     operator_context: Option<String>,
+    run_trust_context: RunTrustContext,
     approval_mailbox: Option<ApprovalMailbox>,
     checkpoint_store: Option<WorkspaceCheckpointStore>,
 }
@@ -23,6 +25,7 @@ impl ExecutionContext {
             secrets: SecretRegistry::new(),
             memory_context: None,
             operator_context: None,
+            run_trust_context: RunTrustContext::default(),
             approval_mailbox: None,
             checkpoint_store: None,
         }
@@ -63,6 +66,11 @@ impl ExecutionContext {
         self
     }
 
+    pub fn with_run_trust_context(mut self, run_trust_context: RunTrustContext) -> Self {
+        self.run_trust_context = run_trust_context;
+        self
+    }
+
     pub fn with_workspace_checkpoint_store(
         mut self,
         checkpoint_store: WorkspaceCheckpointStore,
@@ -85,6 +93,10 @@ impl ExecutionContext {
 
     pub fn approval_mailbox(&self) -> Option<&ApprovalMailbox> {
         self.approval_mailbox.as_ref()
+    }
+
+    pub fn run_trust_context(&self) -> &RunTrustContext {
+        &self.run_trust_context
     }
 
     pub fn checkpoint_store(&self) -> Option<&WorkspaceCheckpointStore> {
@@ -161,6 +173,7 @@ impl<'a> ToolContext<'a> {
 mod tests {
     use super::*;
     use crate::checkpoint::WorkspaceCheckpointStore;
+    use crate::provenance::{InfluenceMode, SourceKind, SourceLabel};
     use std::fs;
     use tempfile::TempDir;
 
@@ -241,5 +254,18 @@ mod tests {
             ctx.checkpoint_store().unwrap().latest_status().unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn test_run_trust_context_round_trip() {
+        let (ctx, _temp) = create_context();
+        let mut trust = RunTrustContext::default();
+        trust.add_source(SourceLabel::trusted(
+            SourceKind::OperatorDirect,
+            InfluenceMode::MayDriveAction,
+            "current operator instruction",
+        ));
+        let ctx = ctx.with_run_trust_context(trust.clone());
+        assert_eq!(ctx.run_trust_context(), &trust);
     }
 }

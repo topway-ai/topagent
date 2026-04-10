@@ -53,6 +53,14 @@ TopAgent keeps Telegram memory in three layers:
 
 For strong verified runs, TopAgent can also emit compact trajectory artifacts under `workspace/.topagent/trajectories/`. These are structured export records for later eval or training work, not prompt memory, and they stay local until reviewed and exported explicitly.
 
+TopAgent also keeps a narrow trust boundary for external content:
+
+- direct operator intent and current workspace state are the normal trusted path
+- saved memory and procedures are advisory artifacts, not ground truth
+- prior transcripts, pasted external text, and fetched web content are treated as low-trust inputs
+- low-trust content can still be analyzed as data, but risky actions and durable memory writes get stricter gating when that content materially influences the run
+- TopAgent does not claim to solve prompt injection; it only keeps provenance explicit enough to avoid silent promotion or silent risky-action drift
+
 ### Bot commands
 
 | Command  | Action                             |
@@ -123,6 +131,8 @@ Workspace memory is separate from `TOPAGENT.md`:
 - `.topagent/checkpoints/` stores the most recent automatic workspace checkpoints for restore
 
 TopAgent does not promote every successful task. Weak, trivial, failed, or ambiguous runs save nothing. It still does not provide a skills marketplace, subagents, online training, or multi-provider routing.
+
+Saved trajectories now include provenance labels from the run. A trajectory can still be stored locally with low-trust influence for audit value, but `topagent trajectory review` and `topagent trajectory export` refuse artifacts that remain influenced by unresolved low-trust content.
 
 ## Troubleshooting
 
