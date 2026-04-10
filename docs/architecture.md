@@ -213,6 +213,16 @@ Curated consolidation keeps the index practical:
 - the index load path caps injected bytes so startup memory stays cheap
 - trajectory review/export stays explicit and local; saved artifacts do not become a second prompt-memory system
 
+### Performance invariants
+
+- Always-loaded memory stays tiny and bounded. `USER.md` and `MEMORY.md` are capped briefings, not growing prompt dumps.
+- Lazy retrieval stays capped. Relevant procedures, durable notes, operator preferences, transcript snippets, and injected bytes all use fixed limits.
+- Transcript use stays targeted. Prior chat is searched for narrow snippets only and is never replayed wholesale into the prompt.
+- Procedures are a latency aid, not a ceremony layer. They are loaded sparsely, only when relevant, and superseded procedures stay off the hot path.
+- Trajectories are export artifacts, not prompt memory. Saving more trajectories must not make normal task startup heavier.
+- Provenance/trust metadata stays lightweight and attached at key boundaries only. It must not become deep always-on analysis over every artifact.
+- Durable artifact count must not imply linear growth in prompt assembly cost, retrieval cost, approval checks, or planning work.
+
 ### Planning flow
 
 1. Agent classifies incoming task as trivial or non-trivial

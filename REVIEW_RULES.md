@@ -12,6 +12,10 @@ Before editing code, produce a short review with:
 
 - files or modules likely to change
 - hot-path impact
+- expected hot-path cost impact on repeated tasks: faster, unchanged, or slower
+- whether any new behavior scales with durable artifact count, transcript size, procedure count, or policy surface
+- what hard cap keeps the hot path bounded
+- what test, limit, or existing invariant proves prompt/retrieval cost stays bounded
 - boundary risks
 - session-vs-durable-state risks
 - whether behavior will be enforced in code or only described
@@ -42,23 +46,37 @@ If the score is under 7, do not treat that as an automatic veto. Treat it as a w
 
 Accept earned complexity. Remove accidental complexity. Reject speculative complexity unless the work is an explicitly labeled spike.
 
+## Performance Guardrails
+
+TopAgent may learn more over time, but repeated tasks must not get slower just because durable artifacts accumulated.
+
+- Hot-path cost must stay bounded as `USER.md`, `MEMORY.md`, lessons, procedures, trajectories, checkpoints, and transcripts grow.
+- Durable artifact growth must not imply prompt growth. More files on disk is acceptable; more always-loaded prompt bulk by default is not.
+- Retrieval must stay capped and relevance-filtered. If artifact count doubles, loaded prompt bytes and loaded item counts should still stay within explicit fixed limits.
+- Repeated tasks should get faster or more predictable from procedures and memory, not slower from extra ceremony or extra always-on reasoning.
+- Security, provenance, and trust layers must use narrow boundary checks, summaries, and caps. Do not add deep always-on analysis over all content.
+- Approval friction must stay risk-triggered. Do not turn low-trust handling, memory, or procedures into universal approval spam.
+- Do not add a second planner, second policy engine, second retrieval engine, or second always-running reasoning layer.
+- Every change must say how repeat-task latency is preserved or improved, what stays capped, and why durable learning does not make the hot path grow linearly.
+
 ## Rules
 
 Check the proposed change against these rules:
 
-1. Hot-path weight: avoid adding repeated prompt bulk, extra runtime branches, or always-loaded artifacts without a clear payoff.
+1. Hot-path weight: avoid adding repeated prompt bulk, extra runtime branches, or always-loaded artifacts without a clear payoff. If the change adds durable artifacts, explain why hot-path prompt assembly and retrieval stay flat or capped.
 2. Boundary integrity: keep policy, runtime, memory, transport, and tool logic in their own layers. Do not blur CLI or Telegram concerns into core runtime.
 3. Policy honesty: if behavior matters, enforce it in code. Do not hide real policy inside prompt prose or comments.
 4. Session vs durable state: do not leak live run state, blockers, approvals, or transient user wishes into durable memory.
-5. Memory quality: durable memory must stay curated, bounded, and worth reloading. Prefer facts with future operator value over noise.
+5. Memory quality: durable memory must stay curated, bounded, and worth reloading. Prefer facts with future operator value over noise, and do not let durable artifact count imply linear prompt or retrieval growth.
 6. Compaction correctness: do not make objective, plan, blockers, pending approvals, active files, proof-of-work anchors, or memory briefing easy to lose.
-7. Approval clarity: approval-required actions must stay explicit and non-bypassable. Do not add side doors around approval checks.
+7. Approval clarity: approval-required actions must stay explicit and non-bypassable. Do not add side doors around approval checks, and do not turn normal trusted work into universal approval friction.
 8. Tool surface discipline: do not add tools that duplicate existing tools, widen scope casually, or push product behavior into tool sprawl.
 9. Transport separation: Telegram and CLI rendering should stay transport-specific; shared policy belongs in the contract or shared runtime seams.
 10. Restart-persistence necessity: do not add restart durability unless correctness actually requires it.
 11. Canonical artifact ownership: important facts should have one obvious owner. Prefer plan state, mailbox state, durable memory, and contract artifacts over transcript repetition.
-12. Simplification vs exceptions: prefer removing branches, prose, and duplicated state. Reject changes that turn TopAgent into a pile of accumulating exceptions.
-13. Product-shift honesty: if a feature does not fit the current TopAgent boundary, say so plainly. Either keep it out, or treat it as a real product shift and update these rules first or alongside the change.
+12. Bounded retrieval: loaded memory, procedures, transcript snippets, provenance summaries, and approval context must stay explicitly capped and relevance-filtered. Unbounded scans or load-all behavior are not acceptable on the hot path.
+13. Simplification vs exceptions: prefer removing branches, prose, and duplicated state. Reject changes that turn TopAgent into a pile of accumulating exceptions.
+14. Product-shift honesty: if a feature does not fit the current TopAgent boundary, say so plainly. Either keep it out, or treat it as a real product shift and update these rules first or alongside the change.
 
 ## Acceptable Complexity
 
@@ -67,6 +85,7 @@ Check the proposed change against these rules:
 - splitting a hotspot into smaller units to make the runtime easier to reason about
 - adding explicit policy because the runtime surface genuinely expanded
 - expanding restart durability only when correctness or operator trust clearly requires it
+- adding explicit fixed caps, relevance filters, or narrow invariants that keep repeat-task latency bounded as durable artifacts grow
 - shipping a narrow spike only when it is labeled, contained, and easy to replace or remove
 
 ## Unacceptable Complexity
@@ -74,6 +93,8 @@ Check the proposed change against these rules:
 - speculative abstractions
 - mixed boundaries between core runtime, transport, policy, and memory
 - hot-path bloat without clear payoff
+- durable knowledge growth that causes prompt assembly, retrieval work, or approvals to grow with artifact count
+- second planners, second policy engines, or second always-on reasoning layers added beside the current kernel
 - prompt-only enforcement for behavior that should be enforced in code
 - accidental persistence of session state
 - duplicate execution paths or duplicate ownership of the same fact
@@ -90,6 +111,9 @@ After implementation, produce a short review with:
 - what improved
 - what got riskier
 - final simplicity score out of 10
+- actual hot-path cost impact on repeated tasks: faster, unchanged, or slower
+- whether any new behavior scales with durable artifact count, and if so why that scaling is acceptable
+- what hard cap or regression test keeps the hot path bounded
 - whether the added complexity was actually justified in the final implementation
 - whether the change made TopAgent more like a stable kernel or more like a pile of accumulating exceptions
 - whether these rules still fit the product boundary after the change
