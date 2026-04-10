@@ -385,9 +385,8 @@ fn list_files(dir: &Path, extension: &str) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::{
-        mark_procedure_superseded, save_procedure, save_trajectory, ProcedureDraft, TrajectoryDraft,
-    };
+    use crate::memory::procedures::{mark_procedure_superseded, save_procedure, ProcedureDraft};
+    use crate::memory::trajectories::{save_trajectory, TrajectoryDraft};
     use tempfile::TempDir;
     use topagent_core::{Plan, TaskMode, ToolTraceStep, VerificationCommand};
 

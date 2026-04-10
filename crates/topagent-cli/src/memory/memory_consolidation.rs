@@ -35,6 +35,14 @@ pub(super) struct MemoryIndexEntry {
     pub(super) note: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MemoryIndexEntryKind {
+    Topic,
+    Lesson,
+    Plan,
+    Procedure,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum DurableMemoryCategory {
     ReusableProcedure,
@@ -195,6 +203,21 @@ impl WorkspaceMemory {
         candidates.extend(procedure_candidates);
 
         Ok(candidates)
+    }
+}
+
+impl MemoryIndexEntry {
+    pub(super) fn kind(&self) -> MemoryIndexEntryKind {
+        let normalized = normalize_memory_file(&self.file);
+        if normalized.starts_with("procedures/") {
+            MemoryIndexEntryKind::Procedure
+        } else if normalized.starts_with("lessons/") {
+            MemoryIndexEntryKind::Lesson
+        } else if normalized.starts_with("plans/") {
+            MemoryIndexEntryKind::Plan
+        } else {
+            MemoryIndexEntryKind::Topic
+        }
     }
 }
 

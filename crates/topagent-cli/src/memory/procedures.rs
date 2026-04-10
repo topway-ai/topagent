@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use topagent_core::BehaviorContract;
 
-use super::compact_text_line;
+use super::{artifact_filename, compact_text_line, score_text_relevance, WorkspaceMemory};
 use crate::managed_files::write_managed_file;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,6 +66,13 @@ pub(crate) struct ProcedureDraft {
     pub(crate) source_lesson: Option<String>,
     pub(crate) source_trajectory: Option<String>,
     pub(crate) supersedes: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProcedureRevisionAction {
+    Keep,
+    Refine,
+    Supersede,
 }
 
 pub(crate) fn save_procedure(
@@ -294,6 +301,107 @@ pub(crate) fn procedure_haystack(procedure: &ParsedProcedure) -> String {
     haystack
 }
 
+pub(crate) fn find_matching_active_procedure(
+    memory: &WorkspaceMemory,
+    instruction: &str,
+) -> Result<Option<ParsedProcedure>> {
+    let mut best: Option<(usize, ParsedProcedure)> = None;
+    for path in list_markdown_files(&memory.procedures_dir)? {
+        let Some(procedure) = parse_saved_procedure(&path)? else {
+            continue;
+        };
+        if procedure.status != ProcedureStatus::Active {
+            continue;
+        }
+
+        let score = procedure_match_score(instruction, &procedure);
+        if score < 4 {
+            continue;
+        }
+
+        match &best {
+            Some((best_score, _)) if *best_score >= score => {}
+            _ => best = Some((score, procedure)),
+        }
+    }
+
+    Ok(best.map(|(_, procedure)| procedure))
+}
+
+pub(crate) fn find_matching_loaded_procedure(
+    memory: &WorkspaceMemory,
+    instruction: &str,
+    loaded_procedure_files: &[String],
+) -> Result<Option<ParsedProcedure>> {
+    let mut best: Option<(usize, ParsedProcedure)> = None;
+    for relative_path in loaded_procedure_files {
+        let Some(filename) = artifact_filename(relative_path) else {
+            continue;
+        };
+        let path = memory.procedures_dir.join(filename);
+        let Some(procedure) = parse_saved_procedure(&path)? else {
+            continue;
+        };
+        if procedure.status != ProcedureStatus::Active {
+            continue;
+        }
+
+        let score = procedure_match_score(instruction, &procedure);
+        if score < 4 {
+            continue;
+        }
+
+        match &best {
+            Some((best_score, _)) if *best_score >= score => {}
+            _ => best = Some((score, procedure)),
+        }
+    }
+
+    Ok(best.map(|(_, procedure)| procedure))
+}
+
+pub(crate) fn evaluate_procedure_revision(
+    existing: &ParsedProcedure,
+    draft: &ProcedureDraft,
+) -> ProcedureRevisionAction {
+    let same_verification = existing
+        .verification
+        .trim()
+        .eq_ignore_ascii_case(draft.verification.trim());
+    let overlapping_steps = draft
+        .steps
+        .iter()
+        .filter(|step| {
+            existing
+                .steps
+                .iter()
+                .any(|existing_step| existing_step.eq_ignore_ascii_case(step))
+        })
+        .count();
+    let has_new_steps = draft.steps.iter().any(|step| {
+        !existing
+            .steps
+            .iter()
+            .any(|existing_step| existing_step.eq_ignore_ascii_case(step))
+    });
+    let has_new_pitfalls = draft.pitfalls.iter().any(|pitfall| {
+        !existing
+            .pitfalls
+            .iter()
+            .any(|existing_pitfall| existing_pitfall.eq_ignore_ascii_case(pitfall))
+    });
+
+    if same_verification && overlapping_steps > 0 {
+        if has_new_steps || has_new_pitfalls {
+            ProcedureRevisionAction::Refine
+        } else {
+            ProcedureRevisionAction::Keep
+        }
+    } else {
+        ProcedureRevisionAction::Supersede
+    }
+}
+
 fn render_procedure_markdown(procedure: &ParsedProcedure) -> String {
     let mut content = String::new();
     content.push_str(&format!("# {}\n\n", procedure.title));
@@ -362,6 +470,24 @@ fn render_procedure_markdown(procedure: &ParsedProcedure) -> String {
 
     content.push_str("---\n*Saved by topagent*\n");
     content
+}
+
+fn procedure_match_score(instruction: &str, procedure: &ParsedProcedure) -> usize {
+    score_text_relevance(instruction, &procedure_haystack(procedure))
+}
+
+fn list_markdown_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut files = std::fs::read_dir(dir)
+        .with_context(|| format!("failed to read {}", dir.display()))?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.extension().is_some_and(|ext| ext == "md"))
+        .collect::<Vec<_>>();
+    files.sort();
+    Ok(files)
 }
 
 fn parse_heading(raw: &str) -> Result<String> {

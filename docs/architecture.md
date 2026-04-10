@@ -57,7 +57,7 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 | `config` | CliParams struct, parameter validation, route/options construction |
 | `run_setup` | Shared agent/provider/context assembly for one-shot CLI and Telegram runs |
 | `telegram` | Telegram polling loop, ChatSessionManager, per-chat transcript persistence |
-| `memory` | Workspace memory facade for index/topic/procedure loading, transcript evidence retrieval, verified-task promotion, trajectory export, and durable-memory consolidation |
+| `memory` | Workspace memory facade; `memory/briefing` handles bounded prompt briefing, `memory/promotion` handles verified-task governance, and sibling modules keep procedures, trajectories, and consolidation file-backed and narrow |
 | `service` | systemd service install/status/start/stop/restart/uninstall |
 | `managed_files` | Managed file guards, env file I/O, safe file removal |
 | `progress` | LiveProgress: CLI and Telegram progress formatting |
