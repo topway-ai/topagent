@@ -21,7 +21,7 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 
 | Module | Responsibility |
 |--------|---------------|
-| `agent` | Agent struct, step loop, planning gates, approval checks, tool dispatch, compaction orchestration |
+| `agent` | Agent struct and orchestration shell; internal `agent/gates`, `agent/tool_execution`, and `agent/run_loop` keep loop control, gate sequencing, and tool-result application narrow |
 | `behavior` | Typed behavior contract, approval trigger mapping, and runtime policy decisions |
 | `approval` | Approval mailbox, request/state transitions, runtime approval enforcement objects |
 | `compaction` | Layered transcript compaction and prompt rebuild support |

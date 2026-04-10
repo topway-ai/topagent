@@ -220,15 +220,15 @@ impl AgentRunState {
             proof_of_work_anchors.push(format!("changed files: {}", changed_files.join(", ")));
         }
 
-        let mut verification_anchors = self
-            .bash_history
-            .borrow()
+        let verification_commands = self.collect_verification_commands(behavior);
+        let mut verification_anchors = verification_commands
             .iter()
             .rev()
-            .filter_map(|(command, _output, exit_code)| {
-                behavior
-                    .is_verification_command(command)
-                    .then_some(format!("verification: {} (exit {})", command, exit_code))
+            .map(|command| {
+                format!(
+                    "verification: {} (exit {})",
+                    command.command, command.exit_code
+                )
             })
             .take(
                 behavior
@@ -238,12 +238,11 @@ impl AgentRunState {
             )
             .collect::<Vec<_>>();
         verification_anchors.reverse();
-        let has_verification = !verification_anchors.is_empty();
+        let has_verification = !verification_commands.is_empty();
         proof_of_work_anchors.extend(verification_anchors);
 
-        if !changed_files.is_empty() && !has_verification {
-            proof_of_work_anchors
-                .push("Files were modified but no verification commands were run".to_string());
+        if let Some(issue) = Self::missing_verification_issue(&changed_files, has_verification) {
+            proof_of_work_anchors.push(issue);
         }
 
         let trust_context = self.trust_context(ctx);
@@ -304,31 +303,17 @@ impl AgentRunState {
         let mut evidence = TaskEvidence {
             files_changed: labeled_files,
             diff_summary,
-            verification_commands_run: Vec::new(),
+            verification_commands_run: self.collect_verification_commands(behavior),
             tool_trace: self.tool_trace.borrow().clone(),
             unresolved_issues: Vec::new(),
             workspace_warnings: Vec::new(),
             source_labels: self.trust_context(ctx).sources,
         };
 
-        for (command, full_output, exit_code) in self.bash_history.borrow().iter() {
-            if behavior.is_verification_command(command) {
-                let succeeded = exit_code == &0;
-                evidence
-                    .verification_commands_run
-                    .push(VerificationCommand {
-                        command: command.clone(),
-                        output: full_output.clone(),
-                        exit_code: *exit_code,
-                        succeeded,
-                    });
-            }
-        }
-
-        if !files.is_empty() && evidence.verification_commands_run.is_empty() {
-            evidence
-                .unresolved_issues
-                .push("Files were modified but no verification commands were run".to_string());
+        if let Some(issue) =
+            Self::missing_verification_issue(&files, !evidence.verification_commands_run.is_empty())
+        {
+            evidence.unresolved_issues.push(issue);
         }
 
         if !unattributed_files.is_empty() {
@@ -402,6 +387,34 @@ impl AgentRunState {
         if !changed.contains(&path) {
             changed.push(path);
         }
+    }
+
+    fn collect_verification_commands(
+        &self,
+        behavior: &BehaviorContract,
+    ) -> Vec<VerificationCommand> {
+        self.bash_history
+            .borrow()
+            .iter()
+            .filter_map(|(command, full_output, exit_code)| {
+                behavior
+                    .is_verification_command(command)
+                    .then_some(VerificationCommand {
+                        command: command.clone(),
+                        output: full_output.clone(),
+                        exit_code: *exit_code,
+                        succeeded: *exit_code == 0,
+                    })
+            })
+            .collect()
+    }
+
+    fn missing_verification_issue(
+        changed_files: &[String],
+        has_verification: bool,
+    ) -> Option<String> {
+        (!changed_files.is_empty() && !has_verification)
+            .then_some("Files were modified but no verification commands were run".to_string())
     }
 
     fn compute_file_hash(path: &Path) -> Option<String> {

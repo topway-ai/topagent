@@ -379,6 +379,13 @@ Current plan remains preserved separately.\n",
         }
     }
 
+    if !run_state.trust_notes.is_empty() {
+        summary.push_str("- Trust notes:\n");
+        for note in &run_state.trust_notes {
+            summary.push_str(&format!("  - {}\n", truncate_inline(note, 160)));
+        }
+    }
+
     if compacted_text_messages > 0 {
         summary.push_str(&format!(
             "- Older conversational messages compacted: {}.\n",
