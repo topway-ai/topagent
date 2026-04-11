@@ -99,7 +99,9 @@ pub(crate) struct MemoryPrompt {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct MemoryPromptStats {
+    pub total_prompt_bytes: usize,
     pub index_prompt_bytes: usize,
+    pub transcript_prompt_bytes: usize,
     pub loaded_operator_items: Vec<String>,
     pub loaded_items: Vec<String>,
     pub loaded_procedure_files: Vec<String>,
@@ -651,6 +653,42 @@ mod tests {
     }
 
     #[test]
+    fn test_transcript_prompt_stats_stay_capped_under_growth() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let mut messages = Vec::new();
+        for idx in 0..20 {
+            messages.push(Message::user(format!(
+                "approval mailbox snippet {idx} with matching keywords and extra explanation"
+            )));
+            messages.push(Message::assistant(format!(
+                "acknowledged approval mailbox snippet {idx} with more detail"
+            )));
+        }
+
+        let prompt = memory
+            .build_prompt(
+                "what did we say earlier about approval mailbox snippets before the restart?",
+                Some(&messages),
+            )
+            .unwrap();
+
+        assert!(
+            prompt.stats.transcript_snippets <= memory_contract().memory.max_transcript_snippets
+        );
+        assert!(
+            prompt.stats.transcript_prompt_bytes
+                <= memory_contract().memory.max_transcript_prompt_bytes
+        );
+        assert_eq!(prompt.trust_context.low_trust_sources().len(), 1);
+        assert!(prompt
+            .trust_context
+            .low_trust_action_summary(2)
+            .unwrap_or_default()
+            .contains("prior transcript"));
+    }
+
+    #[test]
     fn test_build_prompt_never_loads_trajectory_artifacts() {
         let temp = TempDir::new().unwrap();
         write_memory_index(
@@ -674,6 +712,143 @@ mod tests {
 
         assert!(prompt.prompt.as_deref().unwrap().contains("# Approval"));
         assert!(!prompt.prompt.as_deref().unwrap().contains("ignored"));
+    }
+
+    #[test]
+    fn test_build_prompt_ignores_many_superseded_procedures_without_growing_working_set() {
+        let temp = TempDir::new().unwrap();
+        write_memory_index(temp.path(), "# TopAgent Memory Index\n\n");
+        for idx in 0..12 {
+            write_procedure(
+                temp.path(),
+                &format!("100-old-{idx}.md"),
+                &format!(
+                    "# Approval Mailbox Procedure {idx}\n\n**Saved:** <t:{}>\n**Status:** superseded\n**When To Use:** Old approval mailbox compaction workflow.\n**Verification:** cargo test -p topagent-core approval\n**Superseded By:** .topagent/procedures/200-approval-new.md\n\n---\n\n## Prerequisites\n\n- Stay inside the workspace.\n\n## Steps\n\n1. Inspect the old flow.\n\n## Pitfalls\n\n- Do not keep using this procedure.\n",
+                    1700002000 + idx
+                ),
+            );
+        }
+        write_procedure(
+            temp.path(),
+            "200-approval-new.md",
+            "# Approval Mailbox Procedure\n\n**Saved:** <t:1700002500>\n**Status:** active\n**When To Use:** Approval mailbox compaction with pending anchor retention.\n**Verification:** cargo test -p topagent-core approval\n\n---\n\n## Prerequisites\n\n- Stay inside the workspace.\n\n## Steps\n\n1. Preserve pending approval anchors.\n\n## Pitfalls\n\n- Do not drop pending approvals.\n",
+        );
+
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        memory.consolidate_memory_if_needed().unwrap();
+
+        let prompt = memory
+            .build_prompt("approval mailbox compaction", None)
+            .unwrap();
+
+        assert_eq!(prompt.stats.loaded_procedure_files.len(), 1);
+        assert_eq!(
+            prompt.stats.loaded_procedure_files,
+            vec![".topagent/procedures/200-approval-new.md".to_string()]
+        );
+        assert_eq!(prompt.stats.loaded_items.len(), 1);
+    }
+
+    #[test]
+    fn test_repeat_task_prompt_working_set_stays_flat_as_irrelevant_artifacts_grow() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        memory.ensure_layout().unwrap();
+
+        let relevant = [
+            ProcedureDraft {
+                title: "Approval mailbox compaction playbook".to_string(),
+                when_to_use: "Use for approval mailbox compaction work.".to_string(),
+                prerequisites: vec!["Stay within the workspace.".to_string()],
+                steps: vec![
+                    "Inspect the mailbox.".to_string(),
+                    "Compact safely.".to_string(),
+                ],
+                pitfalls: vec!["Do not drop pending approvals.".to_string()],
+                verification: "cargo test -p topagent-core approval".to_string(),
+                source_task: Some("approval mailbox compaction".to_string()),
+                source_lesson: None,
+                source_trajectory: None,
+                supersedes: None,
+            },
+            ProcedureDraft {
+                title: "Approval mailbox restore flow".to_string(),
+                when_to_use: "Use for restoring approval mailbox state.".to_string(),
+                prerequisites: vec!["Stay within the workspace.".to_string()],
+                steps: vec![
+                    "Restore the checkpoint.".to_string(),
+                    "Rebuild anchors.".to_string(),
+                ],
+                pitfalls: vec!["Do not keep stale transcript state.".to_string()],
+                verification: "cargo test -p topagent-cli telegram".to_string(),
+                source_task: Some("approval mailbox restore".to_string()),
+                source_lesson: None,
+                source_trajectory: None,
+                supersedes: None,
+            },
+        ];
+
+        for procedure in relevant {
+            save_procedure(&memory.procedures_dir, &procedure).unwrap();
+        }
+        memory.consolidate_memory_if_needed().unwrap();
+
+        let baseline = memory
+            .build_prompt("repair approval mailbox compaction and restore flow", None)
+            .unwrap();
+
+        for idx in 0..25 {
+            save_procedure(
+                &memory.procedures_dir,
+                &ProcedureDraft {
+                    title: format!("Irrelevant workflow {idx}"),
+                    when_to_use: "Use for unrelated UI polish.".to_string(),
+                    prerequisites: vec!["Stay within the workspace.".to_string()],
+                    steps: vec!["Tweak an unrelated path.".to_string()],
+                    pitfalls: vec!["Do not conflate with approval flow.".to_string()],
+                    verification: "cargo test -p topagent-cli".to_string(),
+                    source_task: Some("irrelevant ui polish".to_string()),
+                    source_lesson: None,
+                    source_trajectory: None,
+                    supersedes: None,
+                },
+            )
+            .unwrap();
+            fs::write(
+                temp.path()
+                    .join(MEMORY_TRAJECTORIES_RELATIVE_DIR)
+                    .join(format!("ignored-{idx}.json")),
+                "{\"task_intent\":\"ignored trajectory\"}",
+            )
+            .unwrap();
+            write_lesson(
+                temp.path(),
+                &format!("1700003000-lesson-{idx}.md"),
+                &format!(
+                    "# Irrelevant Lesson {idx}\n\n**Saved:** <t:{}>\n\n---\n\n## What Changed\n\nUpdated an unrelated visual theme.\n\n## What Was Learned\n\nKeep decorative banner tweaks separate from backend workflows.\n\n---\n*Saved by topagent*\n",
+                    1700003000 + idx
+                ),
+            );
+        }
+        memory.consolidate_memory_if_needed().unwrap();
+
+        let grown = memory
+            .build_prompt("repair approval mailbox compaction and restore flow", None)
+            .unwrap();
+
+        assert_eq!(
+            baseline.stats.loaded_procedure_files,
+            grown.stats.loaded_procedure_files
+        );
+        assert_eq!(baseline.stats.loaded_items, grown.stats.loaded_items);
+        assert!(
+            grown.stats.index_prompt_bytes <= memory_contract().memory.max_index_prompt_bytes + 80
+        );
+        assert!(!grown
+            .prompt
+            .as_deref()
+            .unwrap_or_default()
+            .contains("ignored trajectory"));
     }
 
     #[test]

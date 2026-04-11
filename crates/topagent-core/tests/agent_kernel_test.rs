@@ -163,6 +163,31 @@ fn test_low_trust_influence_survives_to_final_verified_result() {
 }
 
 #[test]
+fn test_trusted_verified_workflow_stays_smooth_without_low_trust_friction() {
+    let (_temp, ctx) = create_temp_crate();
+    let mut agent = Agent::with_options(
+        Box::new(ScriptedProvider::new(vec![
+            write_lib_call("write", "pub fn answer() -> u32 {\n    77\n}\n"),
+            cargo_check_call("verify"),
+            assistant_message("done after trusted verification"),
+        ])),
+        default_tools().into_inner(),
+        RuntimeOptions::default(),
+    );
+
+    let result = agent.run(&ctx, "update src/lib.rs and verify").unwrap();
+
+    assert!(result.contains("done after trusted verification"));
+    assert!(!result.contains("Low-trust content influenced this run"));
+    assert!(!result.contains("Approval required"));
+    let task_result = agent
+        .last_task_result()
+        .expect("expected a structured task result");
+    assert!(task_result.final_verification_passed());
+    assert!(task_result.source_labels().is_empty());
+}
+
+#[test]
 fn test_compaction_summary_preserves_trust_notes_and_proof_anchors() {
     let (_temp, ctx) = create_temp_crate();
     let ctx = ctx.with_run_trust_context(low_trust_context());

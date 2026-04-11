@@ -8,6 +8,7 @@ use crate::Result;
 pub(super) fn runtime_generated_tool_inventory(
     genesis: &ToolGenesis,
 ) -> Result<RuntimeGeneratedToolInventory> {
+    super::note_runtime_inventory_scan();
     let tools_dir = genesis.tools_dir();
     if !tools_dir.exists() {
         return Ok(RuntimeGeneratedToolInventory::default());

@@ -6,6 +6,7 @@ use crate::Result;
 use std::path::Path;
 
 pub(super) fn generated_tool_inventory(genesis: &ToolGenesis) -> Result<GeneratedToolInventory> {
+    super::note_maintenance_scan();
     let scanned = scan_generated_tools(genesis)?;
     let mut summaries = Vec::with_capacity(scanned.len());
     let mut verified_tools = Vec::new();

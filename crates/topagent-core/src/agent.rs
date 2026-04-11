@@ -663,12 +663,16 @@ mod tests {
     use crate::approval::{
         ApprovalMailbox, ApprovalMailboxMode, ApprovalRequestDraft, ApprovalTriggerKind,
     };
-    use crate::context::ExecutionContext;
+    use crate::context::{ExecutionContext, ToolContext};
     use crate::provenance::{InfluenceMode, RunTrustContext, SourceKind, SourceLabel};
     use crate::provider::{ProviderResponse, ScriptedProvider};
     use crate::runtime::RuntimeOptions;
-    use crate::tools::default_tools;
+    use crate::tool_genesis::{
+        test_support, ListGeneratedToolsTool, ToolGenesis, VerificationSpec,
+    };
+    use crate::tools::{default_tools, Tool};
     use crate::{Error, Message};
+    use std::collections::BTreeMap;
     use std::fs;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -870,6 +874,79 @@ path = "src/lib.rs"
     #[test]
     fn test_extract_exit_code_negative() {
         assert_eq!(extract_exit_code("Output: x\nExit code: -1"), -1);
+    }
+
+    #[test]
+    fn test_normal_startup_uses_runtime_generated_tool_inventory_without_maintenance_scan() {
+        let (temp, ctx) = create_temp_crate();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+        genesis
+            .create_tool(
+                "drifted_tool",
+                "verified helper",
+                "echo original",
+                vec![],
+                vec![],
+                Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
+                    expected_exit: 0,
+                    expected_output_contains: Some("original".to_string()),
+                }),
+            )
+            .unwrap();
+        fs::write(
+            temp.path().join(".topagent/tools/drifted_tool/script.sh"),
+            "echo tampered",
+        )
+        .unwrap();
+
+        test_support::reset_generated_tool_scan_counts();
+
+        let mut agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![assistant_message("done")])),
+            default_tools().into_inner(),
+            RuntimeOptions::default(),
+        );
+        let result = agent.run(&ctx, "inspect the repository").unwrap();
+
+        assert_eq!(result, "done");
+        let (runtime_scans, maintenance_scans) = test_support::generated_tool_scan_counts();
+        assert!(runtime_scans >= 1);
+        assert_eq!(maintenance_scans, 0);
+        assert!(agent.external_tools().get("drifted_tool").is_some());
+    }
+
+    #[test]
+    fn test_explicit_generated_tool_listing_uses_maintenance_scan() {
+        let temp = TempDir::new().unwrap();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+        genesis
+            .create_tool(
+                "broken_tool",
+                "broken helper",
+                "echo ok",
+                vec![],
+                vec![],
+                Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
+                    expected_exit: 0,
+                    expected_output_contains: Some("ok".to_string()),
+                }),
+            )
+            .unwrap();
+        fs::remove_file(temp.path().join(".topagent/tools/broken_tool/script.sh")).unwrap();
+
+        test_support::reset_generated_tool_scan_counts();
+
+        let exec = ExecutionContext::new(temp.path().to_path_buf());
+        let runtime = RuntimeOptions::default().with_generated_tool_authoring(true);
+        let ctx = ToolContext::new(&exec, &runtime);
+        let output = ListGeneratedToolsTool::new()
+            .execute(serde_json::json!({}), &ctx)
+            .unwrap();
+
+        assert!(output.contains("broken_tool"));
+        assert_eq!(test_support::generated_tool_scan_counts(), (0, 1));
     }
 
     #[test]

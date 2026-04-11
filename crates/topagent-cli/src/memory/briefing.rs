@@ -112,6 +112,7 @@ pub(super) fn build_prompt(
 
     if let Some(transcript_section) = transcript_section {
         stats.transcript_snippets = transcript_section.snippet_count;
+        stats.transcript_prompt_bytes = transcript_section.section.len();
         prompt.push_str("\n### Transcript Evidence\n");
         prompt.push_str(&contract.render_memory_transcript_preamble());
         prompt.push_str(&transcript_section.section);
@@ -125,8 +126,11 @@ pub(super) fn build_prompt(
         ));
     }
 
+    let prompt = prompt.trim_end().to_string();
+    stats.total_prompt_bytes = prompt.len();
+
     Ok(MemoryPrompt {
-        prompt: Some(prompt.trim_end().to_string()),
+        prompt: Some(prompt),
         operator_prompt,
         stats,
         trust_context,

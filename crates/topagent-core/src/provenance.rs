@@ -369,4 +369,30 @@ mod tests {
             Some("fetched web content (curl https://example.com)")
         );
     }
+
+    #[test]
+    fn test_run_trust_context_deduplicates_sources() {
+        let mut trust = RunTrustContext::default();
+        let source = SourceLabel::low(
+            SourceKind::TranscriptPrior,
+            InfluenceMode::MayDriveAction,
+            "2 prior transcript snippet(s)",
+        );
+        trust.add_source(source.clone());
+        trust.add_source(source);
+
+        assert_eq!(trust.sources.len(), 1);
+    }
+
+    #[test]
+    fn test_source_label_summary_is_compact() {
+        let source = SourceLabel::low(
+            SourceKind::PastedUntrustedText,
+            InfluenceMode::MayDriveAction,
+            "This is a very long copied issue body that keeps going and going and should be truncated before it becomes hot-path prompt baggage for later summaries or approvals.",
+        );
+
+        assert!(source.summary.len() <= MAX_SOURCE_SUMMARY_CHARS);
+        assert!(source.summary.ends_with("..."));
+    }
 }

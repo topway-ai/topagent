@@ -374,6 +374,22 @@ mod generated_tools;
 mod maintenance;
 mod runtime_inventory;
 
+#[cfg(not(test))]
+fn note_runtime_inventory_scan() {}
+
+#[cfg(not(test))]
+fn note_maintenance_scan() {}
+
+#[cfg(test)]
+fn note_runtime_inventory_scan() {
+    test_support::note_runtime_inventory_scan();
+}
+
+#[cfg(test)]
+fn note_maintenance_scan() {
+    test_support::note_maintenance_scan();
+}
+
 pub use generated_tools::{
     CreateToolTool, DeleteGeneratedToolTool, ListGeneratedToolsTool, RepairToolTool,
 };
@@ -393,6 +409,34 @@ pub fn load_runtime_generated_tool_inventory(
     workspace_root: &Path,
 ) -> Result<RuntimeGeneratedToolInventory> {
     ToolGenesis::new(workspace_root.to_path_buf()).runtime_generated_tool_inventory()
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static RUNTIME_INVENTORY_SCANS: AtomicUsize = AtomicUsize::new(0);
+    static MAINTENANCE_SCANS: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) fn note_runtime_inventory_scan() {
+        RUNTIME_INVENTORY_SCANS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn note_maintenance_scan() {
+        MAINTENANCE_SCANS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn reset_generated_tool_scan_counts() {
+        RUNTIME_INVENTORY_SCANS.store(0, Ordering::Relaxed);
+        MAINTENANCE_SCANS.store(0, Ordering::Relaxed);
+    }
+
+    pub(crate) fn generated_tool_scan_counts() -> (usize, usize) {
+        (
+            RUNTIME_INVENTORY_SCANS.load(Ordering::Relaxed),
+            MAINTENANCE_SCANS.load(Ordering::Relaxed),
+        )
+    }
 }
 
 fn get_string(value: &serde_json::Value, key: &str) -> Result<String> {
