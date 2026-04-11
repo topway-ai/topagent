@@ -175,6 +175,10 @@ impl ExternalToolRegistry {
         self.tools.insert(tool.config.name.clone(), tool);
     }
 
+    pub fn remove(&mut self, name: &str) -> Option<ExternalTool> {
+        self.tools.remove(name)
+    }
+
     pub fn get(&self, name: &str) -> Option<&ExternalTool> {
         self.tools.get(name)
     }

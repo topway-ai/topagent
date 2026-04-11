@@ -1352,6 +1352,197 @@ fn test_generated_tool_warnings_are_included_in_system_prompt() {
 }
 
 #[test]
+fn test_generated_tool_script_drift_does_not_warn_on_normal_startup() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().to_path_buf();
+    let genesis = ToolGenesis::new(root.clone());
+    genesis
+        .create_tool(
+            "drifted_tool",
+            "drifted generated tool",
+            "echo original",
+            vec![],
+            vec![],
+            Some(VerificationSpec {
+                verification_inputs: BTreeMap::new(),
+                expected_exit: 0,
+                expected_output_contains: Some("original".to_string()),
+            }),
+        )
+        .unwrap();
+    std::fs::write(
+        root.join(".topagent/tools/drifted_tool/script.sh"),
+        "echo tampered",
+    )
+    .unwrap();
+    let ctx = ExecutionContext::new(root);
+
+    struct CheckPromptProvider {
+        captured_messages: Arc<RwLock<Vec<Message>>>,
+    }
+    impl Provider for CheckPromptProvider {
+        fn complete(
+            &self,
+            messages: &[Message],
+            _route: &topagent_core::ModelRoute,
+        ) -> topagent_core::Result<ProviderResponse> {
+            self.captured_messages
+                .write()
+                .unwrap()
+                .extend(messages.to_vec());
+            Ok(ProviderResponse::Message(Message::assistant("done")))
+        }
+    }
+
+    let provider = CheckPromptProvider {
+        captured_messages: Arc::new(RwLock::new(Vec::new())),
+    };
+    let captured = Arc::clone(&provider.captured_messages);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+    let result = agent.run(&ctx, "inspect the repository");
+    assert!(result.is_ok());
+
+    let system_prompt = captured
+        .read()
+        .unwrap()
+        .first()
+        .and_then(|message| message.as_text())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        !system_prompt.contains("drifted_tool: script.sh changed after verification"),
+        "normal startup should not deep-scan drifted generated tools: {}",
+        system_prompt
+    );
+    assert!(
+        agent.external_tools().get("drifted_tool").is_some(),
+        "runtime inventory should still load the generated tool cheaply"
+    );
+}
+
+#[test]
+fn test_generated_tool_revalidation_blocks_tampered_tool_on_use() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().to_path_buf();
+    let genesis = ToolGenesis::new(root.clone());
+    genesis
+        .create_tool(
+            "drifted_tool",
+            "drifted generated tool",
+            "echo original",
+            vec![],
+            vec![],
+            Some(VerificationSpec {
+                verification_inputs: BTreeMap::new(),
+                expected_exit: 0,
+                expected_output_contains: Some("original".to_string()),
+            }),
+        )
+        .unwrap();
+    std::fs::write(
+        root.join(".topagent/tools/drifted_tool/script.sh"),
+        "echo tampered",
+    )
+    .unwrap();
+    let ctx = ExecutionContext::new(root);
+
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "use".into(),
+            name: "drifted_tool".into(),
+            args: serde_json::json!({}),
+        },
+        ProviderResponse::Message(Message::assistant("reported unavailable")),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+    let result = agent.run(&ctx, "use the generated tool");
+    assert!(result.is_ok());
+
+    let messages = agent.conversation_messages();
+    assert!(messages.iter().any(|message| {
+        matches!(
+            &message.content,
+            Content::ToolResult { result, .. }
+                if result.contains("generated tool 'drifted_tool' is unavailable")
+                    && result.contains("script.sh changed after approval")
+        )
+    }));
+    assert!(
+        agent.external_tools().get("drifted_tool").is_none(),
+        "tampered generated tool should be removed from the active runtime inventory after failed revalidation"
+    );
+}
+
+#[test]
+fn test_generated_tool_warnings_are_capped_in_system_prompt() {
+    let temp = TempDir::new().unwrap();
+    let root = temp.path().to_path_buf();
+    let genesis = ToolGenesis::new(root.clone());
+    for index in 0..6 {
+        let name = format!("broken_tool_{index}");
+        genesis
+            .create_tool(
+                &name,
+                "broken generated tool",
+                "echo ok",
+                vec![],
+                vec![],
+                Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
+                    expected_exit: 0,
+                    expected_output_contains: Some("ok".to_string()),
+                }),
+            )
+            .unwrap();
+        std::fs::remove_file(root.join(format!(".topagent/tools/{name}/script.sh"))).unwrap();
+    }
+    let ctx = ExecutionContext::new(root);
+
+    struct CheckPromptProvider {
+        captured_messages: Arc<RwLock<Vec<Message>>>,
+    }
+    impl Provider for CheckPromptProvider {
+        fn complete(
+            &self,
+            messages: &[Message],
+            _route: &topagent_core::ModelRoute,
+        ) -> topagent_core::Result<ProviderResponse> {
+            self.captured_messages
+                .write()
+                .unwrap()
+                .extend(messages.to_vec());
+            Ok(ProviderResponse::Message(Message::assistant("done")))
+        }
+    }
+
+    let provider = CheckPromptProvider {
+        captured_messages: Arc::new(RwLock::new(Vec::new())),
+    };
+    let captured = Arc::clone(&provider.captured_messages);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+    let result = agent.run(&ctx, "inspect the repository");
+    assert!(result.is_ok());
+
+    let system_prompt = captured
+        .read()
+        .unwrap()
+        .first()
+        .and_then(|message| message.as_text())
+        .unwrap_or("")
+        .to_string();
+    assert!(system_prompt.contains("broken_tool_0: missing script.sh"));
+    assert!(system_prompt.contains("broken_tool_3: missing script.sh"));
+    assert!(!system_prompt.contains("broken_tool_4: missing script.sh"));
+    assert!(
+        system_prompt.contains(
+            "2 more generated tools are unavailable but omitted from the default warning surface."
+        ),
+        "expected capped runtime warning summary in system prompt: {}",
+        system_prompt
+    );
+}
+
+#[test]
 fn test_agent_tracks_changed_files_on_write() {
     let (ctx, _temp) = make_test_context();
 

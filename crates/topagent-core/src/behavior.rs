@@ -119,6 +119,7 @@ pub struct GeneratedToolPolicy {
     pub verified_tools_only: bool,
     pub disposable: bool,
     pub expose_unavailable_warnings: bool,
+    pub max_runtime_warning_lines: usize,
     pub reload_after_surface_mutation: bool,
 }
 

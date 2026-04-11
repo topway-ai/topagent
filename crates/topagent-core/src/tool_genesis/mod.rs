@@ -1,4 +1,4 @@
-use crate::command_exec::{run_command, CommandSandboxPolicy};
+use crate::command_exec::CommandSandboxPolicy;
 use crate::error::Error;
 use crate::external::{resolve_argv_template, ExternalTool};
 use crate::tools::ToolRegistry;
@@ -66,88 +66,15 @@ impl ToolGenesis {
         argv_template: Vec<String>,
         verification: Option<VerificationSpec>,
     ) -> Result<GenesisResult> {
-        validate_tool_name(name)?;
-        let tool_dir = self.tools_dir().join(name);
-        let manifest_path = tool_dir.join("manifest.json");
-
-        if manifest_path.exists() {
-            return Ok(GenesisResult {
-                success: false,
-                tool_name: name.to_string(),
-                message: format!(
-                    "tool '{}' already exists at {}",
-                    name,
-                    manifest_path.display()
-                ),
-                verification_passed: false,
-                repair_attempts: 0,
-            });
-        }
-
-        if !inputs.is_empty() && argv_template.is_empty() {
-            return Err(Error::InvalidInput(
-                "if inputs are defined, argv_template must also be defined".to_string(),
-            ));
-        }
-
-        let manifest = ToolManifest {
-            name: name.to_string(),
-            description: description.to_string(),
-            verification: verification.clone(),
-            verified: false,
+        authoring::create_tool(
+            self,
+            name,
+            description,
+            command,
             inputs,
             argv_template,
-            manifest_version: Some(1),
-            script_sha256: Some(script_sha256_hex(command.as_bytes())),
-        };
-        validate_manifest_interface(&manifest)?;
-        if let Some(spec) = verification.as_ref() {
-            validate_verification_spec(&manifest, spec)?;
-        }
-
-        std::fs::create_dir_all(&tool_dir)
-            .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
-
-        let script_path = tool_dir.join("script.sh");
-        std::fs::write(&script_path, command).map_err(Error::Io)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
-                .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
-        }
-
-        let manifest_json = serde_json::to_string_pretty(&manifest)
-            .map_err(|e| Error::InvalidInput(e.to_string()))?;
-        std::fs::write(&manifest_path, &manifest_json).map_err(Error::Io)?;
-
-        let verify_result = if let Some(v) = &verification {
-            let verified = self.verify_tool(name, v)?;
-            if verified {
-                let mut m = manifest;
-                m.verified = true;
-                let updated = serde_json::to_string_pretty(&m)
-                    .map_err(|e| Error::InvalidInput(e.to_string()))?;
-                std::fs::write(&manifest_path, updated).map_err(Error::Io)?;
-            }
-            verified
-        } else {
-            false
-        };
-
-        Ok(GenesisResult {
-            success: verify_result || verification.is_none(),
-            tool_name: name.to_string(),
-            message: if verify_result {
-                format!("tool '{}' created and verified", name)
-            } else if verification.is_some() {
-                format!("tool '{}' created but verification failed", name)
-            } else {
-                format!("tool '{}' created (no verification provided)", name)
-            },
-            verification_passed: verify_result,
-            repair_attempts: 0,
-        })
+            verification,
+        )
     }
 
     pub fn repair_tool(
@@ -158,115 +85,18 @@ impl ToolGenesis {
         new_argv_template: Option<Vec<String>>,
         new_verification: Option<&VerificationSpec>,
     ) -> Result<GenesisResult> {
-        validate_tool_name(name)?;
-        let tool_dir = self.tools_dir().join(name);
-        let manifest_path = tool_dir.join("manifest.json");
-
-        if !manifest_path.exists() {
-            return Err(Error::InvalidInput(format!(
-                "tool '{}' does not exist",
-                name
-            )));
-        }
-
-        let content = std::fs::read_to_string(&manifest_path).map_err(Error::Io)?;
-        let mut manifest: ToolManifest =
-            serde_json::from_str(&content).map_err(|e| Error::InvalidInput(e.to_string()))?;
-
-        if let Some(inputs) = new_inputs {
-            manifest.inputs = inputs;
-        }
-        if let Some(argv) = new_argv_template {
-            manifest.argv_template = argv;
-        }
-        if let Some(v) = new_verification {
-            manifest.verification = Some(v.clone());
-        }
-        manifest.verified = false;
-        manifest.manifest_version = Some(1);
-        manifest.script_sha256 = Some(script_sha256_hex(new_command.as_bytes()));
-        validate_manifest_interface(&manifest)?;
-        if let Some(spec) = manifest.verification.as_ref() {
-            validate_verification_spec(&manifest, spec)?;
-        }
-
-        let script_path = tool_dir.join("script.sh");
-        std::fs::write(&script_path, new_command).map_err(Error::Io)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
-                .map_err(|e| Error::Io(std::io::Error::other(e.to_string())))?;
-        }
-
-        let manifest_json = serde_json::to_string_pretty(&manifest)
-            .map_err(|e| Error::InvalidInput(e.to_string()))?;
-        std::fs::write(&manifest_path, &manifest_json).map_err(Error::Io)?;
-
-        let verify_result = if let Some(v) = manifest.verification.clone() {
-            self.verify_tool(name, &v)?
-        } else {
-            false
-        };
-
-        if verify_result {
-            manifest.verified = true;
-            let updated = serde_json::to_string_pretty(&manifest)
-                .map_err(|e| Error::InvalidInput(e.to_string()))?;
-            std::fs::write(&manifest_path, updated).map_err(Error::Io)?;
-        }
-
-        Ok(GenesisResult {
-            success: verify_result,
-            tool_name: name.to_string(),
-            message: if verify_result {
-                format!("tool '{}' repaired and verified", name)
-            } else {
-                format!(
-                    "tool '{}' repair attempted but verification still failing",
-                    name
-                )
-            },
-            verification_passed: verify_result,
-            repair_attempts: 1,
-        })
+        authoring::repair_tool(
+            self,
+            name,
+            new_command,
+            new_inputs,
+            new_argv_template,
+            new_verification,
+        )
     }
 
     pub fn verify_tool(&self, name: &str, spec: &VerificationSpec) -> Result<bool> {
-        validate_tool_name(name)?;
-        let tool_dir = self.tools_dir().join(name);
-        let manifest_path = tool_dir.join("manifest.json");
-        let script_path = tool_dir.join("script.sh");
-
-        if !manifest_path.exists() || !script_path.exists() {
-            return Ok(false);
-        }
-
-        let content = std::fs::read_to_string(&manifest_path).map_err(Error::Io)?;
-        let manifest: ToolManifest =
-            serde_json::from_str(&content).map_err(|e| Error::InvalidInput(e.to_string()))?;
-        validate_manifest_interface(&manifest)?;
-        let verification_argv = verification_command_argv(&manifest, &script_path, spec)?;
-
-        let output = run_command(
-            "sh",
-            &verification_argv,
-            &self.workspace_root,
-            None,
-            CommandSandboxPolicy::Workspace,
-            "generated tool verification",
-        )?;
-
-        let exit_match = output.status.code() == Some(spec.expected_exit);
-        let output_contains_match = if let Some(ref expected) = spec.expected_output_contains {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            stdout.contains(expected) || stderr.contains(expected)
-        } else {
-            true
-        };
-
-        Ok(exit_match && output_contains_match)
+        authoring::verify_tool(self, name, spec)
     }
 
     pub fn load_verified_tools(&self) -> Result<Vec<ExternalTool>> {
@@ -278,140 +108,15 @@ impl ToolGenesis {
     }
 
     pub fn generated_tool_inventory(&self) -> Result<GeneratedToolInventory> {
-        let scanned = self.scan_generated_tools()?;
-        let mut summaries = Vec::with_capacity(scanned.len());
-        let mut verified_tools = Vec::new();
+        maintenance::generated_tool_inventory(self)
+    }
 
-        for entry in scanned {
-            summaries.push(entry.summary);
-            if let Some(tool) = entry.external_tool {
-                verified_tools.push(tool);
-            }
-        }
-
-        Ok(GeneratedToolInventory {
-            summaries,
-            verified_tools,
-        })
+    pub fn runtime_generated_tool_inventory(&self) -> Result<RuntimeGeneratedToolInventory> {
+        runtime_inventory::runtime_generated_tool_inventory(self)
     }
 
     pub fn delete_generated_tool(&self, name: &str) -> Result<()> {
-        validate_tool_name(name)?;
-        let tool_dir = self.tools_dir().join(name);
-        if !tool_dir.exists() {
-            return Err(Error::InvalidInput(format!(
-                "tool '{}' does not exist at {}",
-                name,
-                tool_dir.display()
-            )));
-        }
-        std::fs::remove_dir_all(&tool_dir).map_err(Error::Io)?;
-        Ok(())
-    }
-
-    fn scan_generated_tools(&self) -> Result<Vec<ScannedGeneratedTool>> {
-        let tools_dir = self.tools_dir();
-        if !tools_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let mut paths = Vec::new();
-        for entry in std::fs::read_dir(tools_dir).map_err(Error::Io)? {
-            let entry = entry.map_err(Error::Io)?;
-            let path = entry.path();
-            if path.is_dir() {
-                paths.push(path);
-            }
-        }
-        paths.sort();
-
-        Ok(paths
-            .iter()
-            .map(|path| self.scan_generated_tool(path))
-            .collect())
-    }
-
-    fn scan_generated_tool(&self, path: &Path) -> ScannedGeneratedTool {
-        let fallback_name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("<unknown>")
-            .to_string();
-        let manifest_path = path.join("manifest.json");
-        if !manifest_path.exists() {
-            return ScannedGeneratedTool::invalid(
-                fallback_name,
-                "invalid generated tool artifact",
-                "missing manifest.json".to_string(),
-            );
-        }
-
-        let content = match std::fs::read_to_string(&manifest_path) {
-            Ok(content) => content,
-            Err(err) => {
-                return ScannedGeneratedTool::invalid(
-                    fallback_name,
-                    "invalid generated tool artifact",
-                    format!("failed to read manifest.json: {}", err),
-                );
-            }
-        };
-
-        let manifest: ToolManifest = match serde_json::from_str(&content) {
-            Ok(manifest) => manifest,
-            Err(err) => {
-                return ScannedGeneratedTool::invalid(
-                    fallback_name,
-                    "invalid generated tool artifact",
-                    format!("invalid manifest.json: {}", err),
-                );
-            }
-        };
-
-        let script_path = path.join("script.sh");
-        let load_warning = if manifest.manifest_version.is_none() {
-            Some(
-                "missing manifest_version; recreate or repair the tool to make it usable"
-                    .to_string(),
-            )
-        } else if let Err(err) = validate_manifest_interface(&manifest) {
-            Some(format!("invalid interface: {}", err))
-        } else if !script_path.exists() {
-            Some("missing script.sh".to_string())
-        } else if manifest.verified {
-            match manifest.script_sha256.as_deref() {
-                None | Some("") => Some(
-                    "missing script_sha256; repair or recreate the tool to make it usable"
-                        .to_string(),
-                ),
-                Some(expected_hash) => match script_sha256_for_path(&script_path) {
-                    Ok(current_hash) if current_hash == expected_hash => None,
-                    Ok(_) => Some(
-                        "script.sh changed after verification; repair or recreate the tool"
-                            .to_string(),
-                    ),
-                    Err(err) => Some(format!("failed to hash script.sh: {}", err)),
-                },
-            }
-        } else {
-            None
-        };
-
-        let external_tool = if manifest.verified && load_warning.is_none() {
-            Some(external_tool_from_manifest(&manifest, &script_path))
-        } else {
-            None
-        };
-
-        ScannedGeneratedTool {
-            summary: GeneratedToolSummary {
-                name: manifest.name.clone(),
-                description: manifest.description.clone(),
-                verified: manifest.verified,
-                load_warning,
-            },
-            external_tool,
-        }
+        authoring::delete_generated_tool(self, name)
     }
 }
 
@@ -440,6 +145,56 @@ impl GeneratedToolInventory {
                     .map(|warning| format!("{}: {}", summary.name, warning))
             })
             .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedToolRuntimeWarning {
+    pub name: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeGeneratedToolInventory {
+    pub verified_tools: Vec<ExternalTool>,
+    pub runtime_guards: Vec<GeneratedToolRuntimeGuard>,
+    pub warnings: Vec<GeneratedToolRuntimeWarning>,
+}
+
+impl RuntimeGeneratedToolInventory {
+    pub fn warning_lines(&self, limit: usize) -> Vec<String> {
+        if self.warnings.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+
+        let mut lines: Vec<String> = self
+            .warnings
+            .iter()
+            .take(limit)
+            .map(|warning| format!("{}: {}", warning.name, warning.message))
+            .collect();
+        let omitted = self.warnings.len().saturating_sub(limit);
+        if omitted > 0 {
+            lines.push(format!(
+                "{} more generated tools are unavailable but omitted from the default warning surface.",
+                omitted
+            ));
+        }
+        lines
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedToolRuntimeGuard {
+    pub(crate) tool_name: String,
+    pub(crate) manifest_path: PathBuf,
+    pub(crate) script_path: PathBuf,
+    pub(crate) expected_script_sha256: String,
+}
+
+impl GeneratedToolRuntimeGuard {
+    pub fn tool_name(&self) -> &str {
+        &self.tool_name
     }
 }
 
@@ -614,7 +369,10 @@ fn external_tool_from_manifest(manifest: &ToolManifest, script_path: &Path) -> E
         .with_sandbox_policy(CommandSandboxPolicy::Workspace)
 }
 
+mod authoring;
 mod generated_tools;
+mod maintenance;
+mod runtime_inventory;
 
 pub use generated_tools::{
     CreateToolTool, DeleteGeneratedToolTool, ListGeneratedToolsTool, RepairToolTool,
@@ -629,6 +387,12 @@ pub fn register_generated_tool_authoring_tools(registry: &mut ToolRegistry) {
 
 pub fn load_generated_tool_inventory(workspace_root: &Path) -> Result<GeneratedToolInventory> {
     ToolGenesis::new(workspace_root.to_path_buf()).generated_tool_inventory()
+}
+
+pub fn load_runtime_generated_tool_inventory(
+    workspace_root: &Path,
+) -> Result<RuntimeGeneratedToolInventory> {
+    ToolGenesis::new(workspace_root.to_path_buf()).runtime_generated_tool_inventory()
 }
 
 fn get_string(value: &serde_json::Value, key: &str) -> Result<String> {

@@ -11,11 +11,15 @@ use crate::run_state::AgentRunState;
 use crate::runtime::RuntimeOptions;
 use crate::session::Session;
 use crate::task_result::TaskResult;
-use crate::tool_genesis::{load_generated_tool_inventory, register_generated_tool_authoring_tools};
+use crate::tool_genesis::{
+    load_runtime_generated_tool_inventory, register_generated_tool_authoring_tools,
+    GeneratedToolRuntimeGuard,
+};
 use crate::tools::{
     ManageOperatorPreferenceTool, SaveLessonTool, SavePlanTool, Tool, ToolRegistry, UpdatePlanTool,
 };
 use crate::{Error, Message, Provider, ProviderResponse, Result, ToolSpec};
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -66,6 +70,7 @@ pub struct Agent {
     planning_block_count: usize,
     compaction_state: CompactionRuntimeState,
     generated_tool_warnings: Vec<String>,
+    generated_tool_guards: HashMap<String, GeneratedToolRuntimeGuard>,
     last_task_result: Option<TaskResult>,
     durable_memory_written_this_run: bool,
 }
@@ -145,6 +150,7 @@ impl Agent {
             planning_block_count: 0,
             compaction_state: CompactionRuntimeState::default(),
             generated_tool_warnings: Vec::new(),
+            generated_tool_guards: HashMap::new(),
             last_task_result: None,
             durable_memory_written_this_run: false,
         }
@@ -533,8 +539,14 @@ impl Agent {
     }
 
     pub fn load_generated_tools_from_workspace(&mut self, workspace_root: &Path) -> Result<()> {
-        let inventory = load_generated_tool_inventory(workspace_root)?;
-        self.generated_tool_warnings = inventory.warning_lines();
+        let inventory = load_runtime_generated_tool_inventory(workspace_root)?;
+        self.generated_tool_warnings =
+            inventory.warning_lines(self.behavior.generated_tools.max_runtime_warning_lines);
+        self.generated_tool_guards.clear();
+        for guard in inventory.runtime_guards {
+            self.generated_tool_guards
+                .insert(guard.tool_name().to_string(), guard);
+        }
         for tool in inventory.verified_tools {
             self.external_tools.register(tool);
         }
@@ -544,10 +556,31 @@ impl Agent {
     fn reload_workspace_tools(&mut self, workspace_root: &Path) -> Result<()> {
         self.external_tools = ExternalToolRegistry::new();
         self.generated_tool_warnings.clear();
+        self.generated_tool_guards.clear();
         self.load_workspace_external_tools(workspace_root)?;
         self.load_generated_tools_from_workspace(workspace_root)?;
         self.sync_provider_tools();
         Ok(())
+    }
+
+    fn generated_tool_runtime_guard(&self, name: &str) -> Option<&GeneratedToolRuntimeGuard> {
+        self.generated_tool_guards.get(name)
+    }
+
+    fn mark_generated_tool_unavailable(&mut self, name: &str, warning: String) {
+        self.external_tools.remove(name);
+        self.generated_tool_guards.remove(name);
+        let line = format!("{name}: {warning}");
+        if self.generated_tool_warnings.contains(&line) {
+            self.sync_provider_tools();
+            return;
+        }
+        if self.generated_tool_warnings.len()
+            < self.behavior.generated_tools.max_runtime_warning_lines
+        {
+            self.generated_tool_warnings.push(line);
+        }
+        self.sync_provider_tools();
     }
 
     fn sync_provider_tools(&mut self) {

@@ -55,6 +55,7 @@ pub(super) fn default_generated_tool_policy(options: &RuntimeOptions) -> Generat
         verified_tools_only: true,
         disposable: true,
         expose_unavailable_warnings: true,
+        max_runtime_warning_lines: 4,
         reload_after_surface_mutation: true,
     }
 }

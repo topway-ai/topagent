@@ -206,6 +206,28 @@ impl Agent {
             return Ok(());
         }
 
+        if let Some(reason) = self
+            .generated_tool_runtime_guard(&name)
+            .and_then(|guard| guard.validate_runtime_availability())
+        {
+            let repair_hint = if self.behavior.generated_tools.authoring_enabled {
+                "repair or recreate it before calling it again"
+            } else {
+                "re-enable generated-tool authoring and repair or recreate it before calling it again"
+            };
+            self.mark_generated_tool_unavailable(&name, reason.clone());
+            self.record_tool_result(
+                id,
+                name.clone(),
+                args,
+                format!(
+                    "error: generated tool '{}' is unavailable: {}. {}",
+                    name, reason, repair_hint
+                ),
+            );
+            return Ok(());
+        }
+
         self.emit_progress(Self::external_tool_progress(&name, external_effect));
         self.check_cancelled(ctx)?;
         let tool_ctx = ToolContext::new(ctx, &self.options);

@@ -342,7 +342,10 @@ All file paths are relative to this workspace root.\n\n",
         prompt.push_str(
             "- Create and repair flows must verify before relying on a generated tool.\n",
         );
-        prompt.push_str("- Surface unavailable generated tools as warnings instead of assuming they can be called.\n\n");
+        prompt.push_str(
+            "- Surface only bounded runtime unavailability warnings by default; deeper health checks belong to explicit maintenance flows.\n",
+        );
+        prompt.push_str("- Revalidate a generated tool on use instead of assuming it stayed healthy after startup.\n\n");
     }
 
     fn render_compaction_section(&self, prompt: &mut String) {

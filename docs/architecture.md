@@ -33,7 +33,7 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 | `model` | ModelRoute |
 | `runtime` | RuntimeOptions (step limits, timeouts, truncation thresholds) |
 | `tools/` | Tool trait, ToolRegistry, built-in tools (read, write, edit, bash, git_*) |
-| `tool_genesis` | Workspace-local generated-tool authoring, verification, runtime inventory loading, and generated-tool health scanning |
+| `tool_genesis` | Workspace-local generated-tool seam; cheap runtime inventory loading is separate from explicit authoring, repair, and maintenance scans |
 | `tool_spec` | Tool specification (name, description, parameters) |
 | `context` | ExecutionContext (workspace root, cancel token, secrets), ToolContext |
 | `secrets` | SecretRegistry: value-based and pattern-based redaction |
@@ -76,14 +76,15 @@ CLI parses args
   -> read explicit tool-authoring mode from CLI/service config
   -> create Agent with provider + tools + options
   -> agent.run(ctx, instruction)
-     -> load TOPAGENT.md, workspace external tools, generated tools, generated-tool warnings
-     -> render policy-driven system prompt (+ project instructions + workspace memory briefing + generated-tool warnings + compact run-state artifacts)
+     -> load TOPAGENT.md, workspace external tools, cheap generated-tool runtime inventory, bounded runtime generated-tool warnings
+     -> render policy-driven system prompt (+ project instructions + workspace memory briefing + bounded runtime generated-tool warnings + compact run-state artifacts)
      -> classify task complexity -> activate planning gate if non-trivial
      -> enter step loop:
         1. send conversation to LLM
         2. LLM returns text (final answer) or tool calls
         3. tool calls: run preflight (planning gate, verification gate, provenance-aware approval/memory enforcement)
         4. execute tool, record result in session
+           - generated tools loaded from workspace inventory are revalidated on use instead of paying for deep health scans on every startup
         5. if a fetch-like shell command introduced low-trust external content, keep that influence in run state
         5. repeat until text response or max steps
      -> append proof-of-work (changed files, diff summary, trust notes when low-trust content shaped the run)
