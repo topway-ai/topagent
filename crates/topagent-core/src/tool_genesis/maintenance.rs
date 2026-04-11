@@ -1,9 +1,58 @@
 use super::{
-    external_tool_from_manifest, script_sha256_for_path, validate_manifest_interface,
-    GeneratedToolInventory, GeneratedToolSummary, ScannedGeneratedTool, ToolGenesis, ToolManifest,
+    external_tool_from_manifest, script_sha256_for_path, validate_manifest_interface, ToolGenesis,
+    ToolManifest,
 };
+use crate::external::ExternalTool;
 use crate::Result;
 use std::path::Path;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedToolSummary {
+    pub name: String,
+    pub description: String,
+    pub verified: bool,
+    pub load_warning: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GeneratedToolInventory {
+    pub summaries: Vec<GeneratedToolSummary>,
+    pub verified_tools: Vec<ExternalTool>,
+}
+
+impl GeneratedToolInventory {
+    pub fn warning_lines(&self) -> Vec<String> {
+        self.summaries
+            .iter()
+            .filter_map(|summary| {
+                summary
+                    .load_warning
+                    .as_ref()
+                    .map(|warning| format!("{}: {}", summary.name, warning))
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ScannedGeneratedTool {
+    summary: GeneratedToolSummary,
+    external_tool: Option<ExternalTool>,
+}
+
+impl ScannedGeneratedTool {
+    fn invalid(name: String, description: &str, warning: String) -> Self {
+        Self {
+            summary: GeneratedToolSummary {
+                name,
+                description: description.to_string(),
+                verified: false,
+                load_warning: Some(warning),
+            },
+            external_tool: None,
+        }
+    }
+}
 
 pub(super) fn generated_tool_inventory(genesis: &ToolGenesis) -> Result<GeneratedToolInventory> {
     super::note_maintenance_scan();
@@ -118,5 +167,36 @@ fn scan_generated_tool(path: &Path) -> ScannedGeneratedTool {
             load_warning,
         },
         external_tool,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_generated_tool_inventory_warning_lines_only_surfaces_unavailable_tools() {
+        let inventory = GeneratedToolInventory {
+            summaries: vec![
+                GeneratedToolSummary {
+                    name: "good_tool".to_string(),
+                    description: "works".to_string(),
+                    verified: true,
+                    load_warning: None,
+                },
+                GeneratedToolSummary {
+                    name: "broken_tool".to_string(),
+                    description: "broken".to_string(),
+                    verified: false,
+                    load_warning: Some("missing script.sh".to_string()),
+                },
+            ],
+            verified_tools: Vec::new(),
+        };
+
+        assert_eq!(
+            inventory.warning_lines(),
+            vec!["broken_tool: missing script.sh".to_string()]
+        );
     }
 }

@@ -33,7 +33,7 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 | `model` | ModelRoute |
 | `runtime` | RuntimeOptions (step limits, timeouts, truncation thresholds) |
 | `tools/` | Tool trait, ToolRegistry, built-in tools (read, write, edit, bash, git_*) |
-| `tool_genesis` | Workspace-local generated-tool seam; cheap runtime inventory loading is separate from explicit authoring, repair, and maintenance scans |
+| `tool_genesis` | Workspace-local generated-tool seam; cheap runtime inventory loading, invocation-time revalidation, and explicit authoring/repair/maintenance are separate owners |
 | `tool_spec` | Tool specification (name, description, parameters) |
 | `context` | ExecutionContext (workspace root, cancel token, secrets), ToolContext |
 | `secrets` | SecretRegistry: value-based and pattern-based redaction |

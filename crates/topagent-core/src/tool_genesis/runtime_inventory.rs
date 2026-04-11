@@ -1,9 +1,56 @@
-use super::{
-    external_tool_from_manifest, script_sha256_for_path, validate_manifest_interface,
-    GeneratedToolRuntimeGuard, GeneratedToolRuntimeWarning, RuntimeGeneratedToolInventory,
-    ToolGenesis, ToolManifest,
-};
+use super::{external_tool_from_manifest, validate_manifest_interface, ToolGenesis, ToolManifest};
+use crate::external::ExternalTool;
 use crate::Result;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedToolRuntimeWarning {
+    pub name: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedToolRuntimeGuard {
+    pub(crate) tool_name: String,
+    pub(crate) manifest_path: std::path::PathBuf,
+    pub(crate) script_path: std::path::PathBuf,
+    pub(crate) expected_script_sha256: String,
+}
+
+impl GeneratedToolRuntimeGuard {
+    pub fn tool_name(&self) -> &str {
+        &self.tool_name
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RuntimeGeneratedToolInventory {
+    pub verified_tools: Vec<ExternalTool>,
+    pub runtime_guards: Vec<GeneratedToolRuntimeGuard>,
+    pub warnings: Vec<GeneratedToolRuntimeWarning>,
+}
+
+impl RuntimeGeneratedToolInventory {
+    pub fn warning_lines(&self, limit: usize) -> Vec<String> {
+        if self.warnings.is_empty() || limit == 0 {
+            return Vec::new();
+        }
+
+        let mut lines: Vec<String> = self
+            .warnings
+            .iter()
+            .take(limit)
+            .map(|warning| format!("{}: {}", warning.name, warning.message))
+            .collect();
+        let omitted = self.warnings.len().saturating_sub(limit);
+        if omitted > 0 {
+            lines.push(format!(
+                "{} more generated tools are unavailable but omitted from the default warning surface.",
+                omitted
+            ));
+        }
+        lines
+    }
+}
 
 pub(super) fn runtime_generated_tool_inventory(
     genesis: &ToolGenesis,
@@ -92,26 +139,4 @@ fn scan_runtime_generated_tool(path: &std::path::Path) -> Option<RuntimeScanEntr
             expected_script_sha256: manifest.script_sha256.unwrap_or_default(),
         },
     })
-}
-
-impl GeneratedToolRuntimeGuard {
-    pub(crate) fn validate_runtime_availability(&self) -> Option<String> {
-        if !self.manifest_path.exists() {
-            return Some(
-                "manifest.json is missing; recreate the tool before using it again".to_string(),
-            );
-        }
-        if !self.script_path.exists() {
-            return Some("missing script.sh".to_string());
-        }
-
-        match script_sha256_for_path(&self.script_path) {
-            Ok(current_hash) if current_hash == self.expected_script_sha256 => None,
-            Ok(_) => Some(
-                "script.sh changed after approval; repair or recreate the tool before using it"
-                    .to_string(),
-            ),
-            Err(err) => Some(format!("failed to hash script.sh: {}", err)),
-        }
-    }
 }

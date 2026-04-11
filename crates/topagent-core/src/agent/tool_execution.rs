@@ -4,6 +4,7 @@ use crate::checkpoint::WorkspaceCheckpointStatus;
 use crate::context::{ExecutionContext, ToolContext};
 use crate::external::ExternalToolEffect;
 use crate::provenance::fetched_content_source;
+use crate::tool_genesis::{revalidate_runtime_tool, GeneratedToolRevalidationOutcome};
 use crate::tools::risky_shell_changed_path_hints;
 use crate::{Message, ProgressUpdate, Result};
 
@@ -206,26 +207,33 @@ impl Agent {
             return Ok(());
         }
 
-        if let Some(reason) = self
+        if let Some(outcome) = self
             .generated_tool_runtime_guard(&name)
-            .and_then(|guard| guard.validate_runtime_availability())
+            .map(revalidate_runtime_tool)
         {
-            let repair_hint = if self.behavior.generated_tools.authoring_enabled {
-                "repair or recreate it before calling it again"
-            } else {
-                "re-enable generated-tool authoring and repair or recreate it before calling it again"
+            let reason = match outcome {
+                GeneratedToolRevalidationOutcome::Usable => None,
+                GeneratedToolRevalidationOutcome::NeedsRepair { reason }
+                | GeneratedToolRevalidationOutcome::Invalid { reason } => Some(reason),
             };
-            self.mark_generated_tool_unavailable(&name, reason.clone());
-            self.record_tool_result(
-                id,
-                name.clone(),
-                args,
-                format!(
-                    "error: generated tool '{}' is unavailable: {}. {}",
-                    name, reason, repair_hint
-                ),
-            );
-            return Ok(());
+            if let Some(reason) = reason {
+                let repair_hint = if self.behavior.generated_tools.authoring_enabled {
+                    "repair or recreate it before calling it again"
+                } else {
+                    "re-enable generated-tool authoring and repair or recreate it before calling it again"
+                };
+                self.mark_generated_tool_unavailable(&name, reason.clone());
+                self.record_tool_result(
+                    id,
+                    name.clone(),
+                    args,
+                    format!(
+                        "error: generated tool '{}' is unavailable: {}. {}",
+                        name, reason, repair_hint
+                    ),
+                );
+                return Ok(());
+            }
         }
 
         self.emit_progress(Self::external_tool_progress(&name, external_effect));

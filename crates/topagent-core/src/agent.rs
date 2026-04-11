@@ -950,6 +950,72 @@ path = "src/lib.rs"
     }
 
     #[test]
+    fn test_generated_tool_revalidation_runs_only_when_tool_is_invoked() {
+        let (temp, ctx) = create_temp_crate();
+        let genesis = ToolGenesis::new(temp.path().to_path_buf());
+        genesis
+            .create_tool(
+                "drifted_tool",
+                "verified helper",
+                "echo original",
+                vec![],
+                vec![],
+                Some(VerificationSpec {
+                    verification_inputs: BTreeMap::new(),
+                    expected_exit: 0,
+                    expected_output_contains: Some("original".to_string()),
+                }),
+            )
+            .unwrap();
+        fs::write(
+            temp.path().join(".topagent/tools/drifted_tool/script.sh"),
+            "echo tampered",
+        )
+        .unwrap();
+
+        test_support::reset_generated_tool_scan_counts();
+
+        let mut idle_agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![assistant_message("done")])),
+            default_tools().into_inner(),
+            RuntimeOptions::default(),
+        );
+        let idle_result = idle_agent.run(&ctx, "inspect the repository").unwrap();
+        assert_eq!(idle_result, "done");
+        assert_eq!(test_support::generated_tool_revalidation_count(), 0);
+
+        test_support::reset_generated_tool_scan_counts();
+
+        let mut invoking_agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![
+                tool_call("use", "drifted_tool", serde_json::json!({})),
+                assistant_message("reported unavailable"),
+            ])),
+            default_tools().into_inner(),
+            RuntimeOptions::default(),
+        );
+        let result = invoking_agent.run(&ctx, "use the generated tool").unwrap();
+
+        assert!(result.contains("reported unavailable"));
+        assert!(result.contains("drifted_tool: script.sh changed after approval"));
+        assert_eq!(test_support::generated_tool_scan_counts(), (1, 0));
+        assert_eq!(test_support::generated_tool_revalidation_count(), 1);
+        assert!(invoking_agent
+            .external_tools()
+            .get("drifted_tool")
+            .is_none());
+        assert!(invoking_agent
+            .conversation_messages()
+            .iter()
+            .any(|message| matches!(
+                &message.content,
+                crate::message::Content::ToolResult { result, .. }
+                    if result.contains("generated tool 'drifted_tool' is unavailable")
+                        && result.contains("script.sh changed after approval")
+            )));
+    }
+
+    #[test]
     fn test_inspection_only_task_does_not_get_blocked_unnecessarily() {
         let (_temp, ctx) = create_temp_crate();
         let mut agent = make_plan_required_agent(vec![
