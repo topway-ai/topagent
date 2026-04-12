@@ -1,5 +1,6 @@
 mod briefing;
 mod memory_consolidation;
+pub(crate) mod observation;
 pub(crate) mod procedures;
 mod promotion;
 pub(crate) mod trajectories;
@@ -28,6 +29,7 @@ pub(crate) const MEMORY_LESSONS_RELATIVE_DIR: &str = ".topagent/lessons";
 pub(crate) const MEMORY_PLANS_RELATIVE_DIR: &str = ".topagent/plans";
 pub(crate) const MEMORY_PROCEDURES_RELATIVE_DIR: &str = ".topagent/procedures";
 pub(crate) const MEMORY_TRAJECTORIES_RELATIVE_DIR: &str = ".topagent/trajectories";
+pub(crate) const MEMORY_OBSERVATIONS_RELATIVE_DIR: &str = ".topagent/observations";
 const AUTO_PROMOTED_TAG: &str = "curated";
 
 const STOP_WORDS: &[&str] = &[
@@ -106,6 +108,8 @@ pub(crate) struct MemoryPromptStats {
     pub loaded_items: Vec<String>,
     pub loaded_procedure_files: Vec<String>,
     pub transcript_snippets: usize,
+    pub observation_hints_used: usize,
+    pub provenance_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -117,6 +121,7 @@ pub(crate) struct WorkspaceMemory {
     plans_dir: PathBuf,
     procedures_dir: PathBuf,
     trajectories_dir: PathBuf,
+    observations_dir: PathBuf,
 }
 
 impl WorkspaceMemory {
@@ -128,12 +133,17 @@ impl WorkspaceMemory {
             plans_dir: workspace_root.join(MEMORY_PLANS_RELATIVE_DIR),
             procedures_dir: workspace_root.join(MEMORY_PROCEDURES_RELATIVE_DIR),
             trajectories_dir: workspace_root.join(MEMORY_TRAJECTORIES_RELATIVE_DIR),
+            observations_dir: workspace_root.join(MEMORY_OBSERVATIONS_RELATIVE_DIR),
             workspace_root,
         }
     }
 
     pub(crate) fn workspace_root(&self) -> &Path {
         &self.workspace_root
+    }
+
+    pub(crate) fn observations_dir(&self) -> &Path {
+        &self.observations_dir
     }
 
     pub(crate) fn ensure_layout(&self) -> Result<()> {
@@ -147,6 +157,8 @@ impl WorkspaceMemory {
             .with_context(|| format!("failed to create {}", self.procedures_dir.display()))?;
         std::fs::create_dir_all(&self.trajectories_dir)
             .with_context(|| format!("failed to create {}", self.trajectories_dir.display()))?;
+        std::fs::create_dir_all(&self.observations_dir)
+            .with_context(|| format!("failed to create {}", self.observations_dir.display()))?;
         migrate_legacy_operator_preferences(&self.workspace_root)
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
@@ -1615,5 +1627,205 @@ path = "src/lib.rs"
         assert!(!temp.path().join(MEMORY_LESSONS_RELATIVE_DIR).exists());
         assert!(!temp.path().join(MEMORY_PROCEDURES_RELATIVE_DIR).exists());
         assert!(!temp.path().join(MEMORY_TRAJECTORIES_RELATIVE_DIR).exists());
+    }
+
+    // ── Observation integration tests ──
+
+    #[test]
+    fn test_ensure_layout_creates_observations_dir() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        memory.ensure_layout().unwrap();
+        assert!(temp.path().join(MEMORY_OBSERVATIONS_RELATIVE_DIR).is_dir());
+    }
+
+    #[test]
+    fn test_observation_growth_does_not_increase_prompt_size() {
+        let temp = TempDir::new().unwrap();
+        write_memory_index(
+            temp.path(),
+            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/architecture.md | status: verified | tags: runtime | note: agent lifecycle\n",
+        );
+        write_topic(
+            temp.path(),
+            "architecture.md",
+            "# Architecture\nruntime session model details",
+        );
+
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+
+        // Baseline: no observations
+        let baseline_prompt = memory
+            .build_prompt("inspect the runtime architecture", None)
+            .unwrap();
+        let baseline_bytes = baseline_prompt.stats.total_prompt_bytes;
+
+        // Write 100 observations
+        let obs_dir = temp.path().join(MEMORY_OBSERVATIONS_RELATIVE_DIR);
+        std::fs::create_dir_all(&obs_dir).unwrap();
+        for i in 0..100 {
+            let record = observation::ObservationRecord {
+                id: format!("obs-{:010}-task-{i}", 1000000 + i),
+                timestamp_unix_secs: 1000000 + i as i64,
+                task_intent: format!("some unrelated task number {i}"),
+                source_kind: observation::ObservationSourceKind::Lesson,
+                trust_class: observation::ObservationTrustClass::Trusted,
+                summary: format!("[lesson] some unrelated task number {i}"),
+                artifact_links: observation::ObservationArtifactLinks {
+                    lesson_file: Some(format!(".topagent/lessons/{i}-lesson.md")),
+                    procedure_file: None,
+                    trajectory_file: None,
+                    superseded_procedure_file: None,
+                },
+                changed_files: vec![format!("unrelated/file_{i}.rs")],
+                verification_command: None,
+            };
+            let json = serde_json::to_string_pretty(&record).unwrap();
+            std::fs::write(obs_dir.join(format!("{}.json", record.id)), json).unwrap();
+        }
+
+        // After: prompt size unchanged (observations don't add prompt content)
+        let after_prompt = memory
+            .build_prompt("inspect the runtime architecture", None)
+            .unwrap();
+        assert_eq!(
+            after_prompt.stats.total_prompt_bytes, baseline_bytes,
+            "100 observations must not increase prompt bytes"
+        );
+    }
+
+    #[test]
+    fn test_observation_boosting_promotes_relevant_artifacts() {
+        let temp = TempDir::new().unwrap();
+        write_memory_index(
+            temp.path(),
+            "# TopAgent Memory Index\n\n- topic: approval-flow | file: lessons/approval-fix.md | status: verified | tags: approval, mailbox | note: approval flow hardening\n- topic: unrelated-topic | file: topics/unrelated.md | status: verified | tags: other | note: something else entirely\n",
+        );
+        write_lesson(
+            temp.path(),
+            "approval-fix.md",
+            "# Lesson: Approval Fix\n## What Changed\nHardened the approval mailbox.\n## What Learned\nAlways rerun verification.\n",
+        );
+        write_topic(
+            temp.path(),
+            "unrelated.md",
+            "# Unrelated Topic\nSome other content.\n",
+        );
+
+        // Write an observation that links to the approval lesson
+        let obs_dir = temp.path().join(MEMORY_OBSERVATIONS_RELATIVE_DIR);
+        std::fs::create_dir_all(&obs_dir).unwrap();
+        let record = observation::ObservationRecord {
+            id: "obs-1-approval-hardening".to_string(),
+            timestamp_unix_secs: observation::tests::current_timestamp(),
+            task_intent: "harden the approval mailbox".to_string(),
+            source_kind: observation::ObservationSourceKind::Lesson,
+            trust_class: observation::ObservationTrustClass::Trusted,
+            summary: "[lesson] harden the approval mailbox".to_string(),
+            artifact_links: observation::ObservationArtifactLinks {
+                lesson_file: Some(".topagent/lessons/approval-fix.md".to_string()),
+                procedure_file: None,
+                trajectory_file: None,
+                superseded_procedure_file: None,
+            },
+            changed_files: vec!["src/approval.rs".to_string()],
+            verification_command: Some("cargo test".to_string()),
+        };
+        let json = serde_json::to_string_pretty(&record).unwrap();
+        std::fs::write(obs_dir.join("obs-1-approval-hardening.json"), json).unwrap();
+
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let prompt = memory
+            .build_prompt("harden the approval mailbox", None)
+            .unwrap();
+
+        assert!(prompt.stats.observation_hints_used > 0);
+        assert!(prompt.stats.loaded_items.contains(&"approval-flow".to_string()));
+    }
+
+    #[test]
+    fn test_trajectories_stay_off_prompt_even_with_observation_links() {
+        let temp = TempDir::new().unwrap();
+        write_memory_index(temp.path(), "# TopAgent Memory Index\n\n");
+
+        // Write an observation linking to a trajectory
+        let obs_dir = temp.path().join(MEMORY_OBSERVATIONS_RELATIVE_DIR);
+        std::fs::create_dir_all(&obs_dir).unwrap();
+        let record = observation::ObservationRecord {
+            id: "obs-1-with-trajectory".to_string(),
+            timestamp_unix_secs: observation::tests::current_timestamp(),
+            task_intent: "fix parsing bug".to_string(),
+            source_kind: observation::ObservationSourceKind::Full,
+            trust_class: observation::ObservationTrustClass::Trusted,
+            summary: "[full] fix parsing bug".to_string(),
+            artifact_links: observation::ObservationArtifactLinks {
+                lesson_file: None,
+                procedure_file: None,
+                trajectory_file: Some(
+                    ".topagent/trajectories/trj-123-fix-parsing.json".to_string(),
+                ),
+                superseded_procedure_file: None,
+            },
+            changed_files: vec!["src/parser.rs".to_string()],
+            verification_command: Some("cargo test".to_string()),
+        };
+        let json = serde_json::to_string_pretty(&record).unwrap();
+        std::fs::write(obs_dir.join("obs-1-with-trajectory.json"), json).unwrap();
+
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let prompt = memory
+            .build_prompt("fix parsing bug", None)
+            .unwrap();
+
+        // Trajectory content must not appear in the prompt
+        if let Some(ref rendered) = prompt.prompt {
+            assert!(
+                !rendered.contains("trj-123-fix-parsing"),
+                "trajectory file must not appear in prompt text"
+            );
+        }
+    }
+
+    #[test]
+    fn test_low_trust_observations_do_not_boost_artifacts() {
+        let temp = TempDir::new().unwrap();
+        write_memory_index(
+            temp.path(),
+            "# TopAgent Memory Index\n\n- topic: security | file: topics/security.md | status: verified | tags: secret | note: security notes\n",
+        );
+        write_topic(
+            temp.path(),
+            "security.md",
+            "# Security\nsecret handling details",
+        );
+
+        let obs_dir = temp.path().join(MEMORY_OBSERVATIONS_RELATIVE_DIR);
+        std::fs::create_dir_all(&obs_dir).unwrap();
+        let record = observation::ObservationRecord {
+            id: "obs-1-low-trust".to_string(),
+            timestamp_unix_secs: observation::tests::current_timestamp(),
+            task_intent: "audit secret handling".to_string(),
+            source_kind: observation::ObservationSourceKind::Lesson,
+            trust_class: observation::ObservationTrustClass::LowTrustPresent,
+            summary: "[lesson] audit secret handling".to_string(),
+            artifact_links: observation::ObservationArtifactLinks {
+                lesson_file: Some(".topagent/topics/security.md".to_string()),
+                procedure_file: None,
+                trajectory_file: None,
+                superseded_procedure_file: None,
+            },
+            changed_files: vec!["src/secrets.rs".to_string()],
+            verification_command: None,
+        };
+        let json = serde_json::to_string_pretty(&record).unwrap();
+        std::fs::write(obs_dir.join("obs-1-low-trust.json"), json).unwrap();
+
+        let retrieval = observation::progressive_retrieve(&obs_dir, "audit secret handling", 8, 4)
+            .unwrap();
+
+        // Low-trust observation is retrieved but its artifacts are not in boost paths
+        assert_eq!(retrieval.candidates.len(), 1);
+        assert!(retrieval.artifact_paths.is_empty());
+        assert!(retrieval.provenance_notes[0].contains("low-trust"));
     }
 }

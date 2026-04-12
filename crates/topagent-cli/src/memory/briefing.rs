@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use topagent_core::{
     load_operator_profile, BehaviorContract, InfluenceMode, Message, PreferenceCategory, Role,
@@ -10,6 +11,7 @@ use super::memory_consolidation::{
     parse_saved_lesson, parse_saved_plan, render_saved_lesson_excerpt, render_saved_plan_excerpt,
     MemoryIndexEntry, MemoryIndexEntryKind,
 };
+use super::observation;
 use super::procedures::{parse_saved_procedure, render_saved_procedure_excerpt, ProcedureStatus};
 use super::{
     allowed_memory_prefix, compact_text_line, display_memory_file, limit_text_block,
@@ -37,10 +39,18 @@ pub(super) fn build_prompt(
 ) -> Result<MemoryPrompt> {
     let contract = memory_contract();
     let entries = memory.load_index_entries()?;
+
+    // Observation-aided retrieval: boost artifact scores using prior observation links
+    let retrieval = observation::progressive_retrieve(memory.observations_dir(), instruction, 8, 4)
+        .unwrap_or_default();
+    let boosted_paths = build_boost_set(&retrieval);
+
     let operator_load = render_operator_section(memory, &contract, instruction)?;
     let index_section = render_index_section(&contract, &entries);
-    let procedure_load = render_procedure_section(memory, &contract, instruction, &entries)?;
-    let durable_load = render_durable_notes_section(memory, &contract, instruction, &entries)?;
+    let procedure_load =
+        render_procedure_section(memory, &contract, instruction, &entries, &boosted_paths)?;
+    let durable_load =
+        render_durable_notes_section(memory, &contract, instruction, &entries, &boosted_paths)?;
     let transcript_section = transcript_messages
         .and_then(|messages| render_transcript_section(&contract, instruction, messages));
 
@@ -128,6 +138,8 @@ pub(super) fn build_prompt(
 
     let prompt = prompt.trim_end().to_string();
     stats.total_prompt_bytes = prompt.len();
+    stats.observation_hints_used = retrieval.candidates.len();
+    stats.provenance_notes = retrieval.provenance_notes;
 
     Ok(MemoryPrompt {
         prompt: Some(prompt),
@@ -209,12 +221,16 @@ fn render_procedure_section(
     contract: &BehaviorContract,
     instruction: &str,
     entries: &[MemoryIndexEntry],
+    boosted_paths: &HashSet<String>,
 ) -> Result<TopicLoad> {
     let mut scored_entries = entries
         .iter()
         .filter(|entry| entry.kind() == MemoryIndexEntryKind::Procedure)
         .filter_map(|entry| {
-            let score = score_entry_relevance(instruction, entry);
+            let mut score = score_entry_relevance(instruction, entry);
+            if is_boosted(entry, boosted_paths) {
+                score += 3;
+            }
             (score > 0).then_some((score, entry))
         })
         .collect::<Vec<_>>();
@@ -279,12 +295,16 @@ fn render_durable_notes_section(
     contract: &BehaviorContract,
     instruction: &str,
     entries: &[MemoryIndexEntry],
+    boosted_paths: &HashSet<String>,
 ) -> Result<TopicLoad> {
     let mut scored_entries = entries
         .iter()
         .filter(|entry| entry.kind() != MemoryIndexEntryKind::Procedure)
         .filter_map(|entry| {
-            let score = score_entry_relevance(instruction, entry);
+            let mut score = score_entry_relevance(instruction, entry);
+            if is_boosted(entry, boosted_paths) {
+                score += 3;
+            }
             (score > 0).then_some((score, entry))
         })
         .collect::<Vec<_>>();
@@ -560,6 +580,25 @@ fn match_windows(
     }
 
     windows
+}
+
+fn build_boost_set(retrieval: &observation::RetrievalResult) -> HashSet<String> {
+    retrieval
+        .artifact_paths
+        .iter()
+        .filter_map(|path| {
+            // Normalize to the form used in index entries (e.g. "procedures/foo.md")
+            path.strip_prefix(".topagent/").map(|s| s.to_string())
+        })
+        .collect()
+}
+
+fn is_boosted(entry: &MemoryIndexEntry, boosted_paths: &HashSet<String>) -> bool {
+    if boosted_paths.is_empty() {
+        return false;
+    }
+    let normalized = super::normalize_memory_file(&entry.file);
+    boosted_paths.contains(&normalized)
 }
 
 fn score_entry_relevance(instruction: &str, entry: &MemoryIndexEntry) -> usize {

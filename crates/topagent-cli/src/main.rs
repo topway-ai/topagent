@@ -33,7 +33,9 @@ use crate::config::{
     build_route_from_resolved, build_runtime_options, load_persisted_telegram_defaults,
     require_openrouter_api_key, resolve_runtime_model_selection, resolve_workspace_path, CliParams,
 };
-use crate::learning::{run_memory_command, run_procedure_command, run_trajectory_command};
+use crate::learning::{
+    run_memory_command, run_observation_command, run_procedure_command, run_trajectory_command,
+};
 use crate::memory::promote_verified_task;
 use crate::progress::LiveProgress;
 use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
@@ -144,6 +146,11 @@ enum Commands {
         #[command(subcommand)]
         command: TrajectoryCommands,
     },
+    /// Inspect observation records used for progressive retrieval.
+    Observation {
+        #[command(subcommand)]
+        command: ObservationCommands,
+    },
     /// Inspect and restore the latest workspace checkpoint.
     Checkpoint {
         #[command(subcommand)]
@@ -235,6 +242,17 @@ pub(crate) enum TrajectoryCommands {
     Export { id: String },
 }
 
+#[derive(Subcommand)]
+pub(crate) enum ObservationCommands {
+    /// List recent observation records.
+    List {
+        #[arg(long, default_value = "20", help = "Maximum number of observations to show")]
+        limit: usize,
+    },
+    /// Show one observation record in detail.
+    Show { id: String },
+}
+
 fn main() -> Result<()> {
     init_tracing();
 
@@ -259,6 +277,7 @@ fn main() -> Result<()> {
         Some(Commands::Memory { command }) => run_memory_command(command, params.workspace),
         Some(Commands::Procedure { command }) => run_procedure_command(command, params.workspace),
         Some(Commands::Trajectory { command }) => run_trajectory_command(command, params.workspace),
+        Some(Commands::Observation { command }) => run_observation_command(command, params.workspace),
         Some(Commands::Checkpoint { command }) => run_checkpoint_command(command, params.workspace),
         Some(Commands::Uninstall) => run_uninstall(),
         Some(Commands::Service { command }) => run_service_command(command, params),

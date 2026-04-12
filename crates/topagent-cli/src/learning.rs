@@ -7,11 +7,11 @@ use topagent_core::{
 
 use crate::config::resolve_workspace_path;
 use crate::memory::{
-    disable_procedure, mark_trajectory_ready, parse_saved_procedure, parse_saved_trajectory,
-    write_exported_trajectory, ProcedureStatus, TrajectoryReviewState, WorkspaceMemory,
-    MEMORY_INDEX_RELATIVE_PATH, MEMORY_LESSONS_RELATIVE_DIR, MEMORY_PLANS_RELATIVE_DIR,
-    MEMORY_PROCEDURES_RELATIVE_DIR, MEMORY_TOPICS_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR,
-    TRAJECTORY_EXPORTS_RELATIVE_DIR,
+    disable_procedure, mark_trajectory_ready, observation, parse_saved_procedure,
+    parse_saved_trajectory, write_exported_trajectory, ProcedureStatus, TrajectoryReviewState,
+    WorkspaceMemory, MEMORY_INDEX_RELATIVE_PATH, MEMORY_LESSONS_RELATIVE_DIR,
+    MEMORY_OBSERVATIONS_RELATIVE_DIR, MEMORY_PLANS_RELATIVE_DIR, MEMORY_PROCEDURES_RELATIVE_DIR,
+    MEMORY_TOPICS_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR, TRAJECTORY_EXPORTS_RELATIVE_DIR,
 };
 
 pub(crate) fn run_memory_command(
@@ -70,6 +70,22 @@ pub(crate) fn run_trajectory_command(
     Ok(())
 }
 
+pub(crate) fn run_observation_command(
+    command: crate::ObservationCommands,
+    workspace: Option<PathBuf>,
+) -> Result<()> {
+    let workspace = resolve_workspace_path(workspace)?;
+    match command {
+        crate::ObservationCommands::List { limit } => {
+            print!("{}", render_observation_list(&workspace, limit)?)
+        }
+        crate::ObservationCommands::Show { id } => {
+            print!("{}", render_observation_show(&workspace, &id)?)
+        }
+    }
+    Ok(())
+}
+
 fn migrate_profile_if_needed(workspace: &Path) -> Result<()> {
     migrate_legacy_operator_preferences(workspace).map_err(|err| anyhow!(err.to_string()))?;
     Ok(())
@@ -115,6 +131,7 @@ fn render_memory_status(workspace: &Path) -> Result<String> {
         }
     }
     let export_files = list_files(&workspace.join(TRAJECTORY_EXPORTS_RELATIVE_DIR), "json")?;
+    let observation_files = list_files(&workspace.join(MEMORY_OBSERVATIONS_RELATIVE_DIR), "json")?;
 
     let mut output = String::new();
     output.push_str("TopAgent memory status\n");
@@ -145,6 +162,7 @@ fn render_memory_status(workspace: &Path) -> Result<String> {
         export_files.len(),
         workspace.join(TRAJECTORY_EXPORTS_RELATIVE_DIR).display()
     ));
+    output.push_str(&format!("Observations: {}\n", observation_files.len()));
     Ok(output)
 }
 
@@ -306,6 +324,42 @@ fn export_selected_trajectory(workspace: &Path, id: &str) -> Result<String> {
         workspace.display(),
         exported
     ))
+}
+
+fn render_observation_list(workspace: &Path, limit: usize) -> Result<String> {
+    let obs_dir = workspace.join(MEMORY_OBSERVATIONS_RELATIVE_DIR);
+    let observations = observation::scan_observations(&obs_dir, limit)?;
+    if observations.is_empty() {
+        return Ok(format!(
+            "TopAgent observation index\nWorkspace: {}\n\nNo observations found.\n",
+            workspace.display()
+        ));
+    }
+    Ok(format!(
+        "TopAgent observation index\nWorkspace: {}\nObservations: {}\n\n{}",
+        workspace.display(),
+        observations.len(),
+        observation::render_observation_list(&observations),
+    ))
+}
+
+fn render_observation_show(workspace: &Path, id: &str) -> Result<String> {
+    let path = resolve_observation_path(workspace, id)?;
+    let record = observation::load_observation(&path)?
+        .ok_or_else(|| anyhow!("observation `{}` not found", id))?;
+    Ok(format!(
+        "TopAgent observation detail\nWorkspace: {}\n\n{}",
+        workspace.display(),
+        observation::render_observation_detail(&record),
+    ))
+}
+
+fn resolve_observation_path(workspace: &Path, id: &str) -> Result<PathBuf> {
+    resolve_unique_artifact_path(
+        &workspace.join(MEMORY_OBSERVATIONS_RELATIVE_DIR),
+        id,
+        "json",
+    )
 }
 
 fn load_all_procedures(workspace: &Path) -> Result<Vec<crate::memory::ParsedProcedure>> {

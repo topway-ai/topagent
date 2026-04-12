@@ -6,6 +6,7 @@ use topagent_core::{
     DurablePromotionKind, ExecutionContext, Plan, RuntimeOptions, TaskMode, TaskResult,
 };
 
+use super::observation;
 use super::procedures::{
     evaluate_procedure_revision, find_matching_active_procedure, find_matching_loaded_procedure,
     mark_procedure_superseded, record_procedure_reuse, revise_procedure, save_procedure,
@@ -180,6 +181,20 @@ pub(crate) fn promote_verified_task(
         || report.trajectory_file.is_some()
     {
         memory.consolidate_memory_if_needed()?;
+
+        let verification_command = stored_task_result
+            .latest_verification_command()
+            .map(|cmd| cmd.command.as_str());
+        if let Err(err) = observation::emit_observation(
+            memory.observations_dir(),
+            &report,
+            &stored_instruction,
+            stored_task_result.source_labels(),
+            stored_task_result.files_changed(),
+            verification_command,
+        ) {
+            tracing::warn!("failed to emit observation: {err}");
+        }
     }
 
     Ok(report)

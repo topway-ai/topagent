@@ -267,6 +267,25 @@ fn test_cli_trajectory_help_mentions_review_and_export_commands() {
 }
 
 #[test]
+fn test_cli_observation_appears_in_help() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("observation"));
+}
+
+#[test]
+fn test_cli_observation_help_mentions_list_and_show_commands() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.args(["observation", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("list"))
+        .stdout(predicates::str::contains("show"));
+}
+
+#[test]
 fn test_cli_checkpoint_help_mentions_management_commands() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
     cmd.args(["checkpoint", "--help"])
@@ -292,7 +311,8 @@ fn test_cli_memory_status_reports_learning_layers_for_fresh_workspace() {
         ))
         .stdout(predicates::str::contains(
             "Trajectories: 0 local, 0 ready, 0 exported",
-        ));
+        ))
+        .stdout(predicates::str::contains("Observations: 0"));
 }
 
 #[test]
@@ -338,6 +358,8 @@ fn test_readme_documents_product_setup_commands() {
     assert!(readme.contains("topagent trajectory list"));
     assert!(readme.contains("topagent trajectory review <id>"));
     assert!(readme.contains("topagent trajectory export <id>"));
+    assert!(readme.contains("topagent observation list"));
+    assert!(readme.contains("topagent observation show <id>"));
     assert!(readme.contains("topagent uninstall"));
     assert!(readme.contains("topagent service start"));
     assert!(readme.contains("topagent service stop"));

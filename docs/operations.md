@@ -88,6 +88,8 @@ topagent trajectory list     # list saved trajectories
 topagent trajectory show <id> # show one trajectory
 topagent trajectory review <id> # mark a trajectory ready for export
 topagent trajectory export <id> # export a reviewed trajectory
+topagent observation list    # list recent observation records
+topagent observation show <id> # show one observation record in detail
 topagent service start       # start the service
 topagent service stop        # stop the service
 topagent service restart     # restart the service (keeps current config)
@@ -178,6 +180,7 @@ workspace/.topagent/
   lessons/                   # saved lesson notes (markdown)
   procedures/                # governed reusable procedures (markdown)
   trajectories/              # local saved trajectory records (JSON)
+  observations/              # retrieval-oriented observation records (JSON)
   exports/trajectories/      # reviewed trajectory export packages (JSON)
   checkpoints/               # automatic workspace checkpoints for restore
   tools/                     # generated custom tools (manifests + scripts)
@@ -273,16 +276,28 @@ If `sandbox` is omitted, TopAgent rejects the external-tool config. Generated to
 - Trajectory export refuses weak, unsafe, or still-low-trust artifacts
 - Saved-local and exported trajectories are distinct states
 
+#### 6. Observation index
+
+`workspace/.topagent/observations/*.json`
+
+- Lightweight retrieval-oriented records emitted when tasks promote into lessons, procedures, or trajectories
+- Each record links back to promoted artifacts with task intent, trust class, changed files, and verification command
+- Used for progressive retrieval: matched observations boost the relevance score of their linked artifacts during briefing
+- Never loaded into the prompt directly; only influence artifact ranking
+- Low-trust observations are surfaced for provenance tracing but do not boost artifact scores
+- Inspectable via `topagent observation list` and `topagent observation show <id>`
+
 ### Retrieval behavior
 
 When a new Telegram message arrives, TopAgent:
 
 1. Loads the capped operator model from `USER.md`
 2. Loads `MEMORY.md`
-3. Selects only the small set of procedures and durable artifacts whose topic/tags overlap the task
-4. Searches the raw transcript only when the task appears to refer to prior chat context
-5. Carries a small trust summary alongside that memory so transcript/external content does not silently become trusted intent
-6. Injects a small memory briefing that explicitly tells the model to treat memory as hints and re-check current code/runtime state
+3. Matches observation records against the task to identify relevant prior work (progressive retrieval)
+4. Selects only the small set of procedures and durable artifacts whose topic/tags overlap the task, boosting those linked by matched observations
+5. Searches the raw transcript only when the task appears to refer to prior chat context
+6. Carries a small trust summary alongside that memory so transcript/external content does not silently become trusted intent
+7. Injects a small memory briefing that explicitly tells the model to treat memory as hints and re-check current code/runtime state
 
 If memory conflicts with the current repo, runtime, config, or service state, the current state wins.
 
@@ -294,7 +309,7 @@ If memory conflicts with the current repo, runtime, config, or service state, th
 - Clears any in-memory running state for that chat
 - Does **not** remove `USER.md`
 - Does **not** remove `MEMORY.md`
-- Does **not** remove topic files, plans, lessons, procedures, trajectories, or tools
+- Does **not** remove topic files, plans, lessons, procedures, trajectories, observations, or tools
 
 This keeps reset semantics simple and aligned with the current product shape.
 
