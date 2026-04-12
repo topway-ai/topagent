@@ -6,6 +6,7 @@ mod learning;
 mod managed_files;
 mod memory;
 mod openrouter_models;
+mod operational_paths;
 mod progress;
 mod run_setup;
 mod service;

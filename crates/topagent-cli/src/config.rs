@@ -7,6 +7,7 @@ use topagent_core::{
 };
 
 use crate::managed_files::read_managed_env_metadata;
+use crate::operational_paths::managed_service_env_path;
 
 pub(crate) const TELEGRAM_SERVICE_UNIT_NAME: &str = "topagent-telegram.service";
 pub(crate) const TOPAGENT_SERVICE_MANAGED_KEY: &str = "TOPAGENT_SERVICE_MANAGED";
@@ -16,7 +17,6 @@ pub(crate) const TOPAGENT_TOOL_AUTHORING_KEY: &str = "TOPAGENT_TOOL_AUTHORING";
 pub(crate) const TOPAGENT_MAX_STEPS_KEY: &str = "TOPAGENT_MAX_STEPS";
 pub(crate) const TOPAGENT_MAX_RETRIES_KEY: &str = "TOPAGENT_MAX_RETRIES";
 pub(crate) const TOPAGENT_TIMEOUT_SECS_KEY: &str = "TOPAGENT_TIMEOUT_SECS";
-const TOPAGENT_MANAGED_ENV_RELATIVE_PATH: &str = "topagent/services/topagent-telegram.env";
 
 fn normalize_nonempty_string(value: Option<String>) -> Option<String> {
     value
@@ -179,29 +179,6 @@ pub(crate) fn parse_optional_u64(value: Option<&str>) -> Option<u64> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .and_then(|value| value.parse().ok())
-}
-
-pub(crate) fn resolve_config_home() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("XDG_CONFIG_HOME") {
-        let path = PathBuf::from(path);
-        if !path.as_os_str().is_empty() {
-            return Ok(path);
-        }
-    }
-
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "Could not determine your config directory. Set XDG_CONFIG_HOME or HOME first."
-            )
-        })?;
-    Ok(home.join(".config"))
-}
-
-pub(crate) fn managed_service_env_path() -> Result<PathBuf> {
-    Ok(resolve_config_home()?.join(TOPAGENT_MANAGED_ENV_RELATIVE_PATH))
 }
 
 pub(crate) fn load_persisted_telegram_defaults() -> Result<TelegramModeDefaults> {
@@ -563,6 +540,54 @@ mod tests {
         let config = resolve_telegram_mode_config(None, params, defaults).unwrap();
 
         assert_eq!(config.route.model_id, "override/model");
+    }
+
+    #[test]
+    fn test_resolve_telegram_mode_config_reuses_service_managed_defaults_for_foreground_telegram() {
+        let workspace = TempDir::new().unwrap();
+        let values = HashMap::from([
+            (
+                "OPENROUTER_API_KEY".to_string(),
+                "persisted-key".to_string(),
+            ),
+            (
+                "TELEGRAM_BOT_TOKEN".to_string(),
+                "123456:abcdef".to_string(),
+            ),
+            (
+                TOPAGENT_WORKSPACE_KEY.to_string(),
+                workspace.path().display().to_string(),
+            ),
+            (
+                TOPAGENT_MODEL_KEY.to_string(),
+                "persisted/model".to_string(),
+            ),
+            (TOPAGENT_MAX_STEPS_KEY.to_string(), "61".to_string()),
+            (TOPAGENT_MAX_RETRIES_KEY.to_string(), "4".to_string()),
+            (TOPAGENT_TIMEOUT_SECS_KEY.to_string(), "75".to_string()),
+            (TOPAGENT_TOOL_AUTHORING_KEY.to_string(), "1".to_string()),
+        ]);
+        let defaults = TelegramModeDefaults::from_metadata(&values);
+        let params = CliParams {
+            api_key: None,
+            model: None,
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+
+        let config = resolve_telegram_mode_config(None, params, defaults).unwrap();
+
+        assert_eq!(config.api_key, "persisted-key");
+        assert_eq!(config.token, "123456:abcdef");
+        assert_eq!(config.route.model_id, "persisted/model");
+        assert_eq!(config.workspace, workspace.path().canonicalize().unwrap());
+        assert_eq!(config.options.max_steps, 61);
+        assert_eq!(config.options.max_provider_retries, 4);
+        assert_eq!(config.options.provider_timeout_secs, 75);
+        assert!(config.options.enable_generated_tool_authoring);
     }
 
     #[test]

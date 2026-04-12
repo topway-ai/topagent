@@ -55,10 +55,11 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 |--------|---------------|
 | `main` | CLI argument parsing (clap), command dispatch, one-shot runner |
 | `config` | CliParams struct, parameter validation, route/options construction |
+| `operational_paths` | Shared config-home, service unit, and managed env path ownership for the operational control plane |
 | `run_setup` | Shared agent/provider/context assembly for one-shot CLI and Telegram runs |
 | `telegram` | Telegram polling loop, ChatSessionManager, per-chat transcript persistence |
 | `memory` | Workspace memory facade; `memory/briefing` handles bounded prompt briefing, `memory/promotion` handles verified-task governance, and sibling modules keep procedures, trajectories, and consolidation file-backed and narrow |
-| `service` | systemd service install/status/start/stop/restart/uninstall |
+| `service/` | Operational control plane split by ownership: `install` handles setup and model prompts, `model` handles persisted model changes, `state` owns shared status/config reads, `lifecycle` owns systemd/status/uninstall, and `managed_env` owns the single managed env truth |
 | `managed_files` | Managed file guards, env file I/O, safe file removal |
 | `progress` | LiveProgress: CLI and Telegram progress formatting |
 
@@ -137,7 +138,8 @@ topagent install
   -> write env file to ~/.config/topagent/services/topagent-telegram.env (mode 0600, includes model + runtime settings)
   -> write systemd unit to ~/.config/systemd/user/topagent-telegram.service
   -> systemctl --user daemon-reload
-  -> systemctl --user enable --now topagent-telegram.service
+  -> fresh setup: systemctl --user enable --now topagent-telegram.service
+  -> reconfigure existing setup: systemctl --user enable topagent-telegram.service && systemctl --user restart topagent-telegram.service
 ```
 
 ### Secret, approval, and sandbox safety

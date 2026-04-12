@@ -96,7 +96,7 @@ topagent checkpoint restore  # restore the latest checkpoint and clear Telegram 
 topagent uninstall           # remove service, config, and installed binary
 ```
 
-`topagent setup` is the obvious full setup path. `topagent install` remains available as the same command. After setup, use `topagent model set` or `topagent model pick` to change the configured default model without re-running full setup.
+`topagent setup` is the obvious full setup path. `topagent install` remains available as the same command. Re-running setup keeps the same managed config file and restarts the background service with updated values. After setup, use `topagent model set` or `topagent model pick` to change the configured default model without re-running full setup.
 
 See [docs/operations.md](docs/operations.md) for full operational details.
 

@@ -369,7 +369,8 @@ mod tests {
         TaskResult::new("Unified the model control path and reran the CLI test suite.".to_string())
             .with_files_changed(vec![
                 "crates/topagent-cli/src/config.rs".to_string(),
-                "crates/topagent-cli/src/service.rs".to_string(),
+                "crates/topagent-cli/src/service/mod.rs".to_string(),
+                "crates/topagent-cli/src/service/lifecycle.rs".to_string(),
             ])
             .with_verification_command(VerificationCommand {
                 command: "cargo test -p topagent-cli".to_string(),

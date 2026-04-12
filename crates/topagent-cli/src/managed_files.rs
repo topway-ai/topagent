@@ -58,8 +58,8 @@ pub(crate) fn assert_managed_or_absent(path: &Path, label: &str) -> Result<()> {
     ))
 }
 
-pub(crate) fn ensure_service_setup_present(paths: &crate::service::ServicePaths) -> Result<()> {
-    if paths.unit_path.exists() || paths.env_path.exists() {
+pub(crate) fn ensure_service_setup_present(unit_path: &Path, env_path: &Path) -> Result<()> {
+    if unit_path.exists() || env_path.exists() {
         return Ok(());
     }
 

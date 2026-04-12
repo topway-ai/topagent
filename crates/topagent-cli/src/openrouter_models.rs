@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use time::OffsetDateTime;
 
-use crate::config::resolve_config_home;
+use crate::operational_paths::resolve_config_home;
 
 const OPENROUTER_MODELS_ENDPOINT: &str = "https://openrouter.ai/api/v1/models";
 const OPENROUTER_RANKINGS_URL: &str = "https://openrouter.ai/rankings";

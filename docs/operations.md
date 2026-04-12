@@ -53,7 +53,9 @@ Interactive setup that configures and starts the Telegram background service. `t
 6. Prompts for Telegram bot token (pre-fills from previous install)
 7. Writes config file: `~/.config/topagent/services/topagent-telegram.env` (mode 0600)
 8. Writes systemd unit: `~/.config/systemd/user/topagent-telegram.service`
-9. Runs `systemctl --user daemon-reload && systemctl --user enable --now topagent-telegram.service`
+9. Runs `systemctl --user daemon-reload`, then:
+   - on fresh setup: `systemctl --user enable --now topagent-telegram.service`
+   - on re-running setup over an existing managed install: `systemctl --user enable topagent-telegram.service` and `systemctl --user restart topagent-telegram.service`
 
 Model precedence during install is:
 
@@ -62,7 +64,7 @@ Model precedence during install is:
 3. the previously persisted `TOPAGENT_MODEL`
 4. the built-in TopAgent default model
 
-**Re-running setup** still updates the config and restarts the service, but you no longer need to use it just to switch models.
+**Re-running setup** still updates the managed config and explicitly restarts the service with that updated config, but you no longer need to use it just to switch models.
 
 ## Service lifecycle
 

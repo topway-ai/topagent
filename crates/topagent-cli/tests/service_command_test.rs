@@ -236,6 +236,7 @@ fn test_install_prompts_creates_install_adjacent_workspace_and_starts_service() 
     assert!(stdout.contains("OpenRouter model:"));
     assert!(stdout.contains("Telegram bot token:"));
     assert!(stdout.contains("TopAgent installed."));
+    assert!(stdout.contains("Service action: enabled and started"));
     assert!(stdout.contains(&harness.workspace_path().display().to_string()));
     assert!(stdout.contains("Open a private chat with your bot"));
     assert!(stdout.contains("topagent status"));
@@ -262,6 +263,7 @@ fn test_install_prompts_creates_install_adjacent_workspace_and_starts_service() 
     assert!(env.contains("TELEGRAM_BOT_TOKEN="));
     assert!(env.contains("OPENROUTER_API_KEY="));
     assert!(env.contains("TOPAGENT_SERVICE_MANAGED=1"));
+    assert!(env.contains("TOPAGENT_MODEL=\"minimax/minimax-m2.7\""));
     assert!(env.contains(&harness.workspace_path().display().to_string()));
     assert!(env.contains("TOPAGENT_MAX_STEPS=\"50\""));
     assert!(env.contains("TOPAGENT_MAX_RETRIES=\"3\""));
@@ -284,6 +286,30 @@ fn test_install_prompts_creates_install_adjacent_workspace_and_starts_service() 
 }
 
 #[test]
+fn test_install_uses_curated_fallback_model_list_and_persists_selected_model() {
+    let harness = ServiceHarness::new();
+    let assert = harness
+        .command()
+        .arg("install")
+        .write_stdin("test-openrouter-key\n2\n123456:abcdef\n")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+
+    assert!(stdout.contains("Using a starter model list."));
+    assert!(stdout.contains("Select OpenRouter model"));
+
+    let env = fs::read_to_string(harness.env_path()).unwrap();
+    assert!(env.contains("TOPAGENT_MODEL=\"qwen/qwen3.6-plus\""));
+
+    let status = harness.command().arg("status").output().unwrap();
+    assert!(status.status.success());
+    let status_stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(status_stdout.contains("Configured default model: qwen/qwen3.6-plus"));
+    assert!(status_stdout.contains("Effective model: qwen/qwen3.6-plus (persisted default)"));
+}
+
+#[test]
 fn test_install_reuses_existing_config_when_prompt_is_left_blank() {
     let harness = ServiceHarness::new();
     harness
@@ -302,6 +328,7 @@ fn test_install_reuses_existing_config_when_prompt_is_left_blank() {
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
 
     assert!(stdout.contains("press Enter to keep the current value"));
+    assert!(stdout.contains("Service action: enabled and restarted with updated config"));
 
     let env = fs::read_to_string(harness.env_path()).unwrap();
     assert!(env.contains("test-openrouter-key"));
@@ -313,7 +340,12 @@ fn test_install_reuses_existing_config_when_prompt_is_left_blank() {
         calls
             .matches("enable --now topagent-telegram.service")
             .count(),
-        2
+        1
+    );
+    assert_eq!(calls.matches("enable topagent-telegram.service").count(), 1);
+    assert_eq!(
+        calls.matches("restart topagent-telegram.service").count(),
+        1
     );
 }
 
@@ -469,6 +501,10 @@ fn test_model_set_preserves_other_env_values_restarts_service_and_updates_status
         .assert()
         .success();
 
+    let mut env = fs::read_to_string(harness.env_path()).unwrap();
+    env.push_str("EXTRA_FLAG=\"still-here\"\n");
+    fs::write(harness.env_path(), env).unwrap();
+
     let output = harness
         .command()
         .args(["model", "set", "qwen/qwen3.6-plus:free"])
@@ -491,6 +527,7 @@ fn test_model_set_preserves_other_env_values_restarts_service_and_updates_status
     assert!(env.contains("TELEGRAM_BOT_TOKEN=\"123456:abcdef\""));
     assert!(env.contains("TOPAGENT_MODEL=\"qwen/qwen3.6-plus:free\""));
     assert!(env.contains("TOPAGENT_MAX_STEPS=\"50\""));
+    assert!(env.contains("EXTRA_FLAG=\"still-here\""));
 
     let status = harness.command().arg("status").output().unwrap();
     assert!(status.status.success());
@@ -500,6 +537,69 @@ fn test_model_set_preserves_other_env_values_restarts_service_and_updates_status
 
     let calls = harness.calls_log();
     assert!(calls.contains("restart topagent-telegram.service"));
+}
+
+#[test]
+fn test_reinstall_restarts_service_and_status_reads_updated_model_from_single_config_path() {
+    let harness = ServiceHarness::new();
+    harness
+        .command()
+        .arg("install")
+        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
+        .assert()
+        .success();
+
+    let reinstall = harness
+        .command()
+        .args(["--model", "anthropic/claude-sonnet-4.6", "install"])
+        .write_stdin("\n\n")
+        .output()
+        .unwrap();
+    assert!(
+        reinstall.status.success(),
+        "reinstall should succeed: {}",
+        String::from_utf8_lossy(&reinstall.stderr)
+    );
+    let reinstall_stdout = String::from_utf8_lossy(&reinstall.stdout);
+    assert!(reinstall_stdout.contains("Service action: enabled and restarted with updated config"));
+
+    let env = fs::read_to_string(harness.env_path()).unwrap();
+    assert!(env.contains("TOPAGENT_MODEL=\"anthropic/claude-sonnet-4.6\""));
+
+    let status = harness.command().arg("status").output().unwrap();
+    assert!(status.status.success());
+    let status_stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(status_stdout
+        .contains("Configured default model: anthropic/claude-sonnet-4.6 (persisted default)"));
+    assert!(
+        status_stdout.contains("Effective model: anthropic/claude-sonnet-4.6 (persisted default)")
+    );
+
+    let model_status = harness
+        .command()
+        .args(["model", "status"])
+        .output()
+        .unwrap();
+    assert!(model_status.status.success());
+    let model_stdout = String::from_utf8_lossy(&model_status.stdout);
+    assert!(model_stdout
+        .contains("Configured default model: anthropic/claude-sonnet-4.6 (persisted default)"));
+    assert!(
+        model_stdout.contains("Effective model: anthropic/claude-sonnet-4.6 (persisted default)")
+    );
+
+    let calls = harness.calls_log();
+    assert_eq!(
+        calls
+            .matches("enable --now topagent-telegram.service")
+            .count(),
+        1
+    );
+    assert_eq!(calls.matches("enable topagent-telegram.service").count(), 1);
+    assert_eq!(
+        calls.matches("restart topagent-telegram.service").count(),
+        1
+    );
 }
 
 #[test]
