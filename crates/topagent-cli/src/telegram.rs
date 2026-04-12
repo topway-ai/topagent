@@ -1049,11 +1049,13 @@ fn current_model_label_for_help(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::procedures::{save_procedure, ProcedureDraft};
+    use crate::memory::{MEMORY_PROCEDURES_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR};
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
     use topagent_core::{
-        ApprovalCheck, ApprovalRequestDraft, ApprovalTriggerKind, CancellationToken, Message,
-        ModelRoute, ProgressKind, ProgressUpdate,
+        ApprovalCheck, ApprovalRequestDraft, ApprovalTriggerKind, BehaviorContract,
+        CancellationToken, Message, ModelRoute, ProgressKind, ProgressUpdate,
     };
 
     fn test_manager(workspace_root: PathBuf) -> ChatSessionManager {
@@ -1363,6 +1365,121 @@ mod tests {
     }
 
     #[test]
+    fn test_telegram_build_run_context_matches_one_shot_context_and_keeps_prompt_targeted() {
+        let workspace = TempDir::new().unwrap();
+        let chat_id = 4243;
+        let manager = test_manager(workspace.path().to_path_buf());
+
+        std::fs::create_dir_all(workspace.path().join(".topagent")).unwrap();
+        std::fs::write(
+            workspace.path().join(".topagent/USER.md"),
+            "# Operator Model\n\n## concise_final_answers\n**Category:** response_style\n**Updated:** <t:1>\n**Preference:** Keep final answers concise.\n",
+        )
+        .unwrap();
+        save_procedure(
+            &workspace.path().join(MEMORY_PROCEDURES_RELATIVE_DIR),
+            &ProcedureDraft {
+                title: "Approval mailbox compaction playbook".to_string(),
+                when_to_use: "Use for approval mailbox compaction work.".to_string(),
+                prerequisites: vec!["Stay inside the workspace.".to_string()],
+                steps: vec![
+                    "Inspect the mailbox.".to_string(),
+                    "Compact safely.".to_string(),
+                ],
+                pitfalls: vec!["Do not drop pending approvals.".to_string()],
+                verification: "cargo test -p topagent-core approval".to_string(),
+                source_task: Some("approval mailbox compaction".to_string()),
+                source_lesson: None,
+                source_trajectory: None,
+                supersedes: None,
+            },
+        )
+        .unwrap();
+        save_procedure(
+            &workspace.path().join(MEMORY_PROCEDURES_RELATIVE_DIR),
+            &ProcedureDraft {
+                title: "Irrelevant visual polish flow".to_string(),
+                when_to_use: "Use for unrelated diagram theming.".to_string(),
+                prerequisites: vec!["Stay inside the workspace.".to_string()],
+                steps: vec!["Adjust the diagram palette.".to_string()],
+                pitfalls: vec!["Do not use for backend repair tasks.".to_string()],
+                verification: "cargo test -p topagent-cli".to_string(),
+                source_task: Some("visual polish".to_string()),
+                source_lesson: None,
+                source_trajectory: None,
+                supersedes: None,
+            },
+        )
+        .unwrap();
+        std::fs::create_dir_all(workspace.path().join(MEMORY_TRAJECTORIES_RELATIVE_DIR)).unwrap();
+        std::fs::write(
+            workspace
+                .path()
+                .join(MEMORY_TRAJECTORIES_RELATIVE_DIR)
+                .join("ignored.json"),
+            r#"{"task_intent":"ignored trajectory"}"#,
+        )
+        .unwrap();
+        manager.memory.consolidate_memory_if_needed().unwrap();
+        persist_visible_exchange_to_store(
+            &manager.history_store,
+            chat_id,
+            "Remember the maple compaction phrase.",
+            Some("Stored. Maple compaction phrase recorded."),
+        );
+        persist_visible_exchange_to_store(
+            &manager.history_store,
+            chat_id,
+            "Also remember the cedar orbit token.",
+            Some("Stored. Cedar orbit token recorded."),
+        );
+
+        let base_ctx = ExecutionContext::new(workspace.path().to_path_buf());
+        let telegram_prepared = manager.build_run_context(
+            &base_ctx,
+            chat_id,
+            "what was the maple phrase I mentioned earlier while repairing approval mailbox compaction?",
+        );
+        let transcript = manager.history_store.load(chat_id).unwrap();
+        let one_shot_prepared = prepare_run_context(
+            &base_ctx,
+            &manager.memory,
+            "what was the maple phrase I mentioned earlier while repairing approval mailbox compaction?",
+            Some(&transcript),
+        );
+
+        assert_eq!(
+            telegram_prepared.loaded_procedure_files,
+            one_shot_prepared.loaded_procedure_files
+        );
+        assert_eq!(
+            telegram_prepared.run_ctx.memory_context(),
+            one_shot_prepared.run_ctx.memory_context()
+        );
+        assert_eq!(
+            telegram_prepared.run_ctx.operator_context(),
+            one_shot_prepared.run_ctx.operator_context()
+        );
+        assert_eq!(
+            telegram_prepared.run_ctx.run_trust_context(),
+            one_shot_prepared.run_ctx.run_trust_context()
+        );
+
+        let memory_context = telegram_prepared
+            .run_ctx
+            .memory_context()
+            .unwrap_or_default();
+        assert!(memory_context.contains("Approval mailbox compaction playbook"));
+        assert!(memory_context.contains("maple compaction phrase"));
+        assert!(!memory_context.contains("cedar orbit token"));
+        assert!(!memory_context.contains("ignored trajectory"));
+        assert!(
+            telegram_prepared.loaded_procedure_files.len()
+                <= BehaviorContract::default().memory.max_procedures_to_load
+        );
+    }
+
+    #[test]
     fn test_history_is_saved_to_disk_as_user_visible_transcript_only() {
         let workspace = TempDir::new().unwrap();
         let chat_id = 777;
@@ -1524,6 +1641,67 @@ mod tests {
         assert!(!history_path.exists());
         assert!(memory_index_path.exists());
         assert!(!manager.sessions.contains_key(&chat_id));
+    }
+
+    #[test]
+    fn test_reset_chat_preserves_operator_and_workspace_memory_artifacts() {
+        let workspace = TempDir::new().unwrap();
+        let chat_id = 9102;
+        let mut manager = test_manager(workspace.path().to_path_buf());
+
+        std::fs::create_dir_all(workspace.path().join(".topagent")).unwrap();
+        std::fs::write(
+            workspace.path().join(".topagent/USER.md"),
+            "# Operator Model\n\n## concise_final_answers\n**Category:** response_style\n**Updated:** <t:1>\n**Preference:** Keep final answers concise.\n",
+        )
+        .unwrap();
+        save_procedure(
+            &workspace.path().join(MEMORY_PROCEDURES_RELATIVE_DIR),
+            &ProcedureDraft {
+                title: "Approval mailbox compaction playbook".to_string(),
+                when_to_use: "Use for approval mailbox compaction work.".to_string(),
+                prerequisites: vec!["Stay inside the workspace.".to_string()],
+                steps: vec![
+                    "Inspect the mailbox.".to_string(),
+                    "Compact safely.".to_string(),
+                ],
+                pitfalls: vec!["Do not drop pending approvals.".to_string()],
+                verification: "cargo test -p topagent-core approval".to_string(),
+                source_task: Some("approval mailbox compaction".to_string()),
+                source_lesson: None,
+                source_trajectory: None,
+                supersedes: None,
+            },
+        )
+        .unwrap();
+        manager.memory.consolidate_memory_if_needed().unwrap();
+
+        let mut agent = manager.create_agent();
+        agent.restore_conversation_messages(vec![
+            Message::user("Remember the answer is 17."),
+            Message::assistant("Stored."),
+        ]);
+        manager.persist_agent_history(chat_id, &agent);
+
+        let transcript_path = workspace
+            .path()
+            .join(".topagent")
+            .join("telegram-history")
+            .join("chat-9102.json");
+        let user_path = workspace.path().join(".topagent").join("USER.md");
+        let memory_index_path = workspace.path().join(".topagent").join("MEMORY.md");
+        let procedure_dir = workspace.path().join(MEMORY_PROCEDURES_RELATIVE_DIR);
+        assert!(transcript_path.exists());
+        assert!(user_path.exists());
+        assert!(memory_index_path.exists());
+        assert!(procedure_dir.is_dir());
+
+        manager.reset_chat(chat_id);
+
+        assert!(!transcript_path.exists());
+        assert!(user_path.exists());
+        assert!(memory_index_path.exists());
+        assert!(procedure_dir.is_dir());
     }
 
     #[test]
