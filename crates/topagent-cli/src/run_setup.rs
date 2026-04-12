@@ -1,8 +1,8 @@
 use crate::memory::WorkspaceMemory;
 use std::path::PathBuf;
 use topagent_core::{
-    classify_operator_instruction, context::ExecutionContext, tools::default_tools, Agent, Message,
-    ModelRoute, OpenRouterProvider, RuntimeOptions,
+    classify_operator_instruction, context::ExecutionContext, hooks::HookRegistry,
+    tools::default_tools, Agent, Message, ModelRoute, OpenRouterProvider, RuntimeOptions,
 };
 use tracing::warn;
 
@@ -60,6 +60,8 @@ pub(crate) fn prepare_run_context(
         }
     }
     run_ctx = run_ctx.with_run_trust_context(trust_context);
+    let hook_registry = HookRegistry::load_from_workspace(&base_ctx.workspace_root);
+    run_ctx = run_ctx.with_hook_registry(hook_registry);
     PreparedRunContext {
         run_ctx,
         loaded_procedure_files,

@@ -15,6 +15,7 @@ pub struct BehaviorPromptContext<'a> {
     pub current_plan: Option<&'a Plan>,
     pub run_state: Option<&'a RunStateSnapshot>,
     pub generated_tool_warnings: &'a [String],
+    pub hook_summary_lines: &'a [String],
     pub planning_required_now: bool,
     pub approval_mailbox_available: bool,
 }
@@ -29,6 +30,7 @@ pub fn build_system_prompt(tools: &[ToolSpec], external_tools: &[ToolSpec]) -> S
         current_plan: None,
         run_state: None,
         generated_tool_warnings: &[],
+        hook_summary_lines: &[],
         planning_required_now: false,
         approval_mailbox_available: false,
     })
@@ -52,6 +54,16 @@ All file paths are relative to this workspace root.\n\n",
         self.render_generated_tool_section(&mut prompt);
         self.render_compaction_section(&mut prompt);
         self.render_available_tools_section(&mut prompt, ctx.available_tools, ctx.external_tools);
+
+        if !ctx.hook_summary_lines.is_empty() {
+            prompt.push_str("## Workspace Lifecycle Hooks\n\n");
+            prompt.push_str("The following workspace-local hooks are active for this run. They intercept lifecycle boundaries deterministically.\n");
+            prompt.push_str("Hooks cannot bypass approval gates, trust boundaries, or durable-memory promotion policy.\n");
+            for line in ctx.hook_summary_lines {
+                prompt.push_str(&format!("- {line}\n"));
+            }
+            prompt.push('\n');
+        }
 
         match ctx.project_instructions {
             Some(project_instructions) => {
@@ -163,6 +175,13 @@ All file paths are relative to this workspace root.\n\n",
         if !run_state.trust_notes.is_empty() {
             prompt.push_str("- Trust notes:\n");
             for note in &run_state.trust_notes {
+                prompt.push_str(&format!("  - {note}\n"));
+            }
+        }
+
+        if !run_state.hook_notes.is_empty() {
+            prompt.push_str("- Workspace hook notes:\n");
+            for note in &run_state.hook_notes {
                 prompt.push_str(&format!("  - {note}\n"));
             }
         }
@@ -442,9 +461,11 @@ mod tests {
                 trust_notes: vec![
                     "Low-trust content is active in this run: prior transcript.".to_string()
                 ],
+                hook_notes: vec!["[fmt] run cargo fmt after editing Rust files".to_string()],
                 memory_context_loaded: true,
             }),
             generated_tool_warnings: &["broken_tool: missing script.sh".to_string()],
+            hook_summary_lines: &["pre_tool: bash guard [filter: bash]".to_string()],
             planning_required_now: true,
             approval_mailbox_available: true,
         });
@@ -462,5 +483,9 @@ mod tests {
         assert!(prompt.contains("broken_tool: missing script.sh"));
         assert!(prompt.contains("git ls-files"));
         assert!(prompt.contains("Trust notes"));
+        assert!(prompt.contains("Workspace hook notes"));
+        assert!(prompt.contains("cargo fmt"));
+        assert!(prompt.contains("Workspace Lifecycle Hooks"));
+        assert!(prompt.contains("bash guard"));
     }
 }

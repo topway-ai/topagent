@@ -3,6 +3,7 @@ use crate::behavior::BashCommandClass;
 use crate::checkpoint::WorkspaceCheckpointStatus;
 use crate::context::{ExecutionContext, ToolContext};
 use crate::external::ExternalToolEffect;
+use crate::hooks::{dispatch_hooks, HookEvent, HookInput};
 use crate::provenance::fetched_content_source;
 use crate::tool_genesis::{revalidate_runtime_tool, GeneratedToolRevalidationOutcome};
 use crate::tools::risky_shell_changed_path_hints;
@@ -135,6 +136,11 @@ impl Agent {
         }
 
         self.run_state.track_changed_file(&name, &args);
+
+        // PostWrite hooks: run after write/edit tools complete
+        if matches!(name.as_str(), "write" | "edit") {
+            self.run_post_write_hooks(ctx, &name, &args);
+        }
 
         if self.behavior.is_mutation_tool(&name) {
             self.run_state.reconcile_changed_files(&ctx.workspace_root);
@@ -276,6 +282,32 @@ impl Agent {
         self.emit_external_tool_post_progress(&changed_before);
         self.record_tool_result(id, name, args, result_str);
         Ok(())
+    }
+
+    fn run_post_write_hooks(&mut self, ctx: &ExecutionContext, tool_name: &str, args: &serde_json::Value) {
+        let registry = ctx.hook_registry();
+        if registry.is_empty() {
+            return;
+        }
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let input = HookInput {
+            event: HookEvent::PostWrite,
+            subject: path.to_string(),
+            detail: tool_name.to_string(),
+        };
+        let result = dispatch_hooks(registry, HookEvent::PostWrite, &input, &ctx.workspace_root);
+        // PostWrite cannot block (the write already happened). It can annotate
+        // or request verification.
+        if let Some(context) = result.annotation_context() {
+            self.run_state.record_hook_note(context);
+        }
+        for cmd in &result.verify_commands {
+            self.run_state
+                .record_hook_note(format!("Hook requested verification: {}", cmd));
+        }
     }
 
     fn tool_progress(&self, name: &str, args: &serde_json::Value) -> ProgressUpdate {

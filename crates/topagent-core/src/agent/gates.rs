@@ -4,6 +4,7 @@ use crate::behavior::PreExecutionState;
 use crate::command_exec::CommandSandboxPolicy;
 use crate::context::ExecutionContext;
 use crate::external::ExternalToolEffect;
+use crate::hooks::{dispatch_hooks, HookEvent, HookInput};
 use crate::progress::ProgressUpdate;
 use crate::{Error, Result};
 
@@ -53,6 +54,12 @@ impl Agent {
             external_effect,
             external_sandbox,
         )? {
+            return Ok(Some(block));
+        }
+
+        // Workspace lifecycle hooks (PreTool) — runs after all safety gates
+        // so hooks cannot bypass approval, trust, or planning enforcement.
+        if let Some(block) = self.check_pre_tool_hooks(ctx, name, args) {
             return Ok(Some(block));
         }
 
@@ -154,6 +161,44 @@ impl Agent {
                 is_planning_block: false,
             })),
         }
+    }
+
+    fn check_pre_tool_hooks(
+        &self,
+        ctx: &ExecutionContext,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Option<PreflightBlock> {
+        let registry = ctx.hook_registry();
+        if registry.is_empty() {
+            return None;
+        }
+
+        let detail = serde_json::to_string(args).unwrap_or_default();
+        let input = HookInput {
+            event: HookEvent::PreTool,
+            subject: tool_name.to_string(),
+            detail,
+        };
+
+        let result = dispatch_hooks(registry, HookEvent::PreTool, &input, &ctx.workspace_root);
+        if result.blocked {
+            let message = result
+                .block_message()
+                .unwrap_or_else(|| "Blocked by workspace hook".to_string());
+            self.emit_progress(ProgressUpdate::blocked(&message));
+            return Some(PreflightBlock {
+                message: format!("error: {message}"),
+                is_planning_block: false,
+            });
+        }
+
+        // Annotations from PreTool hooks are recorded as hook notes in run state
+        if let Some(context) = result.annotation_context() {
+            self.run_state.record_hook_note(context);
+        }
+
+        None
     }
 
     fn check_planning_gate(

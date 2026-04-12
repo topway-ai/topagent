@@ -41,6 +41,7 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 | `project` | Load `TOPAGENT.md` project instructions |
 | `prompt` | Policy-driven system prompt rendering from the behavior contract, run state, plan, memory, and tool surface |
 | `provenance` | Compact source/trust labels and low-trust promotion/action policy inputs |
+| `hooks` | Narrow deterministic lifecycle hooks: workspace-local manifest, typed event model (OnSessionStart, PreTool, PostWrite, PreFinal), bounded execution, and dispatch |
 | `external` | Workspace external tool registry loaded from `.topagent/external-tools.json` |
 | `channel/` | Telegram adapter and channel error types |
 | `cancel` | CancellationToken for graceful shutdown |
@@ -78,12 +79,13 @@ CLI parses args
   -> create Agent with provider + tools + options
   -> agent.run(ctx, instruction)
      -> load TOPAGENT.md, workspace external tools, cheap generated-tool runtime inventory, bounded runtime generated-tool warnings
-     -> render policy-driven system prompt (+ project instructions + workspace memory briefing + bounded runtime generated-tool warnings + compact run-state artifacts)
+     -> load workspace lifecycle hooks from .topagent/hooks.toml (zero cost if absent)
+     -> render policy-driven system prompt (+ project instructions + workspace memory briefing + bounded runtime generated-tool warnings + lifecycle hook summary + compact run-state artifacts)
      -> classify task complexity -> activate planning gate if non-trivial
      -> enter step loop:
         1. send conversation to LLM
         2. LLM returns text (final answer) or tool calls
-        3. tool calls: run preflight (planning gate, verification gate, provenance-aware approval/memory enforcement)
+        3. tool calls: run preflight (planning gate, verification gate, provenance-aware approval/memory enforcement, workspace lifecycle hooks)
         4. execute tool, record result in session
            - generated tools loaded from workspace inventory are revalidated on use instead of paying for deep health scans on every startup
         5. if a fetch-like shell command introduced low-trust external content, keep that influence in run state
@@ -225,6 +227,7 @@ Curated consolidation keeps the index practical:
 - Trajectories are export artifacts, not prompt memory. Saving more trajectories must not make normal task startup heavier.
 - Provenance/trust metadata stays lightweight and attached at key boundaries only. It must not become deep always-on analysis over every artifact.
 - Durable artifact count must not imply linear growth in prompt assembly cost, retrieval cost, approval checks, or planning work.
+- Lifecycle hooks are zero-cost when absent. No `.topagent/hooks.toml` means no manifest parse, no dispatch, and no prompt section. When present, hooks run only at their declared event boundary and are bounded by timeout and output caps.
 
 ### Planning flow
 

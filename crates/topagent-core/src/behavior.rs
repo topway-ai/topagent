@@ -145,6 +145,7 @@ pub struct RunStateSnapshot {
     pub active_files: Vec<String>,
     pub proof_of_work_anchors: Vec<String>,
     pub trust_notes: Vec<String>,
+    pub hook_notes: Vec<String>,
     pub memory_context_loaded: bool,
 }
 

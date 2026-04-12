@@ -626,6 +626,8 @@ impl Agent {
             self.planning_gate_active && !plan_exists,
         );
 
+        let hook_summary_lines = ctx.hook_registry().summary_lines();
+
         Ok(self.behavior.render_system_prompt(&BehaviorPromptContext {
             available_tools: &available_tools,
             external_tools: &external_tools,
@@ -635,6 +637,7 @@ impl Agent {
             current_plan,
             run_state: Some(&run_state),
             generated_tool_warnings: &self.generated_tool_warnings,
+            hook_summary_lines: &hook_summary_lines,
             planning_required_now: self.planning_gate_active && !plan_exists,
             approval_mailbox_available: ctx.approval_mailbox().is_some(),
         }))

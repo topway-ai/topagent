@@ -182,6 +182,7 @@ workspace/.topagent/
   checkpoints/               # automatic workspace checkpoints for restore
   tools/                     # generated custom tools (manifests + scripts)
   telegram-history/          # per-chat transcript evidence files (JSON)
+  hooks.toml                  # workspace lifecycle hooks (optional)
   external-tools.json         # workspace external tool definitions (if present)
 ```
 
@@ -319,6 +320,69 @@ Plans and lessons are saved under `.topagent/plans/` and `.topagent/lessons/` re
 The env file at `~/.config/topagent/services/topagent-telegram.env` stores the API key, bot token, model, workspace path, tool-authoring mode, and runtime limits (`max_steps`, `max_retries`, `timeout_secs`). It has mode 0600 (owner-readable only). The installed systemd unit reads this env file at startup, so `topagent setup`, `topagent model set`, and `topagent model pick` all update the next service run without duplicating those settings in `ExecStart`.
 
 The OpenRouter discovery cache lives separately at `~/.config/topagent/cache/openrouter-models.json`. It is only a convenience cache for install/list/refresh and is not the active model source of truth.
+
+## Workspace Lifecycle Hooks
+
+TopAgent supports optional deterministic lifecycle hooks configured via `.topagent/hooks.toml`. Hooks intercept four lifecycle boundaries:
+
+| Event | When it fires | Can block? | Can annotate? | Can request verify? |
+|-------|--------------|-----------|--------------|-------------------|
+| `on_session_start` | Before the first step loop iteration | No | Yes | No |
+| `pre_tool` | Before each tool execution (after approval/trust gates) | Yes | Yes | No |
+| `post_write` | After write/edit tools complete | No | Yes | Yes |
+| `pre_final` | Before the final response is emitted | No | Yes | Yes |
+
+### Configuration
+
+```toml
+# .topagent/hooks.toml
+
+[[hooks]]
+event = "pre_tool"
+command = "sh .topagent/check-bash.sh"
+filter = ["bash"]
+label = "bash safety guard"
+timeout_secs = 5
+
+[[hooks]]
+event = "post_write"
+command = "sh .topagent/fmt-check.sh"
+filter = ["*.rs"]
+label = "rust format check"
+```
+
+### Hook protocol
+
+Hooks receive a JSON object on stdin:
+
+```json
+{
+  "event": "pre_tool",
+  "subject": "bash",
+  "detail": "{\"command\": \"rm -rf /\"}"
+}
+```
+
+Hooks return a verdict on stdout as JSON or shorthand:
+
+```json
+{"action": "allow"}
+{"action": "block", "reason": "rm -rf not allowed"}
+{"action": "annotate", "note": "remember to run fmt"}
+{"action": "request_verify", "command": "cargo fmt --check"}
+```
+
+Shorthand: `block: reason`, `note: text`, `verify: command`.
+
+Empty output or unrecognized text defaults to `allow`. Non-zero exit code defaults to `allow` (broken hooks do not silently block the agent).
+
+### Safety guarantees
+
+- Hooks run **after** all safety gates (planning, verification, memory trust, approval). A permissive hook cannot bypass approval or trust enforcement.
+- Hook output is clamped: notes to 1024 bytes, reasons to 256 bytes, total hook output to 2048 bytes.
+- Hook timeout is capped at 10 seconds.
+- No hooks configured (no `.topagent/hooks.toml`) means zero extra cost on every run.
+- Hooks cannot spawn agents, replay context, or become a second planner.
 
 ## TOPAGENT.md
 

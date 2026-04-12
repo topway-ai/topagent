@@ -8,6 +8,7 @@ pub mod command_exec;
 pub mod compaction;
 pub mod context;
 pub mod error;
+pub mod hooks;
 pub mod external;
 pub mod file_util;
 pub mod message;
@@ -72,4 +73,7 @@ pub use runtime::RuntimeOptions;
 pub use secrets::SecretRegistry;
 pub use session::Session;
 pub use task_result::{TaskEvidence, TaskResult, ToolTraceStep, VerificationCommand};
+pub use hooks::{
+    dispatch_hooks, HookDispatchResult, HookEvent, HookInput, HookRegistry, HookVerdict,
+};
 pub use tool_spec::ToolSpec;

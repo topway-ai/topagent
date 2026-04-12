@@ -1,5 +1,6 @@
 use crate::approval::ApprovalMailbox;
 use crate::checkpoint::WorkspaceCheckpointStore;
+use crate::hooks::HookRegistry;
 use crate::provenance::RunTrustContext;
 use crate::secrets::SecretRegistry;
 use crate::{cancel::CancellationToken, runtime::RuntimeOptions};
@@ -15,6 +16,7 @@ pub struct ExecutionContext {
     run_trust_context: RunTrustContext,
     approval_mailbox: Option<ApprovalMailbox>,
     checkpoint_store: Option<WorkspaceCheckpointStore>,
+    hook_registry: HookRegistry,
 }
 
 impl ExecutionContext {
@@ -28,6 +30,7 @@ impl ExecutionContext {
             run_trust_context: RunTrustContext::default(),
             approval_mailbox: None,
             checkpoint_store: None,
+            hook_registry: HookRegistry::empty(),
         }
     }
 
@@ -79,6 +82,11 @@ impl ExecutionContext {
         self
     }
 
+    pub fn with_hook_registry(mut self, hook_registry: HookRegistry) -> Self {
+        self.hook_registry = hook_registry;
+        self
+    }
+
     pub fn secrets(&self) -> &SecretRegistry {
         &self.secrets
     }
@@ -101,6 +109,10 @@ impl ExecutionContext {
 
     pub fn checkpoint_store(&self) -> Option<&WorkspaceCheckpointStore> {
         self.checkpoint_store.as_ref()
+    }
+
+    pub fn hook_registry(&self) -> &HookRegistry {
+        &self.hook_registry
     }
 
     pub fn is_cancelled(&self) -> bool {

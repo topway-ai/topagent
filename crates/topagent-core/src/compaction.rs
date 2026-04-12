@@ -551,6 +551,7 @@ mod tests {
             trust_notes: vec![
                 "Low-trust content is active in this run: prior transcript.".to_string()
             ],
+            hook_notes: vec![],
             memory_context_loaded: true,
         }
     }
