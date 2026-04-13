@@ -847,3 +847,206 @@ fn test_service_start_stop_and_restart_control_the_installed_service() {
     assert!(calls.contains("start topagent-telegram.service"));
     assert!(calls.contains("restart topagent-telegram.service"));
 }
+
+// ── Scenario: full install → model-set → status lifecycle chain ──
+
+#[test]
+fn test_install_then_model_set_then_status_lifecycle_preserves_all_env_values() {
+    let harness = ServiceHarness::new();
+
+    // Step 1: Install with explicit runtime settings
+    harness
+        .command()
+        .args([
+            "--model",
+            "minimax/minimax-m2.7",
+            "--max-steps",
+            "42",
+            "--timeout-secs",
+            "90",
+            "--tool-authoring",
+            "on",
+            "install",
+        ])
+        .write_stdin("scenario-api-key\n123456:scenario-token\n")
+        .assert()
+        .success();
+
+    let env_after_install = fs::read_to_string(harness.env_path()).unwrap();
+    assert!(env_after_install.contains("TOPAGENT_MODEL=\"minimax/minimax-m2.7\""));
+    assert!(env_after_install.contains("TOPAGENT_MAX_STEPS=\"42\""));
+    assert!(env_after_install.contains("TOPAGENT_TIMEOUT_SECS=\"90\""));
+    assert!(env_after_install.contains("TOPAGENT_TOOL_AUTHORING=\"1\""));
+
+    // Step 2: Change model — all other env values must survive
+    let model_set = harness
+        .command()
+        .args(["model", "set", "anthropic/claude-sonnet-4.6"])
+        .output()
+        .unwrap();
+    assert!(model_set.status.success());
+    let model_set_stdout = String::from_utf8_lossy(&model_set.stdout);
+    assert!(model_set_stdout.contains("Previous model: minimax/minimax-m2.7"));
+    assert!(model_set_stdout.contains("Configured model: anthropic/claude-sonnet-4.6"));
+
+    let env_after_set = fs::read_to_string(harness.env_path()).unwrap();
+    assert!(env_after_set.contains("TOPAGENT_MODEL=\"anthropic/claude-sonnet-4.6\""));
+    assert!(env_after_set.contains("OPENROUTER_API_KEY=\"scenario-api-key\""));
+    assert!(env_after_set.contains("TELEGRAM_BOT_TOKEN=\"123456:scenario-token\""));
+    assert!(env_after_set.contains("TOPAGENT_MAX_STEPS=\"42\""));
+    assert!(env_after_set.contains("TOPAGENT_TIMEOUT_SECS=\"90\""));
+    assert!(env_after_set.contains("TOPAGENT_TOOL_AUTHORING=\"1\""));
+
+    // Step 3: Status reflects the updated model and preserved settings
+    let status = harness.command().arg("status").output().unwrap();
+    assert!(status.status.success());
+    let status_stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(status_stdout.contains("Configured default model: anthropic/claude-sonnet-4.6"));
+    assert!(
+        status_stdout.contains("Effective model: anthropic/claude-sonnet-4.6 (persisted default)")
+    );
+    assert!(status_stdout.contains("Tool authoring: on"));
+
+    // Step 4: Model status agrees
+    let model_status = harness
+        .command()
+        .args(["model", "status"])
+        .output()
+        .unwrap();
+    assert!(model_status.status.success());
+    let model_stdout = String::from_utf8_lossy(&model_status.stdout);
+    assert!(model_stdout.contains("Configured default model: anthropic/claude-sonnet-4.6"));
+
+    // Step 5: Verify systemctl call chain
+    let calls = harness.calls_log();
+    assert!(calls.contains("daemon-reload"));
+    assert!(calls.contains("enable --now topagent-telegram.service"));
+    assert!(calls.contains("restart topagent-telegram.service"));
+}
+
+// ── Scenario: checkpoint status and diff on fresh workspace ──
+
+#[test]
+fn test_checkpoint_status_on_fresh_workspace_reports_no_checkpoint() {
+    let harness = ServiceHarness::new();
+    harness
+        .command()
+        .arg("install")
+        .write_stdin("test-key\n\n123456:abcdef\n")
+        .assert()
+        .success();
+
+    let output = harness
+        .command()
+        .args(["--workspace", &harness.workspace_path().display().to_string()])
+        .args(["checkpoint", "status"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "checkpoint status should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Checkpoint: none"));
+    assert!(stdout.contains("No active workspace checkpoint found"));
+}
+
+#[test]
+fn test_checkpoint_diff_on_fresh_workspace_reports_no_checkpoint() {
+    let harness = ServiceHarness::new();
+    harness
+        .command()
+        .arg("install")
+        .write_stdin("test-key\n\n123456:abcdef\n")
+        .assert()
+        .success();
+
+    let output = harness
+        .command()
+        .args(["--workspace", &harness.workspace_path().display().to_string()])
+        .args(["checkpoint", "diff"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "checkpoint diff should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("No active workspace checkpoint found"));
+}
+
+// ── Scenario: reinstall with changed model updates env atomically ──
+
+#[test]
+fn test_reinstall_with_new_model_replaces_old_model_atomically_in_env() {
+    let harness = ServiceHarness::new();
+
+    // First install with model A
+    harness
+        .command()
+        .args(["--model", "model-a/original", "install"])
+        .write_stdin("key-a\n123456:token-a\n")
+        .assert()
+        .success();
+
+    let env1 = fs::read_to_string(harness.env_path()).unwrap();
+    assert!(env1.contains("TOPAGENT_MODEL=\"model-a/original\""));
+    assert_eq!(
+        env1.matches("TOPAGENT_MODEL=").count(),
+        1,
+        "env should have exactly one TOPAGENT_MODEL line after first install"
+    );
+
+    // Reinstall with model B, keeping secrets
+    harness
+        .command()
+        .args(["--model", "model-b/replacement", "install"])
+        .write_stdin("\n\n")
+        .assert()
+        .success();
+
+    let env2 = fs::read_to_string(harness.env_path()).unwrap();
+    assert!(env2.contains("TOPAGENT_MODEL=\"model-b/replacement\""));
+    assert!(!env2.contains("model-a/original"));
+    assert_eq!(
+        env2.matches("TOPAGENT_MODEL=").count(),
+        1,
+        "env should have exactly one TOPAGENT_MODEL line after reinstall"
+    );
+    // Secrets carried over
+    assert!(env2.contains("OPENROUTER_API_KEY=\"key-a\""));
+    assert!(env2.contains("TELEGRAM_BOT_TOKEN=\"123456:token-a\""));
+}
+
+// ── Scenario: memory status on installed workspace shows all learning layers ──
+
+#[test]
+fn test_memory_status_after_install_shows_all_learning_layers() {
+    let harness = ServiceHarness::new();
+    harness
+        .command()
+        .arg("install")
+        .write_stdin("test-key\n\n123456:abcdef\n")
+        .assert()
+        .success();
+
+    let output = harness
+        .command()
+        .args(["--workspace", &harness.workspace_path().display().to_string()])
+        .args(["memory", "status"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "memory status should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Operator model"));
+    assert!(stdout.contains("Workspace index"));
+    assert!(stdout.contains("Procedures: 0"));
+    assert!(stdout.contains("Lessons: 0"));
+    assert!(stdout.contains("Observations: 0"));
+}

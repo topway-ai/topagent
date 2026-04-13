@@ -151,4 +151,100 @@ mod tests {
             "before"
         );
     }
+
+    #[test]
+    fn test_restore_checkpoint_preserves_durable_learning_artifacts() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path();
+        let topagent_dir = workspace.join(".topagent");
+
+        // Create durable learning artifacts before checkpoint
+        let lessons_dir = topagent_dir.join("lessons");
+        let procedures_dir = topagent_dir.join("procedures");
+        let observations_dir = topagent_dir.join("observations");
+        std::fs::create_dir_all(&lessons_dir).unwrap();
+        std::fs::create_dir_all(&procedures_dir).unwrap();
+        std::fs::create_dir_all(&observations_dir).unwrap();
+        std::fs::write(lessons_dir.join("lesson-1.md"), "# Lesson 1\nImportant fact").unwrap();
+        std::fs::write(
+            procedures_dir.join("proc-1.md"),
+            "# Procedure 1\nStep-by-step",
+        )
+        .unwrap();
+        std::fs::write(
+            observations_dir.join("obs-1.json"),
+            r#"{"task_hash":"abc"}"#,
+        )
+        .unwrap();
+        std::fs::write(topagent_dir.join("MEMORY.md"), "- lesson-1: important fact").unwrap();
+        std::fs::write(topagent_dir.join("USER.md"), "Operator prefers concise replies").unwrap();
+
+        // Capture only a workspace file, not learning artifacts
+        std::fs::write(workspace.join("src.rs"), "fn main() {}").unwrap();
+        let store = WorkspaceCheckpointStore::new(workspace.to_path_buf());
+        store
+            .capture_file(
+                "src.rs",
+                CheckpointCaptureMetadata::new(CheckpointCaptureSource::Write, "code change"),
+            )
+            .unwrap();
+
+        // Modify the captured file
+        std::fs::write(workspace.join("src.rs"), "fn main() { broken() }").unwrap();
+
+        // Add a transcript (should be cleared)
+        let history_dir = topagent_dir.join("telegram-history");
+        std::fs::create_dir_all(&history_dir).unwrap();
+        std::fs::write(history_dir.join("chat-42.json"), "[{\"text\":\"hello\"}]").unwrap();
+
+        // Restore
+        let (report, cleared_transcripts) =
+            restore_checkpoint_and_clear_transcripts(workspace, &store).unwrap();
+
+        assert_eq!(report.restored_files, vec!["src.rs"]);
+        assert!(cleared_transcripts);
+
+        // Captured file is restored
+        assert_eq!(
+            std::fs::read_to_string(workspace.join("src.rs")).unwrap(),
+            "fn main() {}"
+        );
+
+        // Durable learning artifacts survive
+        assert_eq!(
+            std::fs::read_to_string(lessons_dir.join("lesson-1.md")).unwrap(),
+            "# Lesson 1\nImportant fact"
+        );
+        assert_eq!(
+            std::fs::read_to_string(procedures_dir.join("proc-1.md")).unwrap(),
+            "# Procedure 1\nStep-by-step"
+        );
+        assert_eq!(
+            std::fs::read_to_string(observations_dir.join("obs-1.json")).unwrap(),
+            r#"{"task_hash":"abc"}"#
+        );
+        assert_eq!(
+            std::fs::read_to_string(topagent_dir.join("MEMORY.md")).unwrap(),
+            "- lesson-1: important fact"
+        );
+        assert_eq!(
+            std::fs::read_to_string(topagent_dir.join("USER.md")).unwrap(),
+            "Operator prefers concise replies"
+        );
+
+        // Transcripts are cleared
+        assert!(!history_dir.exists());
+    }
+
+    #[test]
+    fn test_restore_no_checkpoint_returns_error() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path();
+        let store = WorkspaceCheckpointStore::new(workspace.to_path_buf());
+
+        let result = restore_checkpoint_and_clear_transcripts(workspace, &store);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("No active workspace checkpoint found"));
+    }
 }

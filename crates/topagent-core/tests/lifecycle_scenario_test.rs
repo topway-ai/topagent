@@ -3,6 +3,7 @@ use tempfile::TempDir;
 use topagent_core::tools::default_tools;
 use topagent_core::{
     context::ExecutionContext,
+    hooks::{HookDefinition, HookEvent, HookManifest, HookRegistry},
     tool_genesis::{ToolGenesis, VerificationSpec},
     Agent, ApprovalMailbox, ApprovalMailboxMode, ApprovalTriggerKind, Error, InfluenceMode,
     Message, ProviderResponse, Role, RunTrustContext, RuntimeOptions, ScriptedProvider, SourceKind,
@@ -249,4 +250,95 @@ fn test_low_trust_risky_action_gets_elevated_approval_in_real_lifecycle() {
         }
         other => panic!("expected approval-required error, got {other:?}"),
     }
+}
+
+#[test]
+fn test_approval_gate_fires_before_hooks_for_destructive_mutations() {
+    let (temp, base_ctx) = create_temp_crate();
+
+    // Write a permissive hook that would allow everything
+    let script_path = temp.path().join("allow-all.sh");
+    std::fs::write(
+        &script_path,
+        "#!/bin/sh\necho '{\"action\": \"allow\"}'\n",
+    )
+    .unwrap();
+
+    let manifest = HookManifest {
+        hooks: vec![HookDefinition {
+            event: HookEvent::PreTool,
+            command: format!("sh {}", script_path.display()),
+            filter: vec!["bash".to_string()],
+            label: "permissive hook".to_string(),
+            timeout_secs: 5,
+        }],
+    };
+    let registry = HookRegistry::from_manifest(manifest);
+
+    let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
+    let ctx = base_ctx
+        .with_approval_mailbox(mailbox.clone())
+        .with_hook_registry(registry);
+
+    let mut agent = Agent::with_options(
+        Box::new(ScriptedProvider::new(vec![
+            update_plan_call("plan"),
+            tool_call(
+                "rm-bash",
+                "bash",
+                serde_json::json!({"command": "rm -rf /tmp/test"}),
+            ),
+        ])),
+        default_tools().into_inner(),
+        RuntimeOptions::default(),
+    );
+
+    // Approval gate fires before hooks — the permissive hook cannot bypass approval
+    let err = agent
+        .run(
+            &ctx,
+            "Plan the cleanup, then remove the temporary test directory.",
+        )
+        .unwrap_err();
+
+    match err {
+        Error::ApprovalRequired(request) => {
+            assert_eq!(
+                request.action_kind,
+                ApprovalTriggerKind::DestructiveShellMutation
+            );
+        }
+        other => panic!("expected approval-required error, got {other:?}"),
+    }
+    assert!(!ctx.workspace_root.join("tmp/test").exists());
+    assert_eq!(mailbox.pending().len(), 1);
+}
+
+#[test]
+fn test_low_trust_context_does_not_block_safe_read_only_operations() {
+    let (_temp, base_ctx) = create_temp_crate();
+    let ctx = base_ctx.with_run_trust_context(low_trust_context());
+
+    let mut agent = Agent::with_options(
+        Box::new(ScriptedProvider::new(vec![
+            update_plan_call("plan"),
+            tool_call(
+                "read",
+                "read",
+                serde_json::json!({"path": "src/lib.rs"}),
+            ),
+            assistant_message("The file contains answer() returning 42."),
+        ])),
+        default_tools().into_inner(),
+        RuntimeOptions::default(),
+    );
+
+    let result = agent
+        .run(
+            &ctx,
+            "Read the source file and summarize what it does.",
+        )
+        .unwrap();
+
+    assert!(result.contains("42"));
 }
