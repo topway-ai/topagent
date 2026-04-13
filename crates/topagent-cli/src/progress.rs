@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use topagent_core::{ProgressCallback, ProgressKind, ProgressUpdate, TelegramAdapter};
@@ -109,7 +109,8 @@ impl LiveProgress {
             initial,
             Box::new(move |update, elapsed, heartbeat| {
                 let text = format_telegram_status(update, elapsed, heartbeat);
-                if let Err(err) = adapter.edit_message_text(chat_id, status_message_id, &text) {
+                if let Err(err) = adapter.edit_message_text(chat_id, status_message_id, &text, None)
+                {
                     let message = err.to_string();
                     if !message.contains("message is not modified") {
                         error!("failed to update Telegram status message: {}", err);
@@ -273,9 +274,11 @@ mod tests {
         progress.wait();
 
         let rendered = rendered.lock().unwrap();
-        assert!(rendered
-            .iter()
-            .any(|line| line.contains("Blocked: approval required.")));
+        assert!(
+            rendered
+                .iter()
+                .any(|line| line.contains("Blocked: approval required."))
+        );
     }
 
     #[test]

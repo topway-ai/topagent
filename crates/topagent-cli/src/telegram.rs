@@ -2,25 +2,25 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 use topagent_core::channel::telegram::{
     TelegramInlineKeyboardButton, TelegramInlineKeyboardMarkup,
 };
 use topagent_core::{
-    context::ExecutionContext, model::ModelRoute, Agent, ApprovalEntry, ApprovalMailbox,
-    ApprovalMailboxMode, CancellationToken, Message, ProgressCallback, ProgressUpdate, Role,
-    RuntimeOptions, TelegramAdapter, WorkspaceCheckpointStore, POLL_TIMEOUT_SECS,
+    Agent, ApprovalEntry, ApprovalMailbox, ApprovalMailboxMode, CancellationToken, Message,
+    POLL_TIMEOUT_SECS, ProgressCallback, ProgressUpdate, Role, RuntimeOptions, TelegramAdapter,
+    WorkspaceCheckpointStore, context::ExecutionContext, model::ModelRoute,
 };
 use tracing::{error, info, warn};
 
 use crate::config::*;
 use crate::managed_files::write_managed_file;
-use crate::memory::{promote_verified_task, WorkspaceMemory};
+use crate::memory::{WorkspaceMemory, promote_verified_task};
 use crate::progress::LiveProgress;
 use crate::run_setup::{
-    build_agent, prepare_run_context, prepare_workspace_memory, PreparedRunContext,
+    PreparedRunContext, build_agent, prepare_run_context, prepare_workspace_memory,
 };
 
 const TELEGRAM_HISTORY_VERSION: u32 = 1;
@@ -146,7 +146,14 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                             Ok(entry) => {
                                 let reply = format_approval_resolution(&entry, approve);
                                 let _ = adapter.answer_callback_query(&callback.id, Some(&reply));
-                                send_telegram(&adapter, chat_id, vec![reply], Some(&secrets));
+                                let _ = adapter.edit_message_text(
+                                    chat_id,
+                                    message.message_id,
+                                    &reply,
+                                    Some(&TelegramInlineKeyboardMarkup {
+                                        inline_keyboard: vec![],
+                                    }),
+                                );
                             }
                             Err(err) => {
                                 let _ = adapter.answer_callback_query(&callback.id, Some(&err));
@@ -1049,7 +1056,7 @@ fn current_model_label_for_help(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::procedures::{save_procedure, ProcedureDraft};
+    use crate::memory::procedures::{ProcedureDraft, save_procedure};
     use crate::memory::{MEMORY_PROCEDURES_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR};
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
@@ -1112,11 +1119,13 @@ mod tests {
 
         assert!(manager.stop_chat(42));
         assert!(cancel_token.is_cancelled());
-        assert!(updates
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|update| update == &ProgressUpdate::stopping()));
+        assert!(
+            updates
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|update| update == &ProgressUpdate::stopping())
+        );
     }
 
     #[test]
@@ -1310,8 +1319,8 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_context_retrieves_targeted_transcript_snippet_instead_of_restoring_whole_history(
-    ) {
+    fn test_memory_context_retrieves_targeted_transcript_snippet_instead_of_restoring_whole_history()
+     {
         let workspace = TempDir::new().unwrap();
         let chat_id = 4242;
         let original_manager = test_manager(workspace.path().to_path_buf());
@@ -1339,12 +1348,14 @@ mod tests {
 
         assert!(memory_context.contains("maple comet"));
         assert!(!memory_context.contains("cedar echo"));
-        assert!(workspace
-            .path()
-            .join(".topagent")
-            .join("telegram-history")
-            .join("chat-4242.json")
-            .is_file());
+        assert!(
+            workspace
+                .path()
+                .join(".topagent")
+                .join("telegram-history")
+                .join("chat-4242.json")
+                .is_file()
+        );
 
         #[cfg(unix)]
         {

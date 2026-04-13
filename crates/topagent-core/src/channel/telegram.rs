@@ -178,18 +178,22 @@ impl TelegramAdapter {
         chat_id: i64,
         message_id: i64,
         text: &str,
+        reply_markup: Option<&TelegramInlineKeyboardMarkup>,
     ) -> Result<TelegramMessage, ChannelError> {
         #[derive(Serialize)]
         struct EditMessageParams {
             chat_id: i64,
             message_id: i64,
             text: String,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            reply_markup: Option<TelegramInlineKeyboardMarkup>,
         }
 
         let params = EditMessageParams {
             chat_id,
             message_id,
             text: text.to_string(),
+            reply_markup: reply_markup.cloned(),
         };
 
         self.send_with_retry(|| {
