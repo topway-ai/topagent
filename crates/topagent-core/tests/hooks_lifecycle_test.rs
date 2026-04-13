@@ -1,14 +1,14 @@
 use std::fs;
 use tempfile::TempDir;
 use topagent_core::hooks::{
-    dispatch_hooks, execute_hook, HookDefinition, HookEvent, HookInput, HookManifest, HookRegistry,
-    HookVerdict,
+    HookDefinition, HookEvent, HookInput, HookManifest, HookRegistry, HookVerdict, dispatch_hooks,
+    execute_hook,
 };
 use topagent_core::tools::default_tools;
 use topagent_core::{
-    context::ExecutionContext, Agent, ApprovalMailbox, ApprovalMailboxMode, ApprovalTriggerKind,
-    Error, InfluenceMode, Message, ProviderResponse, Role, RunTrustContext, RuntimeOptions,
-    ScriptedProvider, SourceKind, SourceLabel,
+    Agent, ApprovalMailbox, ApprovalMailboxMode, ApprovalTriggerKind, BehaviorContract,
+    DurablePromotionKind, Error, InfluenceMode, Message, ProviderResponse, Role, RunTrustContext,
+    RuntimeOptions, ScriptedProvider, SourceKind, SourceLabel, context::ExecutionContext,
 };
 
 fn create_temp_crate() -> (TempDir, ExecutionContext) {
@@ -266,12 +266,7 @@ label = "permissive hook"
         RuntimeOptions::default().with_require_plan(false),
     );
 
-    let err = agent
-        .run(
-            &ctx,
-            "touch risky.txt",
-        )
-        .unwrap_err();
+    let err = agent.run(&ctx, "touch risky.txt").unwrap_err();
 
     // Approval should still be required even with a permissive hook
     match err {
@@ -281,9 +276,7 @@ label = "permissive hook"
                 ApprovalTriggerKind::DestructiveShellMutation
             );
         }
-        other => panic!(
-            "expected approval-required error despite permissive hook, got {other:?}"
-        ),
+        other => panic!("expected approval-required error despite permissive hook, got {other:?}"),
     }
     assert!(!ctx.workspace_root.join("risky.txt").exists());
 }
@@ -401,11 +394,7 @@ label = "workspace bash block"
             update_plan_call("plan"),
             // Agent tries a research-safe bash command — hooks apply after
             // the planning gate but the agent should see the block message.
-            tool_call(
-                "bash-1",
-                "bash",
-                serde_json::json!({"command": "ls -la"}),
-            ),
+            tool_call("bash-1", "bash", serde_json::json!({"command": "ls -la"})),
             assistant_message("I see bash was blocked by a workspace hook"),
         ])),
         default_tools().into_inner(),
@@ -515,4 +504,205 @@ fn test_multiple_hooks_block_takes_priority() {
     assert!(result.blocked);
     let msg = result.block_message().unwrap();
     assert!(msg.contains("blocked by safety policy"));
+}
+
+#[test]
+fn test_no_hook_path_stays_semantically_normal() {
+    let (_temp, ctx) = create_temp_crate();
+    let registry = HookRegistry::empty();
+    let ctx_with_hooks = ctx.with_hook_registry(registry);
+
+    let mut agent = Agent::with_options(
+        Box::new(ScriptedProvider::new(vec![
+            update_plan_call("plan"),
+            tool_call(
+                "read-file",
+                "read",
+                serde_json::json!({"path": "src/lib.rs"}),
+            ),
+            assistant_message("The file contains answer() returning 42."),
+        ])),
+        default_tools().into_inner(),
+        RuntimeOptions::default().with_require_plan(false),
+    );
+
+    let result = agent
+        .run(&ctx_with_hooks, "Read the file and tell me what it does.")
+        .unwrap();
+
+    assert!(result.contains("42"));
+    assert!(
+        !result.contains("Blocked by workspace hook"),
+        "no-hook path should not have any hook block messages"
+    );
+    assert!(
+        agent.last_task_result().is_none()
+            || !agent
+                .last_task_result()
+                .map(|r| r
+                    .evidence
+                    .workspace_warnings
+                    .iter()
+                    .any(|w| w.contains("hook")))
+                .unwrap_or(false),
+        "no-hook path should not produce hook-related workspace warnings"
+    );
+}
+
+#[test]
+fn test_post_write_hook_bounded_verify_command_is_not_run_automatically() {
+    let temp = TempDir::new().unwrap();
+    let script_path = temp.path().join("verify-hook.sh");
+    fs::write(
+        &script_path,
+        "#!/bin/sh\necho 'verify: cargo clippy --all-targets'\n",
+    )
+    .unwrap();
+
+    let hook = HookDefinition {
+        event: HookEvent::PostWrite,
+        command: format!("sh {}", script_path.display()),
+        filter: vec!["*.rs".to_string()],
+        label: "rust lint check".to_string(),
+        timeout_secs: 5,
+    };
+
+    let input = HookInput {
+        event: HookEvent::PostWrite,
+        subject: "src/main.rs".to_string(),
+        detail: String::new(),
+    };
+    let result = execute_hook(&hook, &input, temp.path());
+
+    assert!(result.succeeded);
+    assert_eq!(
+        result.verdict,
+        HookVerdict::RequestVerify {
+            command: "cargo clippy --all-targets".to_string()
+        },
+        "PostWrite hook should request bounded verification, not arbitrary commands"
+    );
+    assert!(
+        result.verdict != HookVerdict::Allow,
+        "verify request must not be treated as a pass"
+    );
+    assert!(
+        result.verdict
+            != HookVerdict::Block {
+                reason: String::new()
+            },
+        "verify request must not be treated as a block"
+    );
+}
+
+#[test]
+fn test_hooks_does_not_materially_bloat_startup_when_absent() {
+    let (temp, _ctx) = create_temp_crate();
+    let registry = HookRegistry::load_from_workspace(temp.path());
+    assert!(registry.is_empty(), "empty workspace should have no hooks");
+
+    let summary = registry.summary_lines();
+    assert!(
+        summary.is_empty(),
+        "empty registry should produce no summary lines"
+    );
+
+    let input = HookInput {
+        event: HookEvent::PreTool,
+        subject: "bash".to_string(),
+        detail: "{}".to_string(),
+    };
+    let result = dispatch_hooks(&registry, HookEvent::PreTool, &input, temp.path());
+    assert!(result.is_pass());
+    assert!(result.execution_results.is_empty());
+    assert!(!result.blocked);
+    assert!(result.annotations.is_empty());
+    assert!(result.verify_commands.is_empty());
+}
+
+#[test]
+fn test_hooks_cannot_bypass_approval_gate_for_git_commit() {
+    let (temp, base_ctx) = create_temp_crate();
+    write_hooks_toml(
+        &temp,
+        r#"
+[[hooks]]
+event = "pre_tool"
+command = "echo '{\"action\": \"allow\"}'"
+label = "permissive hook"
+"#,
+    );
+
+    let registry = HookRegistry::load_from_workspace(temp.path());
+    let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
+    let ctx = base_ctx
+        .with_approval_mailbox(mailbox.clone())
+        .with_hook_registry(registry);
+
+    let mut agent = Agent::with_options(
+        Box::new(ScriptedProvider::new(vec![
+            update_plan_call("plan"),
+            tool_call(
+                "commit",
+                "git_commit",
+                serde_json::json!({"message": "commit despite hook allow"}),
+            ),
+        ])),
+        default_tools().into_inner(),
+        RuntimeOptions::default().with_require_plan(false),
+    );
+
+    let err = agent
+        .run(&ctx, "Commit the changes with a message.")
+        .unwrap_err();
+
+    match err {
+        Error::ApprovalRequired(request) => {
+            assert_eq!(request.action_kind, ApprovalTriggerKind::GitCommit);
+        }
+        other => panic!(
+            "expected approval-required for git_commit despite permissive hook, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_low_trust_durable_promotion_remains_blocked_after_restore_context() {
+    let _ = create_temp_crate();
+
+    let mut trust_after_restore = RunTrustContext::default();
+    trust_after_restore.add_source(SourceLabel::low(
+        SourceKind::TranscriptPrior,
+        InfluenceMode::MayDriveAction,
+        "prior context before restore",
+    ));
+
+    let contract = BehaviorContract::default();
+    assert!(
+        contract
+            .durable_promotion_block_reason(
+                DurablePromotionKind::Lesson,
+                &trust_after_restore,
+                false
+            )
+            .is_some(),
+        "low-trust context must still block lesson promotion even after restore/restart"
+    );
+    assert!(
+        contract
+            .durable_promotion_block_reason(
+                DurablePromotionKind::Procedure,
+                &trust_after_restore,
+                false
+            )
+            .is_some(),
+        "low-trust context must still block procedure promotion even after restore/restart"
+    );
+    assert!(
+        contract
+            .memory_write_block_reason("save_lesson", &trust_after_restore, false)
+            .is_some(),
+        "low-trust context must still block memory writes even after restore/restart"
+    );
 }

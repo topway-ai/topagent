@@ -625,4 +625,172 @@ mod tests {
             "123456:abcdef"
         );
     }
+
+    #[test]
+    fn test_foreground_and_background_telegram_resolve_identical_config_from_same_metadata() {
+        let workspace = TempDir::new().unwrap();
+        let values = HashMap::from([
+            ("OPENROUTER_API_KEY".to_string(), "shared-key".to_string()),
+            (
+                "TELEGRAM_BOT_TOKEN".to_string(),
+                "123456:shared-token".to_string(),
+            ),
+            (
+                TOPAGENT_WORKSPACE_KEY.to_string(),
+                workspace.path().display().to_string(),
+            ),
+            (TOPAGENT_MODEL_KEY.to_string(), "shared/model".to_string()),
+            (TOPAGENT_MAX_STEPS_KEY.to_string(), "65".to_string()),
+            (TOPAGENT_MAX_RETRIES_KEY.to_string(), "5".to_string()),
+            (TOPAGENT_TIMEOUT_SECS_KEY.to_string(), "90".to_string()),
+            (TOPAGENT_TOOL_AUTHORING_KEY.to_string(), "1".to_string()),
+        ]);
+
+        let defaults = TelegramModeDefaults::from_metadata(&values);
+        let params = CliParams {
+            api_key: None,
+            model: None,
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+
+        let config = resolve_telegram_mode_config(None, params.clone(), defaults.clone()).unwrap();
+        assert_eq!(config.api_key, "shared-key");
+        assert_eq!(config.token, "123456:shared-token");
+        assert_eq!(config.route.model_id, "shared/model");
+        assert_eq!(config.workspace, workspace.path().canonicalize().unwrap());
+        assert_eq!(config.options.max_steps, 65);
+        assert_eq!(config.options.max_provider_retries, 5);
+        assert_eq!(config.options.provider_timeout_secs, 90);
+        assert!(config.options.enable_generated_tool_authoring);
+
+        let selection = resolve_runtime_model_selection(None, defaults.model.clone());
+        assert_eq!(selection.configured_default.model_id, "shared/model");
+        assert_eq!(selection.effective.model_id, "shared/model");
+    }
+
+    #[test]
+    fn test_cli_model_override_does_not_alter_persisted_defaults() {
+        let workspace = TempDir::new().unwrap();
+        let values = HashMap::from([
+            (
+                "OPENROUTER_API_KEY".to_string(),
+                "persisted-key".to_string(),
+            ),
+            (
+                "TELEGRAM_BOT_TOKEN".to_string(),
+                "999:persisted-token".to_string(),
+            ),
+            (
+                TOPAGENT_WORKSPACE_KEY.to_string(),
+                workspace.path().display().to_string(),
+            ),
+            (
+                TOPAGENT_MODEL_KEY.to_string(),
+                "persisted/model".to_string(),
+            ),
+        ]);
+
+        let defaults = TelegramModeDefaults::from_metadata(&values);
+        let params = CliParams {
+            api_key: None,
+            model: Some("cli-override/model".to_string()),
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+
+        let config = resolve_telegram_mode_config(None, params, defaults.clone()).unwrap();
+        assert_eq!(config.route.model_id, "cli-override/model");
+        assert_eq!(defaults.model.as_deref(), Some("persisted/model"));
+        assert_eq!(defaults.api_key.as_deref(), Some("persisted-key"));
+        assert_eq!(defaults.token.as_deref(), Some("999:persisted-token"));
+    }
+
+    #[test]
+    fn test_metadata_roundtrip_preserves_all_runtime_options() {
+        let workspace = TempDir::new().unwrap();
+        let original_values = HashMap::from([
+            (
+                "OPENROUTER_API_KEY".to_string(),
+                "key-roundtrip".to_string(),
+            ),
+            (
+                "TELEGRAM_BOT_TOKEN".to_string(),
+                "111:token-roundtrip".to_string(),
+            ),
+            (
+                TOPAGENT_WORKSPACE_KEY.to_string(),
+                workspace.path().display().to_string(),
+            ),
+            (
+                TOPAGENT_MODEL_KEY.to_string(),
+                "model/roundtrip".to_string(),
+            ),
+            (TOPAGENT_MAX_STEPS_KEY.to_string(), "80".to_string()),
+            (TOPAGENT_MAX_RETRIES_KEY.to_string(), "6".to_string()),
+            (TOPAGENT_TIMEOUT_SECS_KEY.to_string(), "100".to_string()),
+            (TOPAGENT_TOOL_AUTHORING_KEY.to_string(), "1".to_string()),
+        ]);
+
+        let defaults = TelegramModeDefaults::from_metadata(&original_values);
+        assert_eq!(defaults.api_key.as_deref(), Some("key-roundtrip"));
+        assert_eq!(defaults.token.as_deref(), Some("111:token-roundtrip"));
+        assert_eq!(defaults.model.as_deref(), Some("model/roundtrip"));
+        assert_eq!(defaults.max_steps, Some(80));
+        assert_eq!(defaults.max_retries, Some(6));
+        assert_eq!(defaults.timeout_secs, Some(100));
+        assert_eq!(defaults.generated_tool_authoring, Some(true));
+
+        let params = CliParams {
+            api_key: None,
+            model: None,
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+
+        let config = resolve_telegram_mode_config(None, params, defaults).unwrap();
+        assert_eq!(config.api_key, "key-roundtrip");
+        assert_eq!(config.token, "111:token-roundtrip");
+        assert_eq!(config.route.model_id, "model/roundtrip");
+        assert_eq!(config.options.max_steps, 80);
+        assert_eq!(config.options.max_provider_retries, 6);
+        assert_eq!(config.options.provider_timeout_secs, 100);
+        assert!(config.options.enable_generated_tool_authoring);
+    }
+
+    #[test]
+    fn test_empty_persisted_model_falls_back_to_built_in_default() {
+        let workspace = TempDir::new().unwrap();
+        let values = HashMap::from([
+            ("OPENROUTER_API_KEY".to_string(), "some-key".to_string()),
+            ("TELEGRAM_BOT_TOKEN".to_string(), "123:token".to_string()),
+            (
+                TOPAGENT_WORKSPACE_KEY.to_string(),
+                workspace.path().display().to_string(),
+            ),
+            (TOPAGENT_MODEL_KEY.to_string(), "   ".to_string()),
+        ]);
+
+        let defaults = TelegramModeDefaults::from_metadata(&values);
+        assert!(
+            defaults.model.is_none(),
+            "whitespace-only model should parse as None"
+        );
+
+        let selection = resolve_runtime_model_selection(None, defaults.model);
+        assert_eq!(
+            selection.configured_default.model_id,
+            DEFAULT_OPENROUTER_MODEL_ID
+        );
+        assert_eq!(selection.effective.model_id, DEFAULT_OPENROUTER_MODEL_ID);
+    }
 }
