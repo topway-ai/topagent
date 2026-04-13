@@ -2,8 +2,8 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use topagent_core::{
-    model::{ModelRoute, DEFAULT_OPENROUTER_MODEL_ID},
     RuntimeOptions,
+    model::{DEFAULT_OPENROUTER_MODEL_ID, ModelRoute},
 };
 
 use crate::managed_files::read_managed_env_metadata;

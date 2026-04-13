@@ -159,10 +159,7 @@ fn build_observation_summary(instruction: &str, report: &TaskPromotionReport) ->
         parts.push("trajectory");
     }
     let promoted = parts.join("+");
-    compact_text_line(
-        &format!("[{promoted}] {}", instruction.trim()),
-        160,
-    )
+    compact_text_line(&format!("[{promoted}] {}", instruction.trim()), 160)
 }
 
 // ── Loading ──
@@ -190,10 +187,7 @@ pub(crate) fn scan_observations(
         .with_context(|| format!("failed to read {}", observations_dir.display()))?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|ext| ext == "json")
-        })
+        .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
         .collect();
 
     // Sort by filename descending (newest first, since filenames contain timestamps)
@@ -732,12 +726,16 @@ pub(crate) mod tests {
 
         let result = progressive_retrieve(&obs_dir, "harden the approval mailbox", 8, 4).unwrap();
         assert_eq!(result.candidates.len(), 1);
-        assert!(result
-            .artifact_paths
-            .contains(&".topagent/lessons/approval-lesson.md".to_string()));
-        assert!(result
-            .artifact_paths
-            .contains(&".topagent/procedures/approval-proc.md".to_string()));
+        assert!(
+            result
+                .artifact_paths
+                .contains(&".topagent/lessons/approval-lesson.md".to_string())
+        );
+        assert!(
+            result
+                .artifact_paths
+                .contains(&".topagent/procedures/approval-proc.md".to_string())
+        );
         assert!(!result.provenance_notes.is_empty());
     }
 

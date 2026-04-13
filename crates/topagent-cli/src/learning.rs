@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::fs;
 use std::path::{Path, PathBuf};
 use topagent_core::{
@@ -7,12 +7,103 @@ use topagent_core::{
 
 use crate::config::resolve_workspace_path;
 use crate::memory::{
-    disable_procedure, mark_trajectory_ready, observation, parse_saved_procedure,
-    parse_saved_trajectory, write_exported_trajectory, ProcedureStatus, TrajectoryReviewState,
-    WorkspaceMemory, MEMORY_INDEX_RELATIVE_PATH, MEMORY_LESSONS_RELATIVE_DIR,
-    MEMORY_OBSERVATIONS_RELATIVE_DIR, MEMORY_PLANS_RELATIVE_DIR, MEMORY_PROCEDURES_RELATIVE_DIR,
-    MEMORY_TOPICS_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR, TRAJECTORY_EXPORTS_RELATIVE_DIR,
+    MEMORY_INDEX_RELATIVE_PATH, MEMORY_LESSONS_RELATIVE_DIR, MEMORY_OBSERVATIONS_RELATIVE_DIR,
+    MEMORY_PLANS_RELATIVE_DIR, MEMORY_PROCEDURES_RELATIVE_DIR, MEMORY_TOPICS_RELATIVE_DIR,
+    MEMORY_TRAJECTORIES_RELATIVE_DIR, ProcedureStatus, TRAJECTORY_EXPORTS_RELATIVE_DIR,
+    TrajectoryReviewState, WorkspaceMemory, disable_procedure, mark_trajectory_ready, observation,
+    parse_saved_procedure, parse_saved_trajectory, write_exported_trajectory,
 };
+
+fn render_memory_recall(workspace: &Path, instruction: &str) -> Result<String> {
+    let memory = WorkspaceMemory::new(workspace.to_path_buf());
+    let _ = memory.consolidate_memory_if_needed();
+    let memory_prompt = memory.build_prompt(instruction, None)?;
+
+    let mut output = String::new();
+    output.push_str("TopAgent memory recall\n");
+    output.push_str(&format!("Workspace: {}\n", workspace.display()));
+    output.push_str(&format!("Instruction: {}\n", instruction));
+    output.push('\n');
+
+    if memory_prompt.prompt.is_none() && memory_prompt.operator_prompt.is_none() {
+        output.push_str("No memory context would be loaded for this instruction.\n");
+        return Ok(output);
+    }
+
+    let stats = &memory_prompt.stats;
+
+    if !stats.loaded_operator_items.is_empty() {
+        output.push_str(&format!(
+            "Operator preferences: {}\n",
+            stats.loaded_operator_items.join(", ")
+        ));
+    }
+
+    if stats.index_prompt_bytes > 0 {
+        output.push_str(&format!(
+            "Index loaded: {} bytes\n",
+            stats.index_prompt_bytes
+        ));
+    }
+
+    if !stats.loaded_items.is_empty() {
+        output.push_str(&format!(
+            "Recalled items: {}\n",
+            stats.loaded_items.join(", ")
+        ));
+    }
+
+    if !stats.loaded_procedure_files.is_empty() {
+        output.push_str(&format!(
+            "Procedure files: {}\n",
+            stats.loaded_procedure_files.join(", ")
+        ));
+    }
+
+    if stats.transcript_snippets > 0 {
+        output.push_str(&format!(
+            "Transcript snippets: {} ({} bytes)\n",
+            stats.transcript_snippets, stats.transcript_prompt_bytes
+        ));
+    }
+
+    if stats.observation_hints_used > 0 {
+        output.push_str(&format!(
+            "Observation hints used: {}\n",
+            stats.observation_hints_used
+        ));
+    }
+
+    if !stats.provenance_notes.is_empty() {
+        output.push('\n');
+        output.push_str("Provenance:\n");
+        for note in &stats.provenance_notes {
+            output.push_str(&format!("  - {}\n", note));
+        }
+    }
+
+    let trust = &memory_prompt.trust_context;
+    if !trust.sources.is_empty() {
+        output.push('\n');
+        output.push_str("Trust context:\n");
+        for source in &trust.sources {
+            output.push_str(&format!(
+                "  - {} | {} | {} | {}\n",
+                source.kind.label(),
+                source.trust.label(),
+                source.influence.label(),
+                source.summary
+            ));
+        }
+    }
+
+    output.push_str(&format!(
+        "\nTotal prompt bytes: {}\n",
+        stats.total_prompt_bytes
+    ));
+
+    Ok(output)
+}
 
 pub(crate) fn run_memory_command(
     command: crate::MemoryCommands,
@@ -22,6 +113,10 @@ pub(crate) fn run_memory_command(
     migrate_profile_if_needed(&workspace)?;
     match command {
         crate::MemoryCommands::Status => print!("{}", render_memory_status(&workspace)?),
+        crate::MemoryCommands::Lint => print!("{}", render_memory_lint(&workspace)?),
+        crate::MemoryCommands::Recall { instruction } => {
+            print!("{}", render_memory_recall(&workspace, &instruction)?)
+        }
     }
     Ok(())
 }
@@ -163,6 +258,118 @@ fn render_memory_status(workspace: &Path) -> Result<String> {
         workspace.join(TRAJECTORY_EXPORTS_RELATIVE_DIR).display()
     ));
     output.push_str(&format!("Observations: {}\n", observation_files.len()));
+    Ok(output)
+}
+
+fn render_memory_lint(workspace: &Path) -> Result<String> {
+    let mut output = String::new();
+    output.push_str("TopAgent memory lint\n");
+    output.push_str(&format!("Workspace: {}\n", workspace.display()));
+
+    let mut findings = Vec::new();
+
+    let user_path = user_profile_path(workspace);
+    if user_path.exists() {
+        match std::fs::read_to_string(&user_path) {
+            Ok(raw) => {
+                if raw.len() > 4096 {
+                    findings.push(format!(
+                        "ERROR USER.md: size {} bytes exceeds 4096 budget",
+                        raw.len()
+                    ));
+                } else if raw.len() > 2048 {
+                    findings.push(format!(
+                        "WARNING USER.md: size {} bytes exceeds 2048 budget",
+                        raw.len()
+                    ));
+                }
+                for issue in crate::doctor::lint_user_md_content(&raw) {
+                    findings.push(format!("WARNING USER.md: {}", issue));
+                }
+                match load_operator_profile(workspace) {
+                    Ok(profile) => {
+                        if findings.is_empty() {
+                            findings.push(format!(
+                                "OK USER.md: {} preference(s), {} bytes",
+                                profile.preferences.len(),
+                                raw.len()
+                            ));
+                        }
+                    }
+                    Err(err) => {
+                        findings.push(format!("ERROR USER.md: parse error: {}", err));
+                    }
+                }
+            }
+            Err(err) => {
+                findings.push(format!("ERROR USER.md: cannot read: {}", err));
+            }
+        }
+    } else {
+        findings.push("OK USER.md: not present (optional)".to_string());
+    }
+
+    let memory_path = workspace.join(MEMORY_INDEX_RELATIVE_PATH);
+    if memory_path.exists() {
+        match std::fs::read_to_string(&memory_path) {
+            Ok(raw) => {
+                if raw.len() > 3000 {
+                    findings.push(format!(
+                        "ERROR MEMORY.md: size {} bytes exceeds 3000 budget",
+                        raw.len()
+                    ));
+                } else if raw.len() > 1500 {
+                    findings.push(format!(
+                        "WARNING MEMORY.md: size {} bytes exceeds 1500 budget",
+                        raw.len()
+                    ));
+                }
+                let entries: Vec<_> = raw
+                    .lines()
+                    .filter(|line| line.trim().starts_with("- "))
+                    .collect();
+                if entries.len() > 24 {
+                    findings.push(format!(
+                        "WARNING MEMORY.md: {} entries exceeds budget of 24",
+                        entries.len()
+                    ));
+                }
+                for issue in crate::doctor::lint_memory_md_content(&raw) {
+                    findings.push(format!("WARNING MEMORY.md: {}", issue));
+                }
+                if findings.iter().all(|f| f.starts_with("OK")) {
+                    findings.push(format!(
+                        "OK MEMORY.md: {} entries, {} bytes",
+                        entries.len(),
+                        raw.len()
+                    ));
+                }
+            }
+            Err(err) => {
+                findings.push(format!("ERROR MEMORY.md: cannot read: {}", err));
+            }
+        }
+    } else {
+        findings.push("WARNING MEMORY.md: not present".to_string());
+    }
+
+    if findings.is_empty() {
+        findings.push("OK: no issues found".to_string());
+    }
+
+    for finding in &findings {
+        output.push_str(finding);
+        output.push('\n');
+    }
+
+    let errors = findings.iter().filter(|f| f.starts_with("ERROR")).count();
+    let warnings = findings.iter().filter(|f| f.starts_with("WARNING")).count();
+    let ok = findings.iter().filter(|f| f.starts_with("OK")).count();
+    output.push_str(&format!(
+        "Summary: {} OK, {} warning(s), {} error(s)\n",
+        ok, warnings, errors
+    ));
+
     Ok(output)
 }
 
@@ -439,8 +646,8 @@ fn list_files(dir: &Path, extension: &str) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::procedures::{mark_procedure_superseded, save_procedure, ProcedureDraft};
-    use crate::memory::trajectories::{save_trajectory, TrajectoryDraft};
+    use crate::memory::procedures::{ProcedureDraft, mark_procedure_superseded, save_procedure};
+    use crate::memory::trajectories::{TrajectoryDraft, save_trajectory};
     use tempfile::TempDir;
     use topagent_core::{Plan, TaskMode, ToolTraceStep, VerificationCommand};
 
@@ -509,9 +716,11 @@ mod tests {
         let rendered = prune_procedures(temp.path()).unwrap();
 
         assert!(rendered.contains("Removed: 1"));
-        assert!(procedures_dir
-            .join(active_file.trim_start_matches(".topagent/procedures/"))
-            .exists());
+        assert!(
+            procedures_dir
+                .join(active_file.trim_start_matches(".topagent/procedures/"))
+                .exists()
+        );
         assert!(!stale_path.exists());
     }
 
@@ -540,6 +749,107 @@ mod tests {
             .path()
             .join(local_artifact.governance.exported_file.unwrap());
         assert!(export_copy.is_file());
+    }
+
+    #[test]
+    fn test_render_memory_lint_clean_memory_and_user() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/plans")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/observations")).unwrap();
+        fs::write(
+            temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
+            "# TopAgent Memory Index\n\n- topic: arch | file: topics/arch.md | status: verified | note: layout\n",
+        )
+        .unwrap();
+        fs::write(
+            user_profile_path(temp.path()),
+            "# Operator Model\n\n## concise_final_answers\n**Category:** response_style\n**Updated:** <t:1>\n**Preference:** Keep it brief.\n",
+        )
+        .unwrap();
+
+        let output = render_memory_lint(temp.path()).unwrap();
+        assert!(output.contains("OK"));
+        assert!(!output.contains("WARNING"));
+        assert!(!output.contains("ERROR"));
+    }
+
+    #[test]
+    fn test_render_memory_lint_flags_transient_in_memory() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::write(
+            temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
+            "# TopAgent Memory Index\n\n- topic: deploy | file: topics/deploy.md | status: verified | note: task completed successfully\n",
+        )
+        .unwrap();
+
+        let output = render_memory_lint(temp.path()).unwrap();
+        assert!(output.contains("WARNING"));
+        assert!(output.contains("transient"));
+    }
+
+    #[test]
+    fn test_render_memory_lint_flags_forbidden_in_user() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::write(
+            user_profile_path(temp.path()),
+            "# Operator Model\n\n## arch\n**Category:** style\n**Updated:** <t:1>\n**Preference:** The architecture uses microservices.\n",
+        )
+        .unwrap();
+
+        let output = render_memory_lint(temp.path()).unwrap();
+        assert!(output.contains("WARNING"));
+        assert!(output.contains("forbidden"));
+    }
+
+    #[test]
+    fn test_render_memory_recall_shows_provenance() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/plans")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/observations")).unwrap();
+        fs::write(
+            temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
+            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/architecture.md | status: verified | note: runtime layout\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join(".topagent/topics/architecture.md"),
+            "# Architecture\nruntime layout details",
+        )
+        .unwrap();
+
+        let output = render_memory_recall(temp.path(), "inspect runtime architecture").unwrap();
+        assert!(output.contains("TopAgent memory recall"));
+        assert!(output.contains("runtime architecture"));
+        assert!(output.contains("Provenance"));
+    }
+
+    #[test]
+    fn test_render_memory_recall_empty_workspace() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/plans")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/observations")).unwrap();
+        fs::write(
+            temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
+            "# TopAgent Memory Index\n",
+        )
+        .unwrap();
+
+        let output = render_memory_recall(temp.path(), "something random xyz").unwrap();
+        assert!(output.contains("No memory context"));
     }
 
     fn sample_procedure(title: &str) -> ProcedureDraft {

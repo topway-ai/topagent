@@ -2,21 +2,21 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use topagent_core::{
-    load_operator_profile, BehaviorContract, InfluenceMode, Message, PreferenceCategory, Role,
-    RunTrustContext, SourceKind, SourceLabel,
+    BehaviorContract, InfluenceMode, Message, PreferenceCategory, Role, RunTrustContext,
+    SourceKind, SourceLabel, load_operator_profile,
 };
 use tracing::warn;
 
 use super::memory_consolidation::{
-    parse_saved_lesson, parse_saved_plan, render_saved_lesson_excerpt, render_saved_plan_excerpt,
-    MemoryIndexEntry, MemoryIndexEntryKind,
+    MemoryIndexEntry, MemoryIndexEntryKind, parse_saved_lesson, parse_saved_plan,
+    render_saved_lesson_excerpt, render_saved_plan_excerpt,
 };
 use super::observation;
-use super::procedures::{parse_saved_procedure, render_saved_procedure_excerpt, ProcedureStatus};
+use super::procedures::{ProcedureStatus, parse_saved_procedure, render_saved_procedure_excerpt};
 use super::{
-    allowed_memory_prefix, compact_text_line, display_memory_file, limit_text_block,
-    looks_like_recall_query, memory_contract, normalize_memory_file, score_text_relevance,
-    tokenize, MemoryPrompt, MemoryPromptStats, WorkspaceMemory, MEMORY_ROOT_DIR,
+    MEMORY_ROOT_DIR, MemoryPrompt, MemoryPromptStats, WorkspaceMemory, allowed_memory_prefix,
+    compact_text_line, display_memory_file, limit_text_block, looks_like_recall_query,
+    memory_contract, normalize_memory_file, score_text_relevance, tokenize,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -24,12 +24,14 @@ struct TopicLoad {
     section: Option<String>,
     loaded_items: Vec<String>,
     loaded_files: Vec<String>,
+    provenance_notes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct TranscriptSection {
     section: String,
     snippet_count: usize,
+    provenance_notes: Vec<String>,
 }
 
 pub(super) fn build_prompt(
@@ -100,6 +102,9 @@ pub(super) fn build_prompt(
         stats
             .loaded_procedure_files
             .extend(procedure_load.loaded_files);
+        stats
+            .provenance_notes
+            .extend(procedure_load.provenance_notes);
         prompt.push_str("\n### Relevant Procedures\n");
         prompt.push_str(&procedure_section);
         trust_context.add_source(SourceLabel::advisory(
@@ -111,6 +116,7 @@ pub(super) fn build_prompt(
 
     if let Some(durable_section) = durable_load.section {
         stats.loaded_items.extend(durable_load.loaded_items);
+        stats.provenance_notes.extend(durable_load.provenance_notes);
         prompt.push_str("\n### Curated Durable Notes\n");
         prompt.push_str(&durable_section);
         trust_context.add_source(SourceLabel::advisory(
@@ -123,6 +129,9 @@ pub(super) fn build_prompt(
     if let Some(transcript_section) = transcript_section {
         stats.transcript_snippets = transcript_section.snippet_count;
         stats.transcript_prompt_bytes = transcript_section.section.len();
+        stats
+            .provenance_notes
+            .extend(transcript_section.provenance_notes);
         prompt.push_str("\n### Transcript Evidence\n");
         prompt.push_str(&contract.render_memory_transcript_preamble());
         prompt.push_str(&transcript_section.section);
@@ -139,7 +148,8 @@ pub(super) fn build_prompt(
     let prompt = prompt.trim_end().to_string();
     stats.total_prompt_bytes = prompt.len();
     stats.observation_hints_used = retrieval.candidates.len();
-    stats.provenance_notes = retrieval.provenance_notes;
+    stats.provenance_notes.extend(retrieval.provenance_notes);
+    stats.provenance_notes.truncate(8);
 
     Ok(MemoryPrompt {
         prompt: Some(prompt),
@@ -213,6 +223,7 @@ fn render_operator_section(
         section: (!section.is_empty()).then_some(section),
         loaded_items,
         loaded_files: Vec::new(),
+        provenance_notes: Vec::new(),
     })
 }
 
@@ -228,23 +239,27 @@ fn render_procedure_section(
         .filter(|entry| entry.kind() == MemoryIndexEntryKind::Procedure)
         .filter_map(|entry| {
             let mut score = score_entry_relevance(instruction, entry);
-            if is_boosted(entry, boosted_paths) {
+            let boosted = is_boosted(entry, boosted_paths);
+            if boosted {
                 score += 3;
             }
-            (score > 0).then_some((score, entry))
+            (score > 0).then_some((score, boosted, entry))
         })
         .collect::<Vec<_>>();
-    scored_entries.sort_by(|(left_score, left_entry), (right_score, right_entry)| {
-        right_score
-            .cmp(left_score)
-            .then_with(|| left_entry.topic.cmp(&right_entry.topic))
-    });
+    scored_entries.sort_by(
+        |(left_score, _, left_entry), (right_score, _, right_entry)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| left_entry.topic.cmp(&right_entry.topic))
+        },
+    );
 
     let mut section = String::new();
     let mut loaded_items = Vec::new();
     let mut loaded_files = Vec::new();
+    let mut provenance_notes = Vec::new();
 
-    for (_, entry) in scored_entries
+    for (score, boosted, entry) in scored_entries
         .into_iter()
         .take(contract.memory.max_procedures_to_load)
     {
@@ -279,6 +294,21 @@ fn render_procedure_section(
             display_memory_file(&entry.file),
             excerpt
         ));
+
+        let mut note = format!(
+            "procedure | {} | {} | advisory | matched: score {}",
+            procedure.filename, procedure.title, score
+        );
+        if boosted {
+            note.push_str(" +observation boost");
+        }
+        if procedure.reuse_count > 0 {
+            note.push_str(&format!(" | reuse: {}", procedure.reuse_count));
+        }
+        if provenance_notes.len() < 4 {
+            provenance_notes.push(compact_provenance_note(&note));
+        }
+
         loaded_items.push(procedure.title);
         loaded_files.push(format!(".topagent/procedures/{}", procedure.filename));
     }
@@ -287,6 +317,7 @@ fn render_procedure_section(
         section: (!section.is_empty()).then_some(section),
         loaded_items,
         loaded_files,
+        provenance_notes,
     })
 }
 
@@ -302,22 +333,26 @@ fn render_durable_notes_section(
         .filter(|entry| entry.kind() != MemoryIndexEntryKind::Procedure)
         .filter_map(|entry| {
             let mut score = score_entry_relevance(instruction, entry);
-            if is_boosted(entry, boosted_paths) {
+            let boosted = is_boosted(entry, boosted_paths);
+            if boosted {
                 score += 3;
             }
-            (score > 0).then_some((score, entry))
+            (score > 0).then_some((score, boosted, entry))
         })
         .collect::<Vec<_>>();
-    scored_entries.sort_by(|(left_score, left_entry), (right_score, right_entry)| {
-        right_score
-            .cmp(left_score)
-            .then_with(|| left_entry.topic.cmp(&right_entry.topic))
-    });
+    scored_entries.sort_by(
+        |(left_score, _, left_entry), (right_score, _, right_entry)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| left_entry.topic.cmp(&right_entry.topic))
+        },
+    );
 
     let mut section = String::new();
     let mut loaded_items = Vec::new();
+    let mut provenance_notes = Vec::new();
 
-    for (_, entry) in scored_entries
+    for (score, boosted, entry) in scored_entries
         .into_iter()
         .take(contract.memory.max_topics_to_load)
     {
@@ -343,6 +378,11 @@ fn render_durable_notes_section(
             section.push('\n');
         }
 
+        let kind_label = match entry.kind() {
+            MemoryIndexEntryKind::Lesson => "lesson",
+            MemoryIndexEntryKind::Plan => "plan",
+            _ => "topic",
+        };
         section.push_str(&format!(
             "[{}] {} ({})\n{}\n",
             entry.status,
@@ -351,12 +391,24 @@ fn render_durable_notes_section(
             excerpt
         ));
         loaded_items.push(entry.topic.clone());
+
+        let mut note = format!(
+            "{} | {} | {} | advisory | matched: score {}",
+            kind_label, entry.file, entry.topic, score
+        );
+        if boosted {
+            note.push_str(" +observation boost");
+        }
+        if provenance_notes.len() < 4 {
+            provenance_notes.push(compact_provenance_note(&note));
+        }
     }
 
     Ok(TopicLoad {
         section: (!section.is_empty()).then_some(section),
         loaded_items,
         loaded_files: Vec::new(),
+        provenance_notes,
     })
 }
 
@@ -527,6 +579,15 @@ fn render_transcript_section(
     (snippet_count > 0).then_some(TranscriptSection {
         section,
         snippet_count,
+        provenance_notes: vec![compact_provenance_note(&format!(
+            "transcript | prior | low | {} snippet(s) | matched: {}",
+            snippet_count,
+            if recall_like {
+                "recall-like query"
+            } else {
+                "keyword overlap"
+            }
+        ))],
     })
 }
 
@@ -617,4 +678,17 @@ fn score_entry_relevance(instruction: &str, entry: &MemoryIndexEntry) -> usize {
                 .iter()
                 .any(|tag| matches!(tag.as_str(), "procedure" | "workflow" | "playbook")),
         )
+}
+
+const MAX_PROVENANCE_NOTE_CHARS: usize = 200;
+
+fn compact_provenance_note(note: &str) -> String {
+    if note.len() <= MAX_PROVENANCE_NOTE_CHARS {
+        note.to_string()
+    } else {
+        format!(
+            "{}...",
+            &note[..MAX_PROVENANCE_NOTE_CHARS.saturating_sub(3)]
+        )
+    }
 }

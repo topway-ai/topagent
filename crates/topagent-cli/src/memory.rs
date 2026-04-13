@@ -6,18 +6,18 @@ mod promotion;
 pub(crate) mod trajectories;
 
 pub(crate) use self::procedures::{
-    disable_procedure, parse_saved_procedure, ParsedProcedure, ProcedureStatus,
+    ParsedProcedure, ProcedureStatus, disable_procedure, parse_saved_procedure,
 };
 pub(crate) use self::promotion::promote_verified_task;
 pub(crate) use self::trajectories::{
+    TRAJECTORY_EXPORTS_RELATIVE_DIR, TrajectoryReviewState,
     export_trajectory as write_exported_trajectory, mark_trajectory_ready, parse_saved_trajectory,
-    TrajectoryReviewState, TRAJECTORY_EXPORTS_RELATIVE_DIR,
 };
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use topagent_core::{
-    migrate_legacy_operator_preferences, BehaviorContract, Message, RunTrustContext,
+    BehaviorContract, Message, RunTrustContext, migrate_legacy_operator_preferences,
 };
 
 use crate::managed_files::write_managed_file;
@@ -335,16 +335,16 @@ fn artifact_filename(path: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::procedures::{save_procedure, ProcedureDraft};
+    use super::procedures::{ProcedureDraft, save_procedure};
     use super::promotion::TaskPromotionReport;
     use super::*;
     use std::fs;
     use tempfile::TempDir;
     use topagent_core::{
-        tools::default_tools, Agent, ExecutionContext, InfluenceMode, Message, Plan,
-        ProviderResponse, Role, RunTrustContext, RuntimeOptions, ScriptedProvider, SecretRegistry,
-        SourceKind, SourceLabel, TaskMode, TaskResult, ToolTraceStep, VerificationCommand,
-        WorkspaceCheckpointStore,
+        Agent, ExecutionContext, InfluenceMode, Message, Plan, ProviderResponse, Role,
+        RunTrustContext, RuntimeOptions, ScriptedProvider, SecretRegistry, SourceKind, SourceLabel,
+        TaskMode, TaskResult, ToolTraceStep, VerificationCommand, WorkspaceCheckpointStore,
+        tools::default_tools,
     };
 
     fn write_memory_index(workspace: &Path, body: &str) {
@@ -693,17 +693,21 @@ path = "src/lib.rs"
             )
             .unwrap();
 
-        assert!(prompt
-            .operator_prompt
-            .as_deref()
-            .unwrap()
-            .contains("concise final answers"));
+        assert!(
+            prompt
+                .operator_prompt
+                .as_deref()
+                .unwrap()
+                .contains("concise final answers")
+        );
         assert!(prompt.prompt.as_deref().unwrap().contains("# Architecture"));
-        assert!(!prompt
-            .prompt
-            .as_deref()
-            .unwrap()
-            .contains("concise final answers"));
+        assert!(
+            !prompt
+                .prompt
+                .as_deref()
+                .unwrap()
+                .contains("concise final answers")
+        );
     }
 
     #[test]
@@ -723,11 +727,13 @@ path = "src/lib.rs"
             .unwrap();
 
         assert!(prompt.trust_context.has_low_trust_action_influence());
-        assert!(prompt
-            .trust_context
-            .low_trust_action_summary(2)
-            .unwrap_or_default()
-            .contains("prior transcript"));
+        assert!(
+            prompt
+                .trust_context
+                .low_trust_action_summary(2)
+                .unwrap_or_default()
+                .contains("prior transcript")
+        );
     }
 
     #[test]
@@ -759,11 +765,13 @@ path = "src/lib.rs"
                 <= memory_contract().memory.max_transcript_prompt_bytes
         );
         assert_eq!(prompt.trust_context.low_trust_sources().len(), 1);
-        assert!(prompt
-            .trust_context
-            .low_trust_action_summary(2)
-            .unwrap_or_default()
-            .contains("prior transcript"));
+        assert!(
+            prompt
+                .trust_context
+                .low_trust_action_summary(2)
+                .unwrap_or_default()
+                .contains("prior transcript")
+        );
     }
 
     #[test]
@@ -922,11 +930,13 @@ path = "src/lib.rs"
         assert!(
             grown.stats.index_prompt_bytes <= memory_contract().memory.max_index_prompt_bytes + 80
         );
-        assert!(!grown
-            .prompt
-            .as_deref()
-            .unwrap_or_default()
-            .contains("ignored trajectory"));
+        assert!(
+            !grown
+                .prompt
+                .as_deref()
+                .unwrap_or_default()
+                .contains("ignored trajectory")
+        );
     }
 
     #[test]
@@ -1002,10 +1012,12 @@ path = "src/lib.rs"
         assert!(report.lesson_file.is_some());
         assert!(report.procedure_file.is_none());
         assert!(report.trajectory_file.is_some());
-        assert!(report
-            .notes
-            .iter()
-            .any(|note| note.contains("Procedure promotion blocked")));
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("Procedure promotion blocked"))
+        );
     }
 
     #[test]
@@ -1146,10 +1158,12 @@ path = "src/lib.rs"
         assert_eq!(reused.status, ProcedureStatus::Active);
         assert_eq!(reused.reuse_count, 1);
         assert_eq!(reused.revision_count, 0);
-        assert!(prompt
-            .stats
-            .loaded_procedure_files
-            .contains(&first_procedure));
+        assert!(
+            prompt
+                .stats
+                .loaded_procedure_files
+                .contains(&first_procedure)
+        );
     }
 
     #[test]
@@ -1171,6 +1185,12 @@ path = "src/lib.rs"
             &[],
         )
         .unwrap();
+
+        let procedure_path = temp.path().join(first.procedure_file.as_deref().unwrap());
+        for _ in 0..3 {
+            crate::memory::procedures::record_procedure_reuse(&procedure_path, None).unwrap();
+        }
+
         let prompt = memory
             .build_prompt("repair approval mailbox compaction workflow", None)
             .unwrap();
@@ -1194,12 +1214,14 @@ path = "src/lib.rs"
             Some(".topagent/procedures/".to_string() + &refined.filename)
         );
         assert_eq!(refined.status, ProcedureStatus::Active);
-        assert_eq!(refined.reuse_count, 1);
+        assert_eq!(refined.reuse_count, 4);
         assert_eq!(refined.revision_count, 1);
-        assert!(refined
-            .steps
-            .iter()
-            .any(|step| step.contains("Clear stale transcript state")));
+        assert!(
+            refined
+                .steps
+                .iter()
+                .any(|step| step.contains("Clear stale transcript state"))
+        );
     }
 
     #[test]
@@ -1221,6 +1243,12 @@ path = "src/lib.rs"
             &[],
         )
         .unwrap();
+
+        let procedure_path = temp.path().join(first.procedure_file.as_deref().unwrap());
+        for _ in 0..2 {
+            crate::memory::procedures::record_procedure_reuse(&procedure_path, None).unwrap();
+        }
+
         let prompt = memory
             .build_prompt("repair approval mailbox compaction workflow", None)
             .unwrap();
@@ -1318,18 +1346,24 @@ path = "src/lib.rs"
             .build_prompt("repair approval mailbox compaction and restore flow", None)
             .unwrap();
         assert_eq!(prompt.stats.loaded_items.len(), 2);
-        assert!(prompt
-            .stats
-            .loaded_items
-            .contains(&"Approval mailbox compaction playbook".to_string()));
-        assert!(prompt
-            .stats
-            .loaded_items
-            .contains(&"Approval mailbox restore flow".to_string()));
-        assert!(!prompt
-            .stats
-            .loaded_items
-            .contains(&"Operator response tone guide".to_string()));
+        assert!(
+            prompt
+                .stats
+                .loaded_items
+                .contains(&"Approval mailbox compaction playbook".to_string())
+        );
+        assert!(
+            prompt
+                .stats
+                .loaded_items
+                .contains(&"Approval mailbox restore flow".to_string())
+        );
+        assert!(
+            !prompt
+                .stats
+                .loaded_items
+                .contains(&"Operator response tone guide".to_string())
+        );
     }
 
     #[test]
@@ -1356,6 +1390,139 @@ path = "src/lib.rs"
         let rendered = prompt.prompt.unwrap();
         assert!(rendered.contains("New Approval Mailbox Procedure"));
         assert!(!rendered.contains("Old Approval Mailbox Procedure"));
+    }
+
+    #[test]
+    fn test_build_prompt_produces_provenance_notes_for_recalled_procedure() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        memory.ensure_layout().unwrap();
+
+        let draft = ProcedureDraft {
+            title: "Approval mailbox compaction playbook".to_string(),
+            when_to_use: "Use for approval mailbox compaction work.".to_string(),
+            prerequisites: vec!["Stay within the workspace.".to_string()],
+            steps: vec![
+                "Inspect the mailbox.".to_string(),
+                "Compact safely.".to_string(),
+            ],
+            pitfalls: vec!["Do not drop pending approvals.".to_string()],
+            verification: "cargo test -p topagent-core approval".to_string(),
+            source_task: Some("approval mailbox compaction".to_string()),
+            source_lesson: None,
+            source_trajectory: None,
+            supersedes: None,
+        };
+        save_procedure(&memory.procedures_dir, &draft).unwrap();
+        memory.consolidate_memory_if_needed().unwrap();
+
+        let prompt = memory
+            .build_prompt("repair approval mailbox compaction", None)
+            .unwrap();
+
+        let proc_notes: Vec<_> = prompt
+            .stats
+            .provenance_notes
+            .iter()
+            .filter(|n| n.starts_with("procedure |"))
+            .collect();
+        assert!(!proc_notes.is_empty());
+        let note = proc_notes[0];
+        assert!(note.contains("advisory"));
+        assert!(note.contains("matched: score"));
+        assert!(note.contains("Approval mailbox compaction playbook"));
+        assert!(note.contains(".md"));
+    }
+
+    #[test]
+    fn test_build_prompt_produces_provenance_notes_for_recalled_transcript() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let messages = vec![
+            Message::user("Remember this copied issue body."),
+            Message::assistant("Stored the copied issue body."),
+        ];
+
+        let prompt = memory
+            .build_prompt(
+                "what copied issue body did I mention earlier?",
+                Some(&messages),
+            )
+            .unwrap();
+
+        let transcript_notes: Vec<_> = prompt
+            .stats
+            .provenance_notes
+            .iter()
+            .filter(|n| n.starts_with("transcript |"))
+            .collect();
+        assert!(!transcript_notes.is_empty());
+        let note = transcript_notes[0];
+        assert!(note.contains("low"));
+        assert!(note.contains("snippet"));
+        assert!(note.contains("prior"));
+    }
+
+    #[test]
+    fn test_build_prompt_produces_provenance_notes_for_recalled_durable_notes() {
+        let temp = TempDir::new().unwrap();
+        write_memory_index(
+            temp.path(),
+            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/architecture.md | status: verified | note: runtime details\n",
+        );
+        write_topic(
+            temp.path(),
+            "architecture.md",
+            "# Architecture\nruntime details",
+        );
+
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let prompt = memory
+            .build_prompt("inspect runtime architecture", None)
+            .unwrap();
+
+        let topic_notes: Vec<_> = prompt
+            .stats
+            .provenance_notes
+            .iter()
+            .filter(|n| n.starts_with("topic |"))
+            .collect();
+        assert!(!topic_notes.is_empty());
+        let note = topic_notes[0];
+        assert!(note.contains("advisory"));
+        assert!(note.contains("matched: score"));
+        assert!(note.contains("topics/architecture.md"));
+    }
+
+    #[test]
+    fn test_provenance_notes_stay_bounded() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        memory.ensure_layout().unwrap();
+
+        for i in 0..5 {
+            let draft = ProcedureDraft {
+                title: format!("Playbook {} with long name", i),
+                when_to_use: "Use for work.".to_string(),
+                prerequisites: vec!["Stay within the workspace.".to_string()],
+                steps: vec!["Step one.".to_string()],
+                pitfalls: vec!["Pitfall one.".to_string()],
+                verification: "cargo test".to_string(),
+                source_task: Some(format!("playbook {}", i)),
+                source_lesson: None,
+                source_trajectory: None,
+                supersedes: None,
+            };
+            save_procedure(&memory.procedures_dir, &draft).unwrap();
+        }
+        memory.consolidate_memory_if_needed().unwrap();
+
+        let prompt = memory.build_prompt("repair playbook work", None).unwrap();
+
+        assert!(prompt.stats.provenance_notes.len() <= 8);
+        for note in &prompt.stats.provenance_notes {
+            assert!(note.len() <= 200);
+        }
     }
 
     #[test]
@@ -1531,17 +1698,21 @@ path = "src/lib.rs"
         .unwrap();
 
         assert!(task_result.final_verification_passed());
-        assert!(task_result
-            .source_labels()
-            .iter()
-            .any(|label| label.kind == SourceKind::TranscriptPrior));
+        assert!(
+            task_result
+                .source_labels()
+                .iter()
+                .any(|label| label.kind == SourceKind::TranscriptPrior)
+        );
         assert!(report.lesson_file.is_some());
         assert!(report.procedure_file.is_none());
         assert!(report.trajectory_file.is_some());
-        assert!(report
-            .notes
-            .iter()
-            .any(|note| note.contains("Procedure promotion blocked")));
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("Procedure promotion blocked"))
+        );
     }
 
     #[test]
@@ -1567,22 +1738,26 @@ path = "src/lib.rs"
             .run(&write_ctx, "update src/lib.rs and verify")
             .unwrap();
         assert!(first_result.contains("verified update"));
-        assert!(checkpoint_store
-            .latest_status()
-            .unwrap()
-            .expect("checkpoint should exist")
-            .captured_paths
-            .iter()
-            .any(|path| path == "src/lib.rs"));
+        assert!(
+            checkpoint_store
+                .latest_status()
+                .unwrap()
+                .expect("checkpoint should exist")
+                .captured_paths
+                .iter()
+                .any(|path| path == "src/lib.rs")
+        );
 
         let restore_report = checkpoint_store
             .restore_latest()
             .unwrap()
             .expect("restore should succeed");
-        assert!(restore_report
-            .restored_files
-            .iter()
-            .any(|path| path == "src/lib.rs"));
+        assert!(
+            restore_report
+                .restored_files
+                .iter()
+                .any(|path| path == "src/lib.rs")
+        );
         assert_eq!(
             fs::read_to_string(temp.path().join("src/lib.rs")).unwrap(),
             "pub fn answer() -> u32 {\n    42\n}\n"
@@ -1740,7 +1915,12 @@ path = "src/lib.rs"
             .unwrap();
 
         assert!(prompt.stats.observation_hints_used > 0);
-        assert!(prompt.stats.loaded_items.contains(&"approval-flow".to_string()));
+        assert!(
+            prompt
+                .stats
+                .loaded_items
+                .contains(&"approval-flow".to_string())
+        );
     }
 
     #[test]
@@ -1773,9 +1953,7 @@ path = "src/lib.rs"
         std::fs::write(obs_dir.join("obs-1-with-trajectory.json"), json).unwrap();
 
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
-        let prompt = memory
-            .build_prompt("fix parsing bug", None)
-            .unwrap();
+        let prompt = memory.build_prompt("fix parsing bug", None).unwrap();
 
         // Trajectory content must not appear in the prompt
         if let Some(ref rendered) = prompt.prompt {
@@ -1820,8 +1998,8 @@ path = "src/lib.rs"
         let json = serde_json::to_string_pretty(&record).unwrap();
         std::fs::write(obs_dir.join("obs-1-low-trust.json"), json).unwrap();
 
-        let retrieval = observation::progressive_retrieve(&obs_dir, "audit secret handling", 8, 4)
-            .unwrap();
+        let retrieval =
+            observation::progressive_retrieve(&obs_dir, "audit secret handling", 8, 4).unwrap();
 
         // Low-trust observation is retrieved but its artifacts are not in boost paths
         assert_eq!(retrieval.candidates.len(), 1);

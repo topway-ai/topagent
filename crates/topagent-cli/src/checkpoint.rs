@@ -1,6 +1,6 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::path::{Path, PathBuf};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use topagent_core::{WorkspaceCheckpointRestoreReport, WorkspaceCheckpointStore};
 
 use crate::config::resolve_workspace_path;
@@ -165,7 +165,11 @@ mod tests {
         std::fs::create_dir_all(&lessons_dir).unwrap();
         std::fs::create_dir_all(&procedures_dir).unwrap();
         std::fs::create_dir_all(&observations_dir).unwrap();
-        std::fs::write(lessons_dir.join("lesson-1.md"), "# Lesson 1\nImportant fact").unwrap();
+        std::fs::write(
+            lessons_dir.join("lesson-1.md"),
+            "# Lesson 1\nImportant fact",
+        )
+        .unwrap();
         std::fs::write(
             procedures_dir.join("proc-1.md"),
             "# Procedure 1\nStep-by-step",
@@ -177,7 +181,11 @@ mod tests {
         )
         .unwrap();
         std::fs::write(topagent_dir.join("MEMORY.md"), "- lesson-1: important fact").unwrap();
-        std::fs::write(topagent_dir.join("USER.md"), "Operator prefers concise replies").unwrap();
+        std::fs::write(
+            topagent_dir.join("USER.md"),
+            "Operator prefers concise replies",
+        )
+        .unwrap();
 
         // Capture only a workspace file, not learning artifacts
         std::fs::write(workspace.join("src.rs"), "fn main() {}").unwrap();

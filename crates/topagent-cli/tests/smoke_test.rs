@@ -243,6 +243,39 @@ fn test_cli_memory_help_mentions_status() {
 }
 
 #[test]
+fn test_cli_memory_help_mentions_lint() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.args(["memory", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("lint"))
+        .stdout(predicates::str::contains("recall"));
+}
+
+#[test]
+fn test_cli_memory_lint_clean_workspace_ok() {
+    let temp = TempDir::new().unwrap();
+    std::fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+    std::fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+    std::fs::create_dir_all(temp.path().join(".topagent/plans")).unwrap();
+    std::fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
+    std::fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
+    std::fs::create_dir_all(temp.path().join(".topagent/observations")).unwrap();
+    std::fs::write(
+        temp.path().join(".topagent/MEMORY.md"),
+        "# TopAgent Memory Index\n\n- topic: arch | file: topics/arch.md | status: verified | note: layout\n",
+    )
+    .unwrap();
+    let (_isolated, mut cmd) = isolated_topagent_command();
+    cmd.arg("--workspace")
+        .arg(temp.path())
+        .args(["memory", "lint"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("OK"));
+}
+
+#[test]
 fn test_cli_procedure_help_mentions_management_commands() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
     cmd.args(["procedure", "--help"])

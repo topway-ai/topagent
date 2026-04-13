@@ -8,12 +8,13 @@ use topagent_core::{
 
 use super::observation;
 use super::procedures::{
-    evaluate_procedure_revision, find_matching_active_procedure, find_matching_loaded_procedure,
-    mark_procedure_superseded, record_procedure_reuse, revise_procedure, save_procedure,
-    set_procedure_source_trajectory, ProcedureDraft, ProcedureRevisionAction,
+    ProcedureDraft, ProcedureRevisionAction, evaluate_procedure_revision,
+    find_matching_active_procedure, find_matching_loaded_procedure, mark_procedure_superseded,
+    procedure_revision_quality_gate, record_procedure_reuse, revise_procedure, save_procedure,
+    set_procedure_source_trajectory,
 };
-use super::trajectories::{save_trajectory, TrajectoryDraft};
-use super::{compact_text_line, memory_contract, WorkspaceMemory};
+use super::trajectories::{TrajectoryDraft, save_trajectory};
+use super::{WorkspaceMemory, compact_text_line, memory_contract};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct TaskPromotionReport {
@@ -108,28 +109,57 @@ pub(crate) fn promote_verified_task(
                     .map(|procedure| format!(".topagent/procedures/{}", procedure.filename)),
             )?;
             match reused {
-                Some(existing) => match evaluate_procedure_revision(&existing, &procedure_draft) {
-                    ProcedureRevisionAction::Keep => {
-                        report.procedure_file = record_procedure_reuse(&existing.path, None)?
+                Some(existing) => {
+                    let raw_action = evaluate_procedure_revision(&existing, &procedure_draft);
+                    let action = procedure_revision_quality_gate(
+                        &existing,
+                        raw_action,
+                        trust_context.has_low_trust_action_influence(),
+                    );
+                    if action != raw_action {
+                        report.notes.push(format!(
+                            "Procedure revision gate changed {} to {}: reuse {} | {}",
+                            match raw_action {
+                                ProcedureRevisionAction::Keep => "keep",
+                                ProcedureRevisionAction::Refine => "refine",
+                                ProcedureRevisionAction::Supersede => "supersede",
+                            },
+                            match action {
+                                ProcedureRevisionAction::Keep => "keep",
+                                ProcedureRevisionAction::Refine => "refine",
+                                ProcedureRevisionAction::Supersede => "supersede",
+                            },
+                            existing.reuse_count,
+                            if trust_context.has_low_trust_action_influence() {
+                                "low-trust influence"
+                            } else {
+                                "below threshold"
+                            },
+                        ));
+                    }
+                    match action {
+                        ProcedureRevisionAction::Keep => {
+                            report.procedure_file = record_procedure_reuse(&existing.path, None)?
+                                .or(Some(format!(".topagent/procedures/{}", existing.filename)));
+                        }
+                        ProcedureRevisionAction::Refine => {
+                            report.procedure_file = revise_procedure(
+                                &existing.path,
+                                &procedure_draft,
+                                report.lesson_file.as_deref(),
+                                None,
+                            )?
                             .or(Some(format!(".topagent/procedures/{}", existing.filename)));
+                        }
+                        ProcedureRevisionAction::Supersede => {
+                            let (procedure_file, _path) =
+                                save_procedure(&memory.procedures_dir, &procedure_draft)?;
+                            report.procedure_file = Some(procedure_file.clone());
+                            report.superseded_procedure_file =
+                                mark_procedure_superseded(&existing.path, &procedure_file)?;
+                        }
                     }
-                    ProcedureRevisionAction::Refine => {
-                        report.procedure_file = revise_procedure(
-                            &existing.path,
-                            &procedure_draft,
-                            report.lesson_file.as_deref(),
-                            None,
-                        )?
-                        .or(Some(format!(".topagent/procedures/{}", existing.filename)));
-                    }
-                    ProcedureRevisionAction::Supersede => {
-                        let (procedure_file, _path) =
-                            save_procedure(&memory.procedures_dir, &procedure_draft)?;
-                        report.procedure_file = Some(procedure_file.clone());
-                        report.superseded_procedure_file =
-                            mark_procedure_superseded(&existing.path, &procedure_file)?;
-                    }
-                },
+                }
                 None => {
                     if let Some(existing) = find_matching_active_procedure(memory, instruction)? {
                         report.procedure_file =
@@ -289,7 +319,10 @@ fn build_distilled_what_learned(
             Some(command) => format!(
                 "The task was only complete after rerunning `{command}` to a passing result; keep that final pass as the completion gate."
             ),
-            None => "The task was only complete after rerunning the verification to a passing result.".to_string(),
+            None => {
+                "The task was only complete after rerunning the verification to a passing result."
+                    .to_string()
+            }
         };
     }
 

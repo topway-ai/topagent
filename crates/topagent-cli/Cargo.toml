@@ -20,6 +20,7 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 time = { version = "0.3", features = ["formatting"] }
+toml = "0.8"
 
 [dev-dependencies]
 assert_cmd = "2"

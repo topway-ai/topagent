@@ -2,6 +2,7 @@
 // Run: topagent "task" or topagent telegram
 mod checkpoint;
 mod config;
+mod doctor;
 mod learning;
 mod managed_files;
 mod memory;
@@ -17,22 +18,23 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
 use topagent_core::{
-    context::ExecutionContext, ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest,
-    CancellationToken, ProgressCallback, ProgressUpdate, WorkspaceCheckpointStore,
+    ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest, CancellationToken, ProgressCallback,
+    ProgressUpdate, WorkspaceCheckpointStore, context::ExecutionContext,
 };
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::checkpoint::run_checkpoint_command;
 use crate::config::{
-    build_route_from_resolved, build_runtime_options, load_persisted_telegram_defaults,
-    require_openrouter_api_key, resolve_runtime_model_selection, resolve_workspace_path, CliParams,
+    CliParams, build_route_from_resolved, build_runtime_options, load_persisted_telegram_defaults,
+    require_openrouter_api_key, resolve_runtime_model_selection, resolve_workspace_path,
 };
+use crate::doctor::run_doctor;
 use crate::learning::{
     run_memory_command, run_observation_command, run_procedure_command, run_trajectory_command,
 };
@@ -156,6 +158,8 @@ enum Commands {
         #[command(subcommand)]
         command: CheckpointCommands,
     },
+    /// Run health diagnostics on TopAgent setup, config, workspace, and tools.
+    Doctor,
     /// Remove the installed TopAgent setup and, when applicable, the installed binary.
     Uninstall,
     #[command(hide = true)]
@@ -209,6 +213,13 @@ pub(crate) enum CheckpointCommands {
 pub(crate) enum MemoryCommands {
     /// Show workspace learning artifact status.
     Status,
+    /// Lint USER.md and MEMORY.md for size, format, and content policy issues.
+    Lint,
+    /// Dry-run memory retrieval for an instruction and show recall provenance.
+    Recall {
+        #[arg(help = "Instruction to test recall for")]
+        instruction: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -246,7 +257,11 @@ pub(crate) enum TrajectoryCommands {
 pub(crate) enum ObservationCommands {
     /// List recent observation records.
     List {
-        #[arg(long, default_value = "20", help = "Maximum number of observations to show")]
+        #[arg(
+            long,
+            default_value = "20",
+            help = "Maximum number of observations to show"
+        )]
         limit: usize,
     },
     /// Show one observation record in detail.
@@ -273,11 +288,14 @@ fn main() -> Result<()> {
     match command {
         Some(Commands::Install) => run_install(params),
         Some(Commands::Status) => run_status(params),
+        Some(Commands::Doctor) => run_doctor(params),
         Some(Commands::Model { command }) => run_model_command(command, params),
         Some(Commands::Memory { command }) => run_memory_command(command, params.workspace),
         Some(Commands::Procedure { command }) => run_procedure_command(command, params.workspace),
         Some(Commands::Trajectory { command }) => run_trajectory_command(command, params.workspace),
-        Some(Commands::Observation { command }) => run_observation_command(command, params.workspace),
+        Some(Commands::Observation { command }) => {
+            run_observation_command(command, params.workspace)
+        }
         Some(Commands::Checkpoint { command }) => run_checkpoint_command(command, params.workspace),
         Some(Commands::Uninstall) => run_uninstall(),
         Some(Commands::Service { command }) => run_service_command(command, params),
@@ -518,9 +536,11 @@ mod tests {
         let approved = prompt_for_cli_approval_with_io(&request, &mut reader, &mut output).unwrap();
 
         assert!(approved);
-        assert!(String::from_utf8(output)
-            .unwrap()
-            .contains("Approve this action?"));
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("Approve this action?")
+        );
     }
 
     #[test]

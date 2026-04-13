@@ -4,10 +4,10 @@ use std::process::{Command, Output};
 
 use crate::config::*;
 use crate::managed_files::*;
-use crate::operational_paths::{service_paths, ServicePaths};
+use crate::operational_paths::{ServicePaths, service_paths};
 
 use super::managed_env::render_service_env_file;
-use super::state::{load_control_plane_state, load_service_probe, ServiceStatusSnapshot};
+use super::state::{ServiceStatusSnapshot, load_control_plane_state, load_service_probe};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallRootKind {
@@ -389,7 +389,7 @@ fn cleanup_current_binary_for_uninstall() -> BinaryCleanupOutcome {
             return BinaryCleanupOutcome::Preserved(format!(
                 "installed binary left in place (could not determine current binary path: {})",
                 err
-            ))
+            ));
         }
     };
 
@@ -404,7 +404,7 @@ fn cleanup_binary_for_uninstall_at_path(exe: &Path) -> BinaryCleanupOutcome {
                 "installed binary left in place (could not resolve {}: {})",
                 exe.display(),
                 err
-            ))
+            ));
         }
     };
 
@@ -647,11 +647,7 @@ fn is_enabled_state(state: Option<&str>) -> bool {
 }
 
 fn yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
+    if value { "yes" } else { "no" }
 }
 
 #[cfg(test)]

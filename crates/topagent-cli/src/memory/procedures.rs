@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use topagent_core::BehaviorContract;
 
-use super::{artifact_filename, compact_text_line, score_text_relevance, WorkspaceMemory};
+use super::{WorkspaceMemory, artifact_filename, compact_text_line, score_text_relevance};
 use crate::managed_files::write_managed_file;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -402,6 +402,29 @@ pub(crate) fn evaluate_procedure_revision(
     }
 }
 
+const REFINED_REUSE_THRESHOLD: u32 = 3;
+const SUPERSEDED_REUSE_THRESHOLD: u32 = 2;
+
+pub(crate) fn procedure_revision_quality_gate(
+    existing: &ParsedProcedure,
+    action: ProcedureRevisionAction,
+    has_low_trust_influence: bool,
+) -> ProcedureRevisionAction {
+    if has_low_trust_influence {
+        return ProcedureRevisionAction::Keep;
+    }
+
+    match action {
+        ProcedureRevisionAction::Refine if existing.reuse_count < REFINED_REUSE_THRESHOLD => {
+            ProcedureRevisionAction::Keep
+        }
+        ProcedureRevisionAction::Supersede if existing.reuse_count < SUPERSEDED_REUSE_THRESHOLD => {
+            ProcedureRevisionAction::Keep
+        }
+        other => other,
+    }
+}
+
 fn render_procedure_markdown(procedure: &ParsedProcedure) -> String {
     let mut content = String::new();
     content.push_str(&format!("# {}\n\n", procedure.title));
@@ -587,4 +610,150 @@ fn unix_timestamp_secs() -> i64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs() as i64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_procedure(reuse_count: u32) -> ParsedProcedure {
+        ParsedProcedure {
+            filename: "100-test-procedure.md".to_string(),
+            title: "Test procedure".to_string(),
+            saved_at: Some(100),
+            status: ProcedureStatus::Active,
+            when_to_use: "Use when testing.".to_string(),
+            prerequisites: vec!["Stay in the workspace.".to_string()],
+            steps: vec![
+                "Inspect the code.".to_string(),
+                "Run verification.".to_string(),
+            ],
+            pitfalls: vec!["Do not skip verification.".to_string()],
+            verification: "cargo test".to_string(),
+            reuse_count,
+            revision_count: 0,
+            last_verified_reuse_at: None,
+            source_task: None,
+            source_lesson: None,
+            source_trajectory: None,
+            supersedes: None,
+            superseded_by: None,
+            disabled_reason: None,
+            path: PathBuf::from(".topagent/procedures/100-test-procedure.md"),
+        }
+    }
+
+    fn sample_draft_with_new_steps() -> ProcedureDraft {
+        ProcedureDraft {
+            title: "Test procedure".to_string(),
+            when_to_use: "Use when testing.".to_string(),
+            prerequisites: vec!["Stay in the workspace.".to_string()],
+            steps: vec![
+                "Inspect the code.".to_string(),
+                "Run verification.".to_string(),
+                "Add new step.".to_string(),
+            ],
+            pitfalls: vec!["Do not skip verification.".to_string()],
+            verification: "cargo test".to_string(),
+            source_task: None,
+            source_lesson: None,
+            source_trajectory: None,
+            supersedes: None,
+        }
+    }
+
+    fn sample_draft_with_different_verification() -> ProcedureDraft {
+        ProcedureDraft {
+            title: "Test procedure".to_string(),
+            when_to_use: "Use when testing.".to_string(),
+            prerequisites: vec!["Stay in the workspace.".to_string()],
+            steps: vec!["Inspect the code.".to_string()],
+            pitfalls: vec!["Do not skip verification.".to_string()],
+            verification: "cargo test -p other".to_string(),
+            source_task: None,
+            source_lesson: None,
+            source_trajectory: None,
+            supersedes: None,
+        }
+    }
+
+    #[test]
+    fn test_quality_gate_keeps_when_low_reuse_refine() {
+        let existing = sample_procedure(1);
+        let draft = sample_draft_with_new_steps();
+        let raw = evaluate_procedure_revision(&existing, &draft);
+        assert_eq!(raw, ProcedureRevisionAction::Refine);
+
+        let gated = procedure_revision_quality_gate(&existing, raw, false);
+        assert_eq!(gated, ProcedureRevisionAction::Keep);
+    }
+
+    #[test]
+    fn test_quality_gate_allows_refine_when_proven_reuse() {
+        let existing = sample_procedure(3);
+        let draft = sample_draft_with_new_steps();
+        let raw = evaluate_procedure_revision(&existing, &draft);
+        assert_eq!(raw, ProcedureRevisionAction::Refine);
+
+        let gated = procedure_revision_quality_gate(&existing, raw, false);
+        assert_eq!(gated, ProcedureRevisionAction::Refine);
+    }
+
+    #[test]
+    fn test_quality_gate_keeps_when_low_reuse_supersede() {
+        let existing = sample_procedure(1);
+        let draft = sample_draft_with_different_verification();
+        let raw = evaluate_procedure_revision(&existing, &draft);
+        assert_eq!(raw, ProcedureRevisionAction::Supersede);
+
+        let gated = procedure_revision_quality_gate(&existing, raw, false);
+        assert_eq!(gated, ProcedureRevisionAction::Keep);
+    }
+
+    #[test]
+    fn test_quality_gate_allows_supersede_when_proven_reuse() {
+        let existing = sample_procedure(2);
+        let draft = sample_draft_with_different_verification();
+        let raw = evaluate_procedure_revision(&existing, &draft);
+        assert_eq!(raw, ProcedureRevisionAction::Supersede);
+
+        let gated = procedure_revision_quality_gate(&existing, raw, false);
+        assert_eq!(gated, ProcedureRevisionAction::Supersede);
+    }
+
+    #[test]
+    fn test_quality_gate_blocks_revision_on_low_trust() {
+        let existing = sample_procedure(5);
+        let draft = sample_draft_with_new_steps();
+        let raw = evaluate_procedure_revision(&existing, &draft);
+        assert_eq!(raw, ProcedureRevisionAction::Refine);
+
+        let gated = procedure_revision_quality_gate(&existing, raw, true);
+        assert_eq!(gated, ProcedureRevisionAction::Keep);
+    }
+
+    #[test]
+    fn test_quality_gate_passes_through_keep() {
+        let existing = sample_procedure(0);
+        let draft = ProcedureDraft {
+            title: "Test procedure".to_string(),
+            when_to_use: "Use when testing.".to_string(),
+            prerequisites: vec!["Stay in the workspace.".to_string()],
+            steps: vec![
+                "Inspect the code.".to_string(),
+                "Run verification.".to_string(),
+            ],
+            pitfalls: vec!["Do not skip verification.".to_string()],
+            verification: "cargo test".to_string(),
+            source_task: None,
+            source_lesson: None,
+            source_trajectory: None,
+            supersedes: None,
+        };
+        let raw = evaluate_procedure_revision(&existing, &draft);
+        assert_eq!(raw, ProcedureRevisionAction::Keep);
+
+        let gated = procedure_revision_quality_gate(&existing, raw, false);
+        assert_eq!(gated, ProcedureRevisionAction::Keep);
+    }
 }
