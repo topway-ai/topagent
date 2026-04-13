@@ -909,4 +909,181 @@ mod tests {
             source_labels: Vec::new(),
         }
     }
+
+    #[test]
+    fn test_lint_valid_user_md_no_warnings() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::write(
+            user_profile_path(temp.path()),
+            "# Operator Model\n\n## concise_final_answers\n**Category:** response_style\n**Updated:** <t:1>\n**Preference:** Keep it brief.\n",
+        )
+        .unwrap();
+        let output = render_memory_lint(temp.path()).unwrap();
+        assert!(output.contains("OK"));
+        assert!(!output.contains("WARNING USER.md"));
+        assert!(!output.contains("ERROR USER.md"));
+    }
+
+    #[test]
+    fn test_lint_oversized_user_md_reports_error_or_warning() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        let mut content = String::from(
+            "# Operator Model\n\n## big_pref\n**Category:** style\n**Updated:** <t:1>\n**Preference:** ",
+        );
+        content.push_str(&"x".repeat(4097));
+        content.push_str("\n");
+        fs::write(user_profile_path(temp.path()), &content).unwrap();
+        let output = render_memory_lint(temp.path()).unwrap();
+        assert!(output.contains("USER.md"));
+        let has_error_or_warning =
+            output.contains("ERROR USER.md") || output.contains("WARNING USER.md");
+        assert!(
+            has_error_or_warning,
+            "expected size warning/error for oversized USER.md"
+        );
+    }
+
+    #[test]
+    fn test_lint_memory_md_flags_verbose_instructions() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::write(
+            temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
+            "# TopAgent Memory Index\n\n- topic: deploy | file: topics/deploy.md | status: verified | note: the agent should always deploy carefully\n",
+        )
+        .unwrap();
+        let output = render_memory_lint(temp.path()).unwrap();
+        assert!(output.contains("WARNING MEMORY.md"));
+        assert!(output.contains("verbose/instructional"));
+    }
+
+    #[test]
+    fn test_lint_memory_md_procedure_redirect() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::write(
+            temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
+            "# TopAgent Memory Index\n\n- topic: deploy procedure | file: procedures/deploy.md | status: verified | note: step-by-step deployment\n",
+        )
+        .unwrap();
+        let output = render_memory_lint(temp.path()).unwrap();
+        assert!(output.contains("procedure-like"));
+    }
+
+    #[test]
+    fn test_lint_clean_memory_md_no_warnings() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/plans")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/observations")).unwrap();
+        fs::write(
+            temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
+            "# TopAgent Memory Index\n\n- topic: arch | file: topics/arch.md | status: verified | note: service layout\n",
+        )
+        .unwrap();
+        let output = render_memory_lint(temp.path()).unwrap();
+        assert!(!output.contains("WARNING MEMORY.md"));
+        assert!(!output.contains("ERROR MEMORY.md"));
+        assert!(output.contains("OK MEMORY.md"));
+    }
+
+    #[test]
+    fn test_lint_output_includes_summary_line() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::write(
+            temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
+            "# TopAgent Memory Index\n\n",
+        )
+        .unwrap();
+        let output = render_memory_lint(temp.path()).unwrap();
+        assert!(output.contains("Summary:"));
+        assert!(output.contains("OK"));
+    }
+
+    #[test]
+    fn test_recall_procedure_shows_trust_context() {
+        let temp = TempDir::new().unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        memory.ensure_layout().unwrap();
+
+        let draft = ProcedureDraft {
+            title: "Deploy rollback playbook".to_string(),
+            when_to_use: "Use for deployment rollback scenarios.".to_string(),
+            prerequisites: vec!["Stay in the workspace.".to_string()],
+            steps: vec![
+                "Identify the failing service.".to_string(),
+                "Roll back.".to_string(),
+            ],
+            pitfalls: vec!["Do not skip verification.".to_string()],
+            verification: "cargo test".to_string(),
+            source_task: Some("deploy rollback".to_string()),
+            source_lesson: None,
+            source_trajectory: None,
+            supersedes: None,
+        };
+        let procedures_path = temp.path().join(".topagent/procedures");
+        save_procedure(&procedures_path, &draft).unwrap();
+        memory.consolidate_memory_if_needed().unwrap();
+
+        let output = render_memory_recall(temp.path(), "deploy rollback service").unwrap();
+        assert!(output.contains("Provenance"));
+        assert!(output.contains("procedure"));
+        assert!(output.contains("advisory"));
+        assert!(output.contains("Trust context"));
+    }
+
+    #[test]
+    fn test_recall_topic_shows_file_path_in_provenance() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/plans")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/observations")).unwrap();
+        fs::write(
+            temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
+            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/arch.md | status: verified | note: service layout\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join(".topagent/topics/arch.md"),
+            "# Architecture\nservice layout details",
+        )
+        .unwrap();
+
+        let output = render_memory_recall(temp.path(), "inspect service architecture").unwrap();
+        assert!(output.contains("Provenance"));
+        assert!(output.contains("topics/arch.md"));
+    }
+
+    #[test]
+    fn test_recall_total_prompt_bytes_is_bounded() {
+        let temp = TempDir::new().unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/plans")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/observations")).unwrap();
+        fs::write(
+            temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
+            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/arch.md | status: verified | note: service layout\n",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join(".topagent/topics/arch.md"),
+            "# Architecture\nservice layout details",
+        )
+        .unwrap();
+
+        let output = render_memory_recall(temp.path(), "inspect service architecture").unwrap();
+        assert!(output.contains("Total prompt bytes:"));
+    }
 }

@@ -554,3 +554,153 @@ fn extract_saved_artifact_path(output: &str, prefix: &str) -> Option<String> {
 fn artifact_filename(path: &str) -> Option<&str> {
     Path::new(path).file_name().and_then(|name| name.to_str())
 }
+
+#[cfg(test)]
+mod scenario_tests {
+    use crate::memory::procedures::{
+        ParsedProcedure, ProcedureDraft, ProcedureRevisionAction, ProcedureStatus,
+        evaluate_procedure_revision, procedure_revision_quality_gate,
+    };
+    use std::path::PathBuf;
+
+    fn procedure_with_reuse(reuse_count: u32) -> ParsedProcedure {
+        ParsedProcedure {
+            filename: "100-deploy-workflow.md".to_string(),
+            title: "Deploy workflow".to_string(),
+            saved_at: Some(100),
+            status: ProcedureStatus::Active,
+            when_to_use: "Use for deployment.".to_string(),
+            prerequisites: vec!["Stay in the workspace.".to_string()],
+            steps: vec!["Deploy.".to_string(), "Verify.".to_string()],
+            pitfalls: vec!["Do not skip verification.".to_string()],
+            verification: "cargo test".to_string(),
+            reuse_count,
+            revision_count: 0,
+            last_verified_reuse_at: None,
+            source_task: None,
+            source_lesson: None,
+            source_trajectory: None,
+            supersedes: None,
+            superseded_by: None,
+            disabled_reason: None,
+            path: PathBuf::from(".topagent/procedures/100-deploy-workflow.md"),
+        }
+    }
+
+    fn draft_with_new_steps() -> ProcedureDraft {
+        ProcedureDraft {
+            title: "Deploy workflow".to_string(),
+            when_to_use: "Use for deployment.".to_string(),
+            prerequisites: vec!["Stay in the workspace.".to_string()],
+            steps: vec![
+                "Deploy.".to_string(),
+                "Verify.".to_string(),
+                "Notify team.".to_string(),
+            ],
+            pitfalls: vec!["Do not skip verification.".to_string()],
+            verification: "cargo test".to_string(),
+            source_task: Some("deploy".to_string()),
+            source_lesson: None,
+            source_trajectory: None,
+            supersedes: None,
+        }
+    }
+
+    #[test]
+    fn test_gate_downgrade_refine_to_keep_reason_text() {
+        let existing = procedure_with_reuse(1);
+        let draft = draft_with_new_steps();
+        let raw_action = evaluate_procedure_revision(&existing, &draft);
+        assert_eq!(raw_action, ProcedureRevisionAction::Refine);
+        let gated_action = procedure_revision_quality_gate(&existing, raw_action, false);
+        assert_eq!(gated_action, ProcedureRevisionAction::Keep);
+
+        let reason = if existing.reuse_count < 3 {
+            "below threshold"
+        } else {
+            ""
+        };
+        assert_eq!(reason, "below threshold");
+        let note = format!(
+            "Procedure revision gate changed {} to {}: reuse {} | {}",
+            "refine", "keep", existing.reuse_count, reason
+        );
+        assert!(note.contains("below threshold"));
+        assert!(note.contains("reuse 1"));
+    }
+
+    #[test]
+    fn test_gate_downgrade_supersede_to_keep_reason_text() {
+        let existing = procedure_with_reuse(1);
+        let draft = ProcedureDraft {
+            title: "Deploy workflow".to_string(),
+            when_to_use: "Use for deployment.".to_string(),
+            prerequisites: vec!["Stay in the workspace.".to_string()],
+            steps: vec!["Deploy differently.".to_string()],
+            pitfalls: vec!["Do not skip verification.".to_string()],
+            verification: "cargo test -p other".to_string(),
+            source_task: None,
+            source_lesson: None,
+            source_trajectory: None,
+            supersedes: None,
+        };
+        let raw_action = evaluate_procedure_revision(&existing, &draft);
+        assert_eq!(raw_action, ProcedureRevisionAction::Supersede);
+        let gated_action = procedure_revision_quality_gate(&existing, raw_action, false);
+        assert_eq!(gated_action, ProcedureRevisionAction::Keep);
+        let reason = "below threshold";
+        let note = format!(
+            "Procedure revision gate changed {} to {}: reuse {} | {}",
+            "supersede", "keep", existing.reuse_count, reason
+        );
+        assert!(note.contains("below threshold"));
+    }
+
+    #[test]
+    fn test_gate_no_downgrade_means_no_note() {
+        let existing = procedure_with_reuse(3);
+        let draft = draft_with_new_steps();
+        let raw_action = evaluate_procedure_revision(&existing, &draft);
+        let gated_action = procedure_revision_quality_gate(&existing, raw_action, false);
+        assert_eq!(raw_action, gated_action);
+        assert_eq!(gated_action, ProcedureRevisionAction::Refine);
+        let should_add_note = raw_action != gated_action;
+        assert!(
+            !should_add_note,
+            "no note should be added when gate does not downgrade"
+        );
+    }
+
+    #[test]
+    fn test_gate_low_trust_always_downgrades_to_keep() {
+        let existing = procedure_with_reuse(10);
+        let draft = draft_with_new_steps();
+        let raw_action = evaluate_procedure_revision(&existing, &draft);
+        let gated_action = procedure_revision_quality_gate(&existing, raw_action, true);
+        assert_eq!(gated_action, ProcedureRevisionAction::Keep);
+        let reason = "low-trust influence";
+        let note = format!(
+            "Procedure revision gate changed {} to {}: reuse {} | {}",
+            match raw_action {
+                ProcedureRevisionAction::Keep => "keep",
+                ProcedureRevisionAction::Refine => "refine",
+                ProcedureRevisionAction::Supersede => "supersede",
+            },
+            "keep",
+            existing.reuse_count,
+            reason
+        );
+        assert!(note.contains("low-trust influence"));
+    }
+
+    #[test]
+    fn test_promotion_no_auto_rewrite_on_keep() {
+        let existing = procedure_with_reuse(0);
+        let draft = draft_with_new_steps();
+        let raw_action = evaluate_procedure_revision(&existing, &draft);
+        let gated_action = procedure_revision_quality_gate(&existing, raw_action, false);
+        assert_eq!(gated_action, ProcedureRevisionAction::Keep);
+        assert_eq!(raw_action, ProcedureRevisionAction::Refine);
+        assert_eq!(existing.revision_count, 0);
+    }
+}

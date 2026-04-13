@@ -28,7 +28,7 @@ const MEMORY_MD_MAX_ENTRIES: usize = 24;
 const MEMORY_MD_MAX_NOTE_CHARS: usize = 120;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CheckLevel {
+pub(crate) enum CheckLevel {
     Ok,
     Warning,
     Error,
@@ -44,14 +44,24 @@ impl CheckLevel {
     }
 }
 
-struct CheckResult {
-    name: &'static str,
-    level: CheckLevel,
-    detail: String,
-    hint: Option<String>,
+pub(crate) struct CheckResult {
+    pub(crate) name: &'static str,
+    pub(crate) level: CheckLevel,
+    pub(crate) detail: String,
+    pub(crate) hint: Option<String>,
 }
 
 pub(crate) fn run_doctor(params: CliParams) -> Result<()> {
+    let checks = run_doctor_checks(&params);
+    print_report(&checks);
+    let has_errors = checks.iter().any(|c| c.level == CheckLevel::Error);
+    if has_errors {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+pub(crate) fn run_doctor_checks(params: &CliParams) -> Vec<CheckResult> {
     let mut checks = Vec::new();
 
     let workspace = resolve_workspace_path(params.workspace.clone());
@@ -79,14 +89,8 @@ pub(crate) fn run_doctor(params: CliParams) -> Result<()> {
         }
     }
 
-    check_service_config(&params, &mut checks);
-
-    print_report(&checks);
-    let has_errors = checks.iter().any(|c| c.level == CheckLevel::Error);
-    if has_errors {
-        std::process::exit(1);
-    }
-    Ok(())
+    check_service_config(params, &mut checks);
+    checks
 }
 
 fn check_workspace_layout(workspace: &Path, checks: &mut Vec<CheckResult>) {
@@ -1264,5 +1268,214 @@ label = "test hook""#,
         let content = "# Operator Model\n\n## concise_final_answers\n**Category:** response_style\n**Updated:** <t:1>\n**Preference:** Keep final answers concise.\n";
         let issues = lint_user_md_content(content);
         assert!(issues.is_empty());
+    }
+
+    #[test]
+    fn test_doctor_full_healthy_workspace_has_no_errors() {
+        let temp = healthy_workspace();
+        std::fs::write(
+            temp.path().join(".topagent/hooks.toml"),
+            r#"[[hooks]]
+event = "pre_tool"
+command = "echo ok"
+label = "test hook""#,
+        )
+        .unwrap();
+        std::fs::write(
+            temp.path().join(EXTERNAL_TOOLS_RELATIVE_PATH),
+            r#"[{"name":"ls_tool","description":"list files","command":"ls","argv_template":["."],"sandbox":"workspace"}]"#,
+        )
+        .unwrap();
+
+        let params = CliParams {
+            api_key: Some("test-key".to_string()),
+            model: Some("openai/gpt-4o".to_string()),
+            workspace: Some(temp.path().to_path_buf()),
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let checks = run_doctor_checks(&params);
+        let errors: Vec<_> = checks
+            .iter()
+            .filter(|c| c.level == CheckLevel::Error)
+            .collect();
+        assert!(
+            errors.is_empty(),
+            "unexpected errors: {:?}",
+            errors.iter().map(|c| &c.detail).collect::<Vec<_>>()
+        );
+        let ok_names: Vec<_> = checks
+            .iter()
+            .filter(|c| c.level == CheckLevel::Ok)
+            .map(|c| c.name)
+            .collect();
+        assert!(
+            ok_names.contains(&"workspace path"),
+            "missing workspace path OK"
+        );
+        assert!(
+            ok_names.contains(&"workspace layout"),
+            "missing workspace layout OK"
+        );
+        assert!(
+            ok_names.contains(&"generated tools"),
+            "missing generated tools OK"
+        );
+        assert!(
+            ok_names.contains(&"external tools"),
+            "missing external tools OK"
+        );
+        assert!(
+            ok_names.contains(&"hooks manifest"),
+            "missing hooks manifest OK"
+        );
+        assert!(
+            ok_names.contains(&"OpenRouter API key"),
+            "missing API key OK"
+        );
+        assert!(
+            ok_names.contains(&"model config"),
+            "missing model config OK"
+        );
+    }
+
+    #[test]
+    fn test_doctor_api_key_missing_reports_error() {
+        let temp = healthy_workspace();
+        let params = CliParams {
+            api_key: None,
+            model: None,
+            workspace: Some(temp.path().to_path_buf()),
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let checks = run_doctor_checks(&params);
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.level == CheckLevel::Error && c.name == "OpenRouter API key")
+        );
+    }
+
+    #[test]
+    fn test_doctor_model_default_fallback_warns() {
+        let temp = healthy_workspace();
+        let params = CliParams {
+            api_key: Some("test-key".to_string()),
+            model: None,
+            workspace: Some(temp.path().to_path_buf()),
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let checks = run_doctor_checks(&params);
+        let model_check = checks.iter().find(|c| c.name == "model config").unwrap();
+        assert!(
+            model_check.level == CheckLevel::Warning || model_check.level == CheckLevel::Ok,
+            "model config should be warning or ok, got {:?}",
+            model_check.level
+        );
+    }
+
+    #[test]
+    fn test_doctor_missing_topagent_dir_reports_error() {
+        let temp = TempDir::new().unwrap();
+        let params = CliParams {
+            api_key: Some("test-key".to_string()),
+            model: Some("openai/gpt-4o".to_string()),
+            workspace: Some(temp.path().to_path_buf()),
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let checks = run_doctor_checks(&params);
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.level == CheckLevel::Error && c.name == "workspace layout"),
+            "missing .topagent/ should report error"
+        );
+    }
+
+    #[test]
+    fn test_doctor_partial_layout_reports_warnings() {
+        let temp = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        std::fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+        std::fs::write(
+            temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
+            "# TopAgent Memory Index\n",
+        )
+        .unwrap();
+
+        let mut layout_checks = Vec::new();
+        check_workspace_layout(temp.path(), &mut layout_checks);
+        assert!(
+            layout_checks
+                .iter()
+                .any(|c| c.level == CheckLevel::Warning && c.name == "workspace layout")
+        );
+        let detail = layout_checks
+            .iter()
+            .find(|c| c.name == "workspace layout")
+            .unwrap();
+        assert!(detail.detail.contains("missing"));
+    }
+
+    #[test]
+    fn test_doctor_memory_md_error_size_and_procedure_redirect() {
+        let temp = healthy_workspace();
+        let big = format!(
+            "# TopAgent Memory Index\n\n{}\n",
+            "x".repeat(MEMORY_MD_SIZE_ERROR + 100)
+        );
+        std::fs::write(temp.path().join(MEMORY_INDEX_RELATIVE_PATH), &big).unwrap();
+
+        let mut checks = Vec::new();
+        check_memory_md(temp.path(), &mut checks);
+        let mem_check = checks.iter().find(|c| c.name == "MEMORY.md").unwrap();
+        assert_eq!(mem_check.level, CheckLevel::Error);
+        assert!(mem_check.detail.contains("error budget"));
+    }
+
+    #[test]
+    fn test_doctor_read_only_guarantee() {
+        let temp = healthy_workspace();
+        let memory_path = temp.path().join(MEMORY_INDEX_RELATIVE_PATH);
+        let user_path = user_profile_path(temp.path());
+        let before_memory = std::fs::read_to_string(&memory_path).unwrap();
+        let before_user = std::fs::read_to_string(&user_path).unwrap_or_default();
+        let before_files = std::fs::read_dir(temp.path().join(".topagent"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .count();
+
+        let params = CliParams {
+            api_key: Some("test-key".to_string()),
+            model: Some("openai/gpt-4o".to_string()),
+            workspace: Some(temp.path().to_path_buf()),
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let _ = run_doctor_checks(&params);
+
+        let after_memory = std::fs::read_to_string(&memory_path).unwrap();
+        let after_user = std::fs::read_to_string(&user_path).unwrap_or_default();
+        let after_files = std::fs::read_dir(temp.path().join(".topagent"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .count();
+
+        assert_eq!(before_memory, after_memory, "doctor mutated MEMORY.md");
+        assert_eq!(before_user, after_user, "doctor mutated USER.md");
+        assert_eq!(before_files, after_files, "doctor added or removed files");
     }
 }

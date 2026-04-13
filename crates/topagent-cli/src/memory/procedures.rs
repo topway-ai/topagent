@@ -756,4 +756,100 @@ mod tests {
         let gated = procedure_revision_quality_gate(&existing, raw, false);
         assert_eq!(gated, ProcedureRevisionAction::Keep);
     }
+
+    #[test]
+    fn test_quality_gate_threshold_boundary_refine() {
+        let mut existing = sample_procedure(2);
+        existing.reuse_count = 2;
+        let draft = sample_draft_with_new_steps();
+        let raw = evaluate_procedure_revision(&existing, &draft);
+        assert_eq!(raw, ProcedureRevisionAction::Refine);
+
+        let gated = procedure_revision_quality_gate(&existing, raw, false);
+        assert_eq!(
+            gated,
+            ProcedureRevisionAction::Keep,
+            "refine at reuse_count=2 should be blocked"
+        );
+    }
+
+    #[test]
+    fn test_quality_gate_threshold_boundary_supersede() {
+        let mut existing = sample_procedure(1);
+        existing.reuse_count = 1;
+        let draft = sample_draft_with_different_verification();
+        let raw = evaluate_procedure_revision(&existing, &draft);
+        assert_eq!(raw, ProcedureRevisionAction::Supersede);
+
+        let gated = procedure_revision_quality_gate(&existing, raw, false);
+        assert_eq!(
+            gated,
+            ProcedureRevisionAction::Keep,
+            "supersede at reuse_count=1 should be blocked"
+        );
+    }
+
+    #[test]
+    fn test_quality_gate_exact_threshold_refine_allowed() {
+        let mut existing = sample_procedure(3);
+        existing.reuse_count = 3;
+        let draft = sample_draft_with_new_steps();
+        let raw = evaluate_procedure_revision(&existing, &draft);
+        assert_eq!(raw, ProcedureRevisionAction::Refine);
+
+        let gated = procedure_revision_quality_gate(&existing, raw, false);
+        assert_eq!(
+            gated,
+            ProcedureRevisionAction::Refine,
+            "refine at reuse_count=3 should be allowed"
+        );
+    }
+
+    #[test]
+    fn test_quality_gate_exact_threshold_supersede_allowed() {
+        let mut existing = sample_procedure(2);
+        existing.reuse_count = 2;
+        let draft = sample_draft_with_different_verification();
+        let raw = evaluate_procedure_revision(&existing, &draft);
+        assert_eq!(raw, ProcedureRevisionAction::Supersede);
+
+        let gated = procedure_revision_quality_gate(&existing, raw, false);
+        assert_eq!(
+            gated,
+            ProcedureRevisionAction::Supersede,
+            "supersede at reuse_count=2 should be allowed"
+        );
+    }
+
+    #[test]
+    fn test_quality_gate_high_trust_supersede_still_requires_threshold() {
+        let mut existing = sample_procedure(0);
+        existing.reuse_count = 0;
+        let draft = sample_draft_with_different_verification();
+        let raw = evaluate_procedure_revision(&existing, &draft);
+        assert_eq!(raw, ProcedureRevisionAction::Supersede);
+
+        let gated = procedure_revision_quality_gate(&existing, raw, false);
+        assert_eq!(
+            gated,
+            ProcedureRevisionAction::Keep,
+            "supersede at reuse_count=0 should be blocked even with high trust"
+        );
+    }
+
+    #[test]
+    fn test_quality_gate_low_trust_overrides_proven_reuse() {
+        let mut existing = sample_procedure(5);
+        existing.reuse_count = 5;
+        let draft = sample_draft_with_new_steps();
+        let raw = evaluate_procedure_revision(&existing, &draft);
+        assert_eq!(raw, ProcedureRevisionAction::Refine);
+
+        let gated = procedure_revision_quality_gate(&existing, raw, true);
+        assert_eq!(
+            gated,
+            ProcedureRevisionAction::Keep,
+            "low trust should always downgrade to Keep"
+        );
+    }
 }
