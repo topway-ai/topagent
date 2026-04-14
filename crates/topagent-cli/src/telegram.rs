@@ -115,6 +115,7 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                             let _ = adapter.answer_callback_query(
                                 &callback.id,
                                 Some("This approval action is no longer available."),
+                                false,
                             );
                             continue;
                         };
@@ -124,39 +125,62 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                             let _ = adapter.answer_callback_query(
                                 &callback.id,
                                 Some("This bot supports private chats only."),
+                                false,
                             );
                             continue;
                         }
 
                         let Some(data) = callback.data.as_deref() else {
-                            let _ = adapter
-                                .answer_callback_query(&callback.id, Some("Unsupported action."));
+                            let _ = adapter.answer_callback_query(
+                                &callback.id,
+                                Some("Unsupported action."),
+                                false,
+                            );
                             continue;
                         };
 
                         info!("received callback from chat {}: {}", chat_id, data);
 
                         let Some((approve, id)) = parse_approval_callback_data(data) else {
-                            let _ = adapter
-                                .answer_callback_query(&callback.id, Some("Unsupported action."));
+                            let _ = adapter.answer_callback_query(
+                                &callback.id,
+                                Some("Unsupported action."),
+                                false,
+                            );
                             continue;
                         };
 
                         match session_manager.resolve_approval_callback(chat_id, id, approve) {
                             Ok(entry) => {
                                 let reply = format_approval_resolution(&entry, approve);
-                                let _ = adapter.answer_callback_query(&callback.id, Some(&reply));
-                                let _ = adapter.edit_message_text(
+                                if let Err(err) =
+                                    adapter.answer_callback_query(&callback.id, Some(&reply), true)
+                                {
+                                    warn!("failed to answer callback query: {}", err);
+                                }
+                                if let Err(err) = adapter.edit_message_text(
                                     chat_id,
                                     message.message_id,
                                     &reply,
                                     Some(&TelegramInlineKeyboardMarkup {
                                         inline_keyboard: vec![],
                                     }),
-                                );
+                                ) {
+                                    let msg = err.to_string();
+                                    if !msg.contains("message is not modified") {
+                                        warn!(
+                                            "failed to update approval message after resolution: {}",
+                                            err
+                                        );
+                                    }
+                                }
                             }
                             Err(err) => {
-                                let _ = adapter.answer_callback_query(&callback.id, Some(&err));
+                                if let Err(e) =
+                                    adapter.answer_callback_query(&callback.id, Some(&err), true)
+                                {
+                                    warn!("failed to answer callback query: {}", e);
+                                }
                             }
                         }
                         continue;

@@ -31,6 +31,50 @@ fn test_classify_bash_command_routes_expected_classes() {
 }
 
 #[test]
+fn test_curl_piped_read_only_is_research_safe() {
+    let contract = BehaviorContract::default();
+
+    assert_eq!(
+        contract.classify_bash_command("curl -sL https://example.com/api | grep title"),
+        BashCommandClass::ResearchSafe
+    );
+    assert_eq!(
+        contract.classify_bash_command("curl -sL https://example.com/api | head -30"),
+        BashCommandClass::ResearchSafe
+    );
+    assert_eq!(
+        contract.classify_bash_command("curl https://example.com/api 2>/dev/null"),
+        BashCommandClass::ResearchSafe
+    );
+}
+
+#[test]
+fn test_curl_file_write_is_mutation_risk() {
+    let contract = BehaviorContract::default();
+
+    assert_eq!(
+        contract.classify_bash_command("curl -o file.txt https://example.com/api"),
+        BashCommandClass::MutationRisk
+    );
+    assert_eq!(
+        contract.classify_bash_command("curl -O https://example.com/file.tar.gz"),
+        BashCommandClass::MutationRisk
+    );
+    assert_eq!(
+        contract.classify_bash_command("curl --output result.json https://example.com/api"),
+        BashCommandClass::MutationRisk
+    );
+    assert_eq!(
+        contract.classify_bash_command("curl --remote-name https://example.com/file"),
+        BashCommandClass::MutationRisk
+    );
+    assert_eq!(
+        contract.classify_bash_command("curl https://example.com/api > out.txt"),
+        BashCommandClass::MutationRisk
+    );
+}
+
+#[test]
 fn test_tool_and_mutation_membership_remains_correct() {
     let contract = BehaviorContract::default();
 

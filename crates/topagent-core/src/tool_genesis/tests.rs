@@ -48,7 +48,7 @@ fn test_tool_genesis_create_and_verify() {
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].spec().name, "echo_hello");
     assert_eq!(tools[0].sandbox_policy(), CommandSandboxPolicy::Workspace);
-    assert!(tools[0].spec().description.contains("workspace sandbox"));
+    assert!(tools[0].spec().description.contains("sandboxed workspace"));
 }
 
 #[test]
@@ -198,10 +198,12 @@ fn test_repair_tool_name_validation() {
     );
 
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("tool name must be alphanumeric + underscore only"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("tool name must be alphanumeric + underscore only")
+    );
 }
 
 #[test]
@@ -212,10 +214,12 @@ fn test_delete_tool_name_validation() {
     let result = genesis.delete_generated_tool("../bad_name");
 
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("tool name must be alphanumeric + underscore only"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("tool name must be alphanumeric + underscore only")
+    );
 }
 
 #[test]
@@ -240,10 +244,12 @@ fn test_create_tool_rejects_invalid_interface_before_writing_files() {
     );
 
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("has no matching input"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("has no matching input")
+    );
     assert!(
         !temp
             .path()
@@ -572,11 +578,13 @@ fn test_corrupt_manifest_not_loaded_as_verified() {
     let tools = genesis.list_generated_tools().unwrap();
     assert_eq!(tools.len(), 1);
     assert_eq!(tools[0].name, "bad_manifest");
-    assert!(tools[0]
-        .load_warning
-        .as_deref()
-        .unwrap_or_default()
-        .contains("invalid manifest.json"));
+    assert!(
+        tools[0]
+            .load_warning
+            .as_deref()
+            .unwrap_or_default()
+            .contains("invalid manifest.json")
+    );
 }
 
 #[test]

@@ -150,17 +150,21 @@ impl TelegramAdapter {
         &self,
         callback_query_id: &str,
         text: Option<&str>,
+        show_alert: bool,
     ) -> Result<bool, ChannelError> {
         #[derive(Serialize)]
         struct AnswerCallbackQueryParams {
             callback_query_id: String,
             #[serde(skip_serializing_if = "Option::is_none")]
             text: Option<String>,
+            #[serde(skip_serializing_if = "std::ops::Not::not")]
+            show_alert: bool,
         }
 
         let params = AnswerCallbackQueryParams {
             callback_query_id: callback_query_id.to_string(),
             text: text.map(ToString::to_string),
+            show_alert,
         };
 
         self.send_with_retry(|| {

@@ -1,4 +1,4 @@
-use crate::{cancel::CancellationToken, secrets::SECRET_ENV_VARS, Error, Result};
+use crate::{Error, Result, cancel::CancellationToken, secrets::SECRET_ENV_VARS};
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -76,7 +76,7 @@ impl CommandSandboxPolicy {
         match self {
             CommandSandboxPolicy::Host => "host execution; no workspace sandbox",
             CommandSandboxPolicy::Workspace => {
-                "workspace sandbox when bwrap is available; network disabled"
+                "sandboxed workspace; commands have no outbound network access"
             }
         }
     }

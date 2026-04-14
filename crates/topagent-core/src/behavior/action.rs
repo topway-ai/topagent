@@ -44,6 +44,11 @@ pub(super) fn default_tool_policy() -> ToolPolicy {
             "printf ",
             "true",
             "false",
+            "curl ",
+            "curl -",
+            "http ",
+            "httpie ",
+            "https ",
         ],
         verification_bash_prefixes: &[
             "cargo test",
@@ -81,7 +86,16 @@ pub(super) fn default_mutation_policy() -> MutationPolicy {
     MutationPolicy {
         mutation_tools: &["write", "edit", "git_commit", "git_add"],
         generated_tool_surface_tools: &["create_tool", "repair_tool", "delete_generated_tool"],
-        destructive_shell_tokens: &["rm ", "mv ", "cp ", "touch ", "mkdir "],
+        destructive_shell_tokens: &[
+            "rm ",
+            "mv ",
+            "cp ",
+            "touch ",
+            "mkdir ",
+            "curl -o",
+            "curl --output",
+            "curl --remote-name",
+        ],
         shell_write_tokens: &[" >", ">>", "|"],
     }
 }

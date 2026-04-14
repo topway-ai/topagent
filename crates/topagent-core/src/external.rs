@@ -1,4 +1,4 @@
-use crate::command_exec::{run_command, CommandSandboxPolicy};
+use crate::command_exec::{CommandSandboxPolicy, run_command};
 use crate::context::ToolContext;
 use crate::file_util::format_command_output_with_limit;
 use crate::tool_spec::ToolSpec;
@@ -540,7 +540,7 @@ mod tests {
 
         let tool = registry.get("repo_tool").unwrap();
         assert_eq!(tool.sandbox_policy(), CommandSandboxPolicy::Workspace);
-        assert!(tool.spec().description.contains("workspace sandbox"));
+        assert!(tool.spec().description.contains("sandboxed workspace"));
     }
 
     #[test]
