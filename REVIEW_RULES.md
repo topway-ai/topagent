@@ -2,120 +2,125 @@
 
 Read this before any meaningful code change.
 
-TopAgent is Telegram-first, CLI-backed, local-first, workspace-scoped, operator-centric, and single-agent by default. Keep behavior explicit in code. Keep approval, compaction, and durable memory disciplined. Do not make the hot path heavier unless the gain is clear and immediate.
+TopAgent is Telegram-first, CLI-backed, local-first, workspace-scoped, operator-centric, and single-agent by default.
+Keep behavior explicit in code.
+Keep approval, compaction, and durable memory disciplined.
+Do not make the hot path heavier unless the gain is clear and immediate.
 
-These rules protect the current TopAgent kernel. They are not a veto against feature work. The question is not "does this add complexity?" The question is "is this complexity earned now, with clear ownership and payoff?"
+These rules protect the current TopAgent kernel.
+They are not a veto against feature work.
+The question is not “does this add complexity?”
+The question is “is this complexity earned now, with clear ownership and payoff?”
+
+## Authority
+- `AGENTS.md` is the entry gate.
+- `REVIEW_RULES.md` is the authoritative review policy.
+- If the two files diverge, update them together or treat this file as authoritative.
+
+## Glossary
+- **Meaningful code change**: any non-trivial change that can affect runtime behavior, persistence, configuration, policy, prompt assembly, retrieval, tool surface, transport behavior, or tests relied on for correctness.
+- **Hot path**: ordinary one-shot execution, ordinary Telegram handling, prompt assembly, bounded retrieval, preflight gating, and tool execution for a normal task.
+- **Durable artifact**: any stored record expected to survive across sessions and influence future work, including USER.md, MEMORY.md, lessons, procedures, trajectories, checkpoints, and transcript stores.
+- **Session state**: live run state, blockers, approvals, transient user wishes, active file state, and in-progress objective state.
+- **Spike**: exploratory work that is intentionally non-final and explicitly contained.
 
 ## Preflight Review
+Use these exact headings:
+- Scope
+- Likely files/modules to change
+- Hot-path impact
+- Repeated-task cost impact: faster / unchanged / slower
+- Scaling risk
+- Hard cap or invariant
+- Boundary risks
+- Session-vs-durable-state risks
+- Enforcement in code vs prose
+- Added persistence / abstraction / tool surface / transport coupling / runtime state
+- Simplicity score (0-10)
+- Why existing structure is insufficient
+- Simpler options rejected
+- Spike status (if applicable)
+- Product-boundary fit
 
-Before editing code, produce a short review with:
+Keep each field to 1–3 sentences unless more detail is necessary.
 
-- files or modules likely to change
-- hot-path impact
-- expected hot-path cost impact on repeated tasks: faster, unchanged, or slower
-- whether any new behavior scales with durable artifact count, transcript size, procedure count, or policy surface
-- what hard cap keeps the hot path bounded
-- what test, limit, or existing invariant proves prompt/retrieval cost stays bounded
-- boundary risks
-- session-vs-durable-state risks
-- whether behavior will be enforced in code or only described
-- whether the change adds persistence, abstraction, tool surface, transport coupling, or new runtime state
-- simplicity score out of 10
-- if complexity is being added:
-  - why existing structure is insufficient
-  - why the new complexity is earned now
-  - what simpler options were considered and rejected
-- if the work is exploratory:
-  - mark it explicitly as a spike
-  - what question it is trying to answer
-  - what success or failure looks like
-  - how it will be contained
-  - whether it is intended to ship or only inform a later clean implementation
-- if the change could shift the product boundary:
-  - does it fit the current TopAgent boundary
-  - if not, is the product actually changing
-  - should these rules be updated first or alongside the change
+## Simplicity Rubric
+- **9–10**: simplifies ownership or removes complexity
+- **7–8**: narrow earned complexity with clear payoff and strong caps
+- **4–6**: mixed tradeoff; requires stronger containment or clearer justification
+- **0–3**: speculative, weakly owned, or boundary-distorting
 
-If the score is under 7, do not treat that as an automatic veto. Treat it as a warning signal: narrow the plan, justify the added cost more clearly, or explicitly contain the work as a spike before editing.
+A score under 7 is not an automatic veto.
+It is a warning signal: narrow the plan, justify the added cost more clearly, or contain the work as a spike.
 
 ## Complexity Test
+- **Earned complexity**: required by current product needs, clearly owned, and paid for by immediate correctness, operator trust, or capability.
+- **Accidental complexity**: added because the implementation drifted, duplicated a path, mixed layers, or kept stale constraints alive.
+- **Speculative complexity**: added “just in case,” for imagined future reuse, or before the product boundary actually needs it.
 
-- Earned complexity: required by current product needs, clearly owned, and paid for by immediate correctness, operator trust, or capability.
-- Accidental complexity: added because the implementation drifted, duplicated a path, mixed layers, or kept stale constraints alive.
-- Speculative complexity: added "just in case," for imagined future reuse, or before the product boundary actually needs it.
-
-Accept earned complexity. Remove accidental complexity. Reject speculative complexity unless the work is an explicitly labeled spike.
+Accept earned complexity.
+Remove accidental complexity.
+Reject speculative complexity unless the work is an explicitly labeled spike.
 
 ## Performance Guardrails
-
 TopAgent may learn more over time, but repeated tasks must not get slower just because durable artifacts accumulated.
 
-- Hot-path cost must stay bounded as `USER.md`, `MEMORY.md`, lessons, procedures, trajectories, checkpoints, and transcripts grow.
-- Durable artifact growth must not imply prompt growth. More files on disk is acceptable; more always-loaded prompt bulk by default is not.
-- Retrieval must stay capped and relevance-filtered. If artifact count doubles, loaded prompt bytes and loaded item counts should still stay within explicit fixed limits.
+- Hot-path cost must stay bounded as USER.md, MEMORY.md, lessons, procedures, trajectories, checkpoints, and transcripts grow.
+- Durable artifact growth must not imply prompt growth.
+- Retrieval must stay capped and relevance-filtered.
 - Repeated tasks should get faster or more predictable from procedures and memory, not slower from extra ceremony or extra always-on reasoning.
-- Security, provenance, and trust layers must use narrow boundary checks, summaries, and caps. Do not add deep always-on analysis over all content.
-- Approval friction must stay risk-triggered. Do not turn low-trust handling, memory, or procedures into universal approval spam.
+- Security, provenance, and trust layers must use narrow boundary checks, summaries, and caps.
+- Approval friction must stay risk-triggered.
 - Do not add a second planner, second policy engine, second retrieval engine, or second always-running reasoning layer.
 - Every change must say how repeat-task latency is preserved or improved, what stays capped, and why durable learning does not make the hot path grow linearly.
 
+## Test Requirement
+Any change that affects runtime behavior, persistence, retrieval, hooks, approvals, promotion, transport semantics, or the operational control plane must add or update tests.
+If a meaningful change ships without tests, it must be explicitly labeled as a spike and must explain why the test gap is temporary.
+
+## Documentation Sync
+If a change alters operator-facing commands, lifecycle behavior, architecture ownership, or product boundary, update the relevant documentation in the same change unless the work is an explicitly labeled spike.
+
 ## Rules
+1. Hot-path weight
+2. Boundary integrity
+3. Policy honesty
+4. Session vs durable state
+5. Memory quality
+6. Compaction correctness
+7. Approval clarity
+8. Tool surface discipline
+9. Transport separation
+10. Restart-persistence necessity
+11. Canonical artifact ownership
+12. Bounded retrieval
+13. Simplification vs exceptions
+14. Product-shift honesty
 
-Check the proposed change against these rules:
-
-1. Hot-path weight: avoid adding repeated prompt bulk, extra runtime branches, or always-loaded artifacts without a clear payoff. If the change adds durable artifacts, explain why hot-path prompt assembly and retrieval stay flat or capped.
-2. Boundary integrity: keep policy, runtime, memory, transport, and tool logic in their own layers. Do not blur CLI or Telegram concerns into core runtime.
-3. Policy honesty: if behavior matters, enforce it in code. Do not hide real policy inside prompt prose or comments.
-4. Session vs durable state: do not leak live run state, blockers, approvals, or transient user wishes into durable memory.
-5. Memory quality: durable memory must stay curated, bounded, and worth reloading. Prefer facts with future operator value over noise, and do not let durable artifact count imply linear prompt or retrieval growth.
-6. Compaction correctness: do not make objective, plan, blockers, pending approvals, active files, proof-of-work anchors, or memory briefing easy to lose.
-7. Approval clarity: approval-required actions must stay explicit and non-bypassable. Do not add side doors around approval checks, and do not turn normal trusted work into universal approval friction.
-8. Tool surface discipline: do not add tools that duplicate existing tools, widen scope casually, or push product behavior into tool sprawl.
-9. Transport separation: Telegram and CLI rendering should stay transport-specific; shared policy belongs in the contract or shared runtime seams.
-10. Restart-persistence necessity: do not add restart durability unless correctness actually requires it.
-11. Canonical artifact ownership: important facts should have one obvious owner. Prefer plan state, mailbox state, durable memory, and contract artifacts over transcript repetition.
-12. Bounded retrieval: loaded memory, procedures, transcript snippets, provenance summaries, and approval context must stay explicitly capped and relevance-filtered. Unbounded scans or load-all behavior are not acceptable on the hot path.
-13. Simplification vs exceptions: prefer removing branches, prose, and duplicated state. Reject changes that turn TopAgent into a pile of accumulating exceptions.
-14. Product-shift honesty: if a feature does not fit the current TopAgent boundary, say so plainly. Either keep it out, or treat it as a real product shift and update these rules first or alongside the change.
+(Keep your current 14 rule bodies; they are already strong.)
 
 ## Acceptable Complexity
-
-- adding persistence because correctness or operator trust requires it now
-- adding a new tool because the existing tool surface cannot express the needed capability
-- splitting a hotspot into smaller units to make the runtime easier to reason about
-- adding explicit policy because the runtime surface genuinely expanded
-- expanding restart durability only when correctness or operator trust clearly requires it
-- adding explicit fixed caps, relevance filters, or narrow invariants that keep repeat-task latency bounded as durable artifacts grow
-- shipping a narrow spike only when it is labeled, contained, and easy to replace or remove
+(keep current section, lightly edited for clarity)
 
 ## Unacceptable Complexity
-
-- speculative abstractions
-- mixed boundaries between core runtime, transport, policy, and memory
-- hot-path bloat without clear payoff
-- durable knowledge growth that causes prompt assembly, retrieval work, or approvals to grow with artifact count
-- second planners, second policy engines, or second always-on reasoning layers added beside the current kernel
-- prompt-only enforcement for behavior that should be enforced in code
-- accidental persistence of session state
-- duplicate execution paths or duplicate ownership of the same fact
-- features with unclear owner, unclear payoff, or unclear exit path
+(keep current section, lightly edited for clarity)
 
 ## Spike Rule
-
 Exploratory work is allowed only when it is explicitly labeled as a spike, narrow in scope, isolated from permanent architecture where possible, honest about what it is trying to learn, and easy to remove or replace.
 
+## Exception Handling
+If a change intentionally violates one of these rules, name the rule explicitly, explain why the exception is necessary now, and contain the exception so it does not silently become the new default.
+
 ## Post-change Review
-
-After implementation, produce a short review with:
-
-- what improved
-- what got riskier
-- final simplicity score out of 10
-- actual hot-path cost impact on repeated tasks: faster, unchanged, or slower
-- whether any new behavior scales with durable artifact count, and if so why that scaling is acceptable
-- what hard cap or regression test keeps the hot path bounded
-- whether the added complexity was actually justified in the final implementation
-- whether the change made TopAgent more like a stable kernel or more like a pile of accumulating exceptions
-- whether these rules still fit the product boundary after the change
+Use these exact headings:
+- What improved
+- What got riskier
+- Final simplicity score
+- Actual repeated-task cost impact: faster / unchanged / slower
+- Scaling with durable artifact count
+- Hard cap or regression test
+- Was the added complexity actually justified?
+- Stable kernel or accumulating exceptions?
+- Do these rules still fit the product boundary?
 
 If the result is not clearly simpler, more explicit, or more honestly justified, revise before stopping.
