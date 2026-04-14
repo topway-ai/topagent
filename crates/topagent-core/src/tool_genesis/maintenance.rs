@@ -1,9 +1,9 @@
 use super::{
-    ToolGenesis, ToolManifest, external_tool_from_manifest, script_sha256_for_path,
-    validate_manifest_interface,
+    external_tool_from_manifest, script_sha256_for_path, validate_manifest_interface, ToolGenesis,
+    ToolManifest,
 };
-use crate::Result;
 use crate::external::ExternalTool;
+use crate::Result;
 use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

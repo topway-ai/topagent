@@ -4,7 +4,7 @@
 
 TopAgent is a local coding agent. You give it a task in natural language, and it reads your repository, makes a plan, and carries out the work using file operations and shell commands. It operates entirely within a workspace directory on your machine.
 
-It uses an LLM (via OpenRouter) to decide what to do at each step. The agent loop runs locally -- the LLM sees your code and tool output, but the tools themselves execute on your machine.
+It uses an LLM (OpenRouter or Opencode) to decide what to do at each step. The agent loop runs locally -- the LLM sees your code and tool output, but the tools themselves execute on your machine.
 
 ## Usage modes
 
@@ -77,7 +77,7 @@ Custom tools are stored in `.topagent/tools/`. Tool-authoring tools are only exp
 ## Current limitations
 
 - **Telegram**: private chats only, text messages only (no images, files, or group chats)
-- **Provider**: OpenRouter is the only supported LLM provider
+- **Provider**: Supports OpenRouter and Opencode through one transport seam; automatic selection based on model ID
 - **Platform**: Linux only; systemd required for the background service
 - **Workspace**: one workspace per process; the agent cannot operate across repositories
 - **Network**: bash commands, generated tools, and any workspace external tool configured with `"sandbox": "workspace"` run with network disabled when bubblewrap is available

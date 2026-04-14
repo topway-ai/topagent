@@ -8,13 +8,13 @@ use topagent_core::{
 
 use super::observation;
 use super::procedures::{
-    ProcedureDraft, ProcedureRevisionAction, evaluate_procedure_revision,
-    find_matching_active_procedure, find_matching_loaded_procedure, mark_procedure_superseded,
-    procedure_revision_quality_gate, record_procedure_reuse, revise_procedure, save_procedure,
-    set_procedure_source_trajectory,
+    evaluate_procedure_revision, find_matching_active_procedure, find_matching_loaded_procedure,
+    mark_procedure_superseded, procedure_revision_quality_gate, record_procedure_reuse,
+    revise_procedure, save_procedure, set_procedure_source_trajectory, ProcedureDraft,
+    ProcedureRevisionAction,
 };
-use super::trajectories::{TrajectoryDraft, save_trajectory};
-use super::{WorkspaceMemory, compact_text_line, memory_contract};
+use super::trajectories::{save_trajectory, TrajectoryDraft};
+use super::{compact_text_line, memory_contract, WorkspaceMemory};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct TaskPromotionReport {
@@ -558,8 +558,8 @@ fn artifact_filename(path: &str) -> Option<&str> {
 #[cfg(test)]
 mod scenario_tests {
     use crate::memory::procedures::{
-        ParsedProcedure, ProcedureDraft, ProcedureRevisionAction, ProcedureStatus,
-        evaluate_procedure_revision, procedure_revision_quality_gate,
+        evaluate_procedure_revision, procedure_revision_quality_gate, ParsedProcedure,
+        ProcedureDraft, ProcedureRevisionAction, ProcedureStatus,
     };
     use std::path::PathBuf;
 

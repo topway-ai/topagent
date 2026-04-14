@@ -1,6 +1,6 @@
-use super::{ToolGenesis, ToolManifest, external_tool_from_manifest, validate_manifest_interface};
-use crate::Result;
+use super::{external_tool_from_manifest, validate_manifest_interface, ToolGenesis, ToolManifest};
 use crate::external::ExternalTool;
+use crate::Result;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedToolRuntimeWarning {

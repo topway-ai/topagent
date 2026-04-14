@@ -1,4 +1,4 @@
-use super::{GeneratedToolRuntimeGuard, script_sha256_for_path};
+use super::{script_sha256_for_path, GeneratedToolRuntimeGuard};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GeneratedToolRevalidationOutcome {

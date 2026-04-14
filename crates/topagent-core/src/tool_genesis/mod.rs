@@ -1,8 +1,8 @@
-use crate::Result;
 use crate::command_exec::CommandSandboxPolicy;
 use crate::error::Error;
-use crate::external::{ExternalTool, resolve_argv_template};
+use crate::external::{resolve_argv_template, ExternalTool};
 use crate::tools::ToolRegistry;
+use crate::Result;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -306,7 +306,7 @@ pub use generated_tools::{
     CreateToolTool, DeleteGeneratedToolTool, ListGeneratedToolsTool, RepairToolTool,
 };
 pub use maintenance::{GeneratedToolInventory, GeneratedToolSummary};
-pub(crate) use revalidation::{GeneratedToolRevalidationOutcome, revalidate_runtime_tool};
+pub(crate) use revalidation::{revalidate_runtime_tool, GeneratedToolRevalidationOutcome};
 pub use runtime_inventory::{
     GeneratedToolRuntimeGuard, GeneratedToolRuntimeWarning, RuntimeGeneratedToolInventory,
 };

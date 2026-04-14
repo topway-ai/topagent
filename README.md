@@ -2,7 +2,11 @@
 
 A Telegram-first, CLI-backed local coding agent that reads one repository, plans changes, and executes them with file tools and local shell commands.
 
-Uses [OpenRouter](https://openrouter.ai/) for LLM access. Default model: `minimax/minimax-m2.7`.
+Supports two LLM providers through one shared OpenAI-compatible transport seam:
+- **OpenRouter** (default) — default model: `minimax/minimax-m2.7`
+- **Opencode** — default model: `glm-5.1`
+
+Provider is selected automatically from the model ID, or explicitly via `--model`.
 
 ## Install
 
@@ -24,8 +28,10 @@ TOPAGENT_INSTALL_USE_CARGO=1 curl -fsSL https://raw.githubusercontent.com/topway
 
 ```bash
 export OPENROUTER_API_KEY="your_openrouter_key"
+# or: export OPENCODE_API_KEY="your_opencode_key"
 cd /path/to/your/repo
 topagent "summarize this repository"
+# or with Opencode: topagent --model glm-5.1 "summarize this repository"
 ```
 
 Press Ctrl-C once to request a graceful stop. Press again to force exit.
@@ -155,7 +161,6 @@ Saved trajectories now include provenance labels from the run. A trajectory can 
 
 - Telegram: private chats only, text messages only
 - One workspace per process
-- OpenRouter is the only supported provider
 - Linux only (systemd required for background service)
 
 ## Documentation

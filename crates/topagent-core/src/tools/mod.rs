@@ -8,8 +8,8 @@ mod save_lesson;
 mod save_plan;
 mod write;
 
-pub use bash::BashTool;
 pub(crate) use bash::risky_shell_changed_path_hints;
+pub use bash::BashTool;
 pub use edit::EditTool;
 pub use git::{GitAddTool, GitBranchTool, GitCommitTool, GitDiffTool, GitStatusTool};
 pub use operator_preference::ManageOperatorPreferenceTool;
@@ -19,9 +19,9 @@ pub use save_lesson::{SaveLessonArgs, SaveLessonTool};
 pub use save_plan::{SavePlanArgs, SavePlanTool};
 pub use write::WriteTool;
 
-use crate::Result;
 use crate::context::ToolContext;
 use crate::tool_spec::ToolSpec;
+use crate::Result;
 use std::collections::HashMap;
 
 pub trait Tool: Send + Sync {

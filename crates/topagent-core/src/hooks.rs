@@ -65,8 +65,10 @@ pub struct HookInput {
 /// to `Allow` (pass-through).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "action")]
+#[derive(Default)]
 pub enum HookVerdict {
     /// Allow the operation to proceed.
+    #[default]
     Allow,
     /// Block the operation with a reason.
     Block { reason: String },
@@ -74,12 +76,6 @@ pub enum HookVerdict {
     Annotate { note: String },
     /// Request a follow-up verification step (PostWrite only).
     RequestVerify { command: String },
-}
-
-impl Default for HookVerdict {
-    fn default() -> Self {
-        Self::Allow
-    }
 }
 
 // ── Hook Definition ──

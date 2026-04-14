@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 use topagent_core::{
@@ -7,11 +7,11 @@ use topagent_core::{
 
 use crate::config::resolve_workspace_path;
 use crate::memory::{
-    MEMORY_INDEX_RELATIVE_PATH, MEMORY_LESSONS_RELATIVE_DIR, MEMORY_OBSERVATIONS_RELATIVE_DIR,
-    MEMORY_PLANS_RELATIVE_DIR, MEMORY_PROCEDURES_RELATIVE_DIR, MEMORY_TOPICS_RELATIVE_DIR,
-    MEMORY_TRAJECTORIES_RELATIVE_DIR, ProcedureStatus, TRAJECTORY_EXPORTS_RELATIVE_DIR,
-    TrajectoryReviewState, WorkspaceMemory, disable_procedure, mark_trajectory_ready, observation,
-    parse_saved_procedure, parse_saved_trajectory, write_exported_trajectory,
+    disable_procedure, mark_trajectory_ready, observation, parse_saved_procedure,
+    parse_saved_trajectory, write_exported_trajectory, ProcedureStatus, TrajectoryReviewState,
+    WorkspaceMemory, MEMORY_INDEX_RELATIVE_PATH, MEMORY_LESSONS_RELATIVE_DIR,
+    MEMORY_OBSERVATIONS_RELATIVE_DIR, MEMORY_PLANS_RELATIVE_DIR, MEMORY_PROCEDURES_RELATIVE_DIR,
+    MEMORY_TOPICS_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR, TRAJECTORY_EXPORTS_RELATIVE_DIR,
 };
 
 fn render_memory_recall(workspace: &Path, instruction: &str) -> Result<String> {
@@ -646,8 +646,8 @@ fn list_files(dir: &Path, extension: &str) -> Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::procedures::{ProcedureDraft, mark_procedure_superseded, save_procedure};
-    use crate::memory::trajectories::{TrajectoryDraft, save_trajectory};
+    use crate::memory::procedures::{mark_procedure_superseded, save_procedure, ProcedureDraft};
+    use crate::memory::trajectories::{save_trajectory, TrajectoryDraft};
     use tempfile::TempDir;
     use topagent_core::{Plan, TaskMode, ToolTraceStep, VerificationCommand};
 
@@ -716,11 +716,9 @@ mod tests {
         let rendered = prune_procedures(temp.path()).unwrap();
 
         assert!(rendered.contains("Removed: 1"));
-        assert!(
-            procedures_dir
-                .join(active_file.trim_start_matches(".topagent/procedures/"))
-                .exists()
-        );
+        assert!(procedures_dir
+            .join(active_file.trim_start_matches(".topagent/procedures/"))
+            .exists());
         assert!(!stale_path.exists());
     }
 

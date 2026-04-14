@@ -1,6 +1,6 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use topagent_core::{WorkspaceCheckpointRestoreReport, WorkspaceCheckpointStore};
 
 use crate::config::resolve_workspace_path;

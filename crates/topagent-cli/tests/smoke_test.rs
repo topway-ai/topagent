@@ -467,7 +467,7 @@ fn test_operations_docs_cover_model_management() {
     let operations = std::fs::read_to_string(repo_root.join("docs/operations.md")).unwrap();
 
     assert!(operations.contains("topagent model status"));
-    assert!(operations.contains("topagent model set <openrouter-model-id>"));
+    assert!(operations.contains("topagent model set <model-id>"));
     assert!(operations.contains("topagent model pick"));
     assert!(operations.contains("topagent model refresh"));
     assert!(operations.contains("openrouter-models.json"));

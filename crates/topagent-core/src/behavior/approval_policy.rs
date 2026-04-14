@@ -40,6 +40,7 @@ pub(super) fn default_approval_policy() -> ApprovalPolicy {
 }
 
 impl ApprovalPolicy {
+    #[allow(clippy::too_many_arguments)]
     fn build_request(
         &self,
         kind: ApprovalTriggerKind,

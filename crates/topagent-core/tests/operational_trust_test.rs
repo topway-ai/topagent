@@ -1,10 +1,10 @@
 use std::fs;
 use tempfile::TempDir;
 use topagent_core::{
-    BehaviorContract,
     checkpoint::{CheckpointCaptureMetadata, CheckpointCaptureSource, WorkspaceCheckpointStore},
     hooks::HookRegistry,
     provenance::{DurablePromotionKind, InfluenceMode, RunTrustContext, SourceKind, SourceLabel},
+    BehaviorContract,
 };
 
 fn create_temp_workspace() -> (TempDir, WorkspaceCheckpointStore) {
@@ -434,11 +434,9 @@ fn test_restore_then_modify_then_second_restore_works_correctly() {
     fs::write(temp.path().join("important.txt"), "bad change").unwrap();
 
     let report1 = store1.restore_latest().unwrap().unwrap();
-    assert!(
-        report1
-            .restored_files
-            .contains(&"important.txt".to_string())
-    );
+    assert!(report1
+        .restored_files
+        .contains(&"important.txt".to_string()));
     assert_eq!(
         fs::read_to_string(temp.path().join("important.txt")).unwrap(),
         "original content"

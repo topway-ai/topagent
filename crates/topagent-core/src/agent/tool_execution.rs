@@ -1,11 +1,11 @@
-use super::{Agent, extract_exit_code};
+use super::{extract_exit_code, Agent};
 use crate::behavior::BashCommandClass;
 use crate::checkpoint::WorkspaceCheckpointStatus;
 use crate::context::{ExecutionContext, ToolContext};
 use crate::external::ExternalToolEffect;
-use crate::hooks::{HookEvent, HookInput, dispatch_hooks};
+use crate::hooks::{dispatch_hooks, HookEvent, HookInput};
 use crate::provenance::fetched_content_source;
-use crate::tool_genesis::{GeneratedToolRevalidationOutcome, revalidate_runtime_tool};
+use crate::tool_genesis::{revalidate_runtime_tool, GeneratedToolRevalidationOutcome};
 use crate::tools::risky_shell_changed_path_hints;
 use crate::{Message, ProgressUpdate, Result};
 
@@ -427,6 +427,7 @@ impl Agent {
         )))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn emit_post_tool_progress(
         &self,
         ctx: &ExecutionContext,

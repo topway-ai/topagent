@@ -4,7 +4,7 @@ use crate::behavior::PreExecutionState;
 use crate::command_exec::CommandSandboxPolicy;
 use crate::context::ExecutionContext;
 use crate::external::ExternalToolEffect;
-use crate::hooks::{HookEvent, HookInput, dispatch_hooks};
+use crate::hooks::{dispatch_hooks, HookEvent, HookInput};
 use crate::progress::ProgressUpdate;
 use crate::{Error, Result};
 

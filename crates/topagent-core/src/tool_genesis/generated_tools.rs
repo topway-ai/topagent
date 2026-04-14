@@ -1,9 +1,9 @@
-use super::{ToolGenesis, ToolInput, VerificationSpec, get_string, validate_tool_name};
-use crate::Result;
+use super::{get_string, validate_tool_name, ToolGenesis, ToolInput, VerificationSpec};
 use crate::context::ToolContext;
 use crate::error::Error;
 use crate::tool_spec::ToolSpec;
 use crate::tools::Tool;
+use crate::Result;
 use std::collections::BTreeMap;
 
 pub struct ListGeneratedToolsTool;
@@ -426,12 +426,10 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("invalid inputs[0]")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid inputs[0]"));
     }
 
     #[test]
@@ -453,12 +451,10 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("argv_template[0] must be a string")
-        );
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("argv_template[0] must be a string"));
     }
 
     #[test]

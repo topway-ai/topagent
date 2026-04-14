@@ -1,7 +1,7 @@
 use crate::checkpoint::{
     CheckpointCaptureMetadata, CheckpointCaptureSource, WorkspaceCheckpointStore,
 };
-use crate::command_exec::{CommandSandboxPolicy, run_command};
+use crate::command_exec::{run_command, CommandSandboxPolicy};
 use crate::context::ToolContext;
 use crate::file_util::format_command_output_with_limit;
 use crate::secrets;
@@ -351,7 +351,7 @@ pub(crate) fn risky_shell_changed_path_hints(command: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-fn split_shell_segments<'a>(command: &'a str) -> Vec<&'a str> {
+fn split_shell_segments(command: &str) -> Vec<&str> {
     let mut segments = Vec::new();
     let mut start = 0;
     let mut chars = command.char_indices().peekable();
@@ -637,9 +637,7 @@ fn unzip_checkpoint_scope(args: &[String]) -> Option<BashCheckpointScope> {
 }
 
 fn seven_zip_checkpoint_scope(args: &[String]) -> Option<BashCheckpointScope> {
-    let Some(mode) = args.first() else {
-        return None;
-    };
+    let mode = args.first()?;
     if mode != "x" && mode != "e" {
         return None;
     }
@@ -654,9 +652,7 @@ fn seven_zip_checkpoint_scope(args: &[String]) -> Option<BashCheckpointScope> {
 }
 
 fn git_workspace_rewrite_scope(args: &[String]) -> Option<BashCheckpointScope> {
-    let Some(subcommand) = args.first().map(String::as_str) else {
-        return None;
-    };
+    let subcommand = args.first().map(String::as_str)?;
 
     match subcommand {
         "reset" => args
@@ -941,13 +937,11 @@ mod tests {
         assert_eq!(status.captures.len(), 1);
         assert_eq!(status.captures[0].source, CheckpointCaptureSource::Bash);
         assert_eq!(status.captures[0].reason, "shell redirection write");
-        assert!(
-            status.captures[0]
-                .detail
-                .as_deref()
-                .unwrap_or_default()
-                .contains("notes.txt")
-        );
+        assert!(status.captures[0]
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("notes.txt"));
         assert_eq!(status.captured_paths, vec!["notes.txt"]);
     }
 

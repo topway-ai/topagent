@@ -26,7 +26,7 @@ impl PreferenceCategory {
         }
     }
 
-    pub fn from_str(value: &str) -> Result<Self> {
+    pub fn parse(value: &str) -> Result<Self> {
         match value.trim() {
             "response_style" => Ok(Self::ResponseStyle),
             "workflow" => Ok(Self::Workflow),
@@ -154,7 +154,7 @@ pub fn parse_operator_profile(contents: &str) -> Result<OperatorProfile> {
     }
 
     for (key, body) in sections {
-        let category = PreferenceCategory::from_str(
+        let category = PreferenceCategory::parse(
             &extract_inline_field(&body, "**Category:**").ok_or_else(|| {
                 Error::ToolFailed(format!(
                     "operator_profile: missing category for preference `{}`",
@@ -323,7 +323,7 @@ fn parse_legacy_preference_file(path: &Path) -> Result<OperatorPreferenceRecord>
             path.display()
         ))
     })?;
-    let category = PreferenceCategory::from_str(
+    let category = PreferenceCategory::parse(
         &extract_inline_field(&raw, "**Category:**").ok_or_else(|| {
             Error::ToolFailed(format!(
                 "operator_profile: missing category in {}",
@@ -463,11 +463,9 @@ mod tests {
         assert!(user_md.contains("# Operator Model"));
         assert!(user_md.contains("## concise_final_answers"));
         assert!(!index.contains("operator preference"));
-        assert!(
-            !temp
-                .path()
-                .join(".topagent/topics/operator-preference-concise_final_answers.md")
-                .exists()
-        );
+        assert!(!temp
+            .path()
+            .join(".topagent/topics/operator-preference-concise_final_answers.md")
+            .exists());
     }
 }

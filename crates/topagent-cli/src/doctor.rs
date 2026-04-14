@@ -3,8 +3,8 @@ use std::path::Path;
 use topagent_core::tool_genesis::ToolGenesis;
 
 use crate::config::{
-    CliParams, TOPAGENT_MODEL_KEY, TOPAGENT_SERVICE_MANAGED_KEY, resolve_runtime_model_selection,
-    resolve_workspace_path,
+    resolve_runtime_model_selection, resolve_workspace_path, CliParams, TOPAGENT_MODEL_KEY,
+    TOPAGENT_SERVICE_MANAGED_KEY,
 };
 use crate::managed_files::{is_topagent_managed_file, read_managed_env_metadata};
 use crate::memory::{
@@ -993,11 +993,9 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let mut checks = Vec::new();
         check_workspace_layout(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Error && c.name == "workspace layout")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Error && c.name == "workspace layout"));
     }
 
     #[test]
@@ -1024,11 +1022,9 @@ mod tests {
         std::fs::create_dir_all(temp.path().join(".topagent")).unwrap();
         let mut checks = Vec::new();
         check_workspace_layout(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Warning && c.name == "workspace layout")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Warning && c.name == "workspace layout"));
     }
 
     #[test]
@@ -1041,11 +1037,9 @@ mod tests {
         .unwrap();
         let mut checks = Vec::new();
         check_hooks_manifest(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Error && c.name == "hooks manifest")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Error && c.name == "hooks manifest"));
     }
 
     #[test]
@@ -1058,11 +1052,9 @@ mod tests {
         .unwrap();
         let mut checks = Vec::new();
         check_external_tools(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Error && c.name == "external tools")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Error && c.name == "external tools"));
     }
 
     #[test]
@@ -1090,11 +1082,9 @@ mod tests {
         .unwrap();
         let mut checks = Vec::new();
         check_external_tools(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Ok && c.name == "external tools")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Ok && c.name == "external tools"));
     }
 
     #[test]
@@ -1121,11 +1111,9 @@ mod tests {
         std::fs::write(temp.path().join(MEMORY_INDEX_RELATIVE_PATH), &big_content).unwrap();
         let mut checks = Vec::new();
         check_memory_md(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Warning && c.name == "MEMORY.md")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Warning && c.name == "MEMORY.md"));
     }
 
     #[test]
@@ -1168,11 +1156,9 @@ mod tests {
         std::fs::write(user_profile_path(temp.path()), &content).unwrap();
         let mut checks = Vec::new();
         check_user_md(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Warning && c.name == "USER.md")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Warning && c.name == "USER.md"));
     }
 
     #[test]
@@ -1185,11 +1171,9 @@ mod tests {
         .unwrap();
         let mut checks = Vec::new();
         check_user_md(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.name == "USER.md" && c.detail.contains("parse error"))
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.name == "USER.md" && c.detail.contains("parse error")));
     }
 
     #[test]
@@ -1205,11 +1189,9 @@ label = "test hook""#,
         .unwrap();
         let mut checks = Vec::new();
         check_hooks_manifest(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Ok && c.name == "hooks manifest")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Ok && c.name == "hooks manifest"));
     }
 
     #[test]
@@ -1225,11 +1207,9 @@ label = "test hook""#,
 
         let mut checks = Vec::new();
         check_generated_tools(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Warning && c.name == "generated tools")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Warning && c.name == "generated tools"));
     }
 
     #[test]
@@ -1237,11 +1217,9 @@ label = "test hook""#,
         let temp = healthy_workspace();
         let mut checks = Vec::new();
         check_generated_tools(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Ok && c.name == "generated tools")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Ok && c.name == "generated tools"));
     }
 
     #[test]
@@ -1364,11 +1342,9 @@ label = "test hook""#,
 
         let mut layout_checks = Vec::new();
         check_workspace_layout(temp.path(), &mut layout_checks);
-        assert!(
-            layout_checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Warning && c.name == "workspace layout")
-        );
+        assert!(layout_checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Warning && c.name == "workspace layout"));
         let detail = layout_checks
             .iter()
             .find(|c| c.name == "workspace layout")

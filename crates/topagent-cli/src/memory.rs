@@ -6,18 +6,18 @@ mod promotion;
 pub(crate) mod trajectories;
 
 pub(crate) use self::procedures::{
-    ParsedProcedure, ProcedureStatus, disable_procedure, parse_saved_procedure,
+    disable_procedure, parse_saved_procedure, ParsedProcedure, ProcedureStatus,
 };
 pub(crate) use self::promotion::promote_verified_task;
 pub(crate) use self::trajectories::{
-    TRAJECTORY_EXPORTS_RELATIVE_DIR, TrajectoryReviewState,
     export_trajectory as write_exported_trajectory, mark_trajectory_ready, parse_saved_trajectory,
+    TrajectoryReviewState, TRAJECTORY_EXPORTS_RELATIVE_DIR,
 };
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use topagent_core::{
-    BehaviorContract, Message, RunTrustContext, migrate_legacy_operator_preferences,
+    migrate_legacy_operator_preferences, BehaviorContract, Message, RunTrustContext,
 };
 
 use crate::managed_files::write_managed_file;
@@ -335,16 +335,16 @@ fn artifact_filename(path: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::procedures::{ProcedureDraft, save_procedure};
+    use super::procedures::{save_procedure, ProcedureDraft};
     use super::promotion::TaskPromotionReport;
     use super::*;
     use std::fs;
     use tempfile::TempDir;
     use topagent_core::{
-        Agent, ExecutionContext, InfluenceMode, Message, Plan, ProviderResponse, Role,
-        RunTrustContext, RuntimeOptions, ScriptedProvider, SecretRegistry, SourceKind, SourceLabel,
-        TaskMode, TaskResult, ToolTraceStep, VerificationCommand, WorkspaceCheckpointStore,
-        tools::default_tools,
+        tools::default_tools, Agent, ExecutionContext, InfluenceMode, Message, Plan,
+        ProviderResponse, Role, RunTrustContext, RuntimeOptions, ScriptedProvider, SecretRegistry,
+        SourceKind, SourceLabel, TaskMode, TaskResult, ToolTraceStep, VerificationCommand,
+        WorkspaceCheckpointStore,
     };
 
     fn write_memory_index(workspace: &Path, body: &str) {
@@ -693,21 +693,17 @@ path = "src/lib.rs"
             )
             .unwrap();
 
-        assert!(
-            prompt
-                .operator_prompt
-                .as_deref()
-                .unwrap()
-                .contains("concise final answers")
-        );
+        assert!(prompt
+            .operator_prompt
+            .as_deref()
+            .unwrap()
+            .contains("concise final answers"));
         assert!(prompt.prompt.as_deref().unwrap().contains("# Architecture"));
-        assert!(
-            !prompt
-                .prompt
-                .as_deref()
-                .unwrap()
-                .contains("concise final answers")
-        );
+        assert!(!prompt
+            .prompt
+            .as_deref()
+            .unwrap()
+            .contains("concise final answers"));
     }
 
     #[test]
@@ -727,13 +723,11 @@ path = "src/lib.rs"
             .unwrap();
 
         assert!(prompt.trust_context.has_low_trust_action_influence());
-        assert!(
-            prompt
-                .trust_context
-                .low_trust_action_summary(2)
-                .unwrap_or_default()
-                .contains("prior transcript")
-        );
+        assert!(prompt
+            .trust_context
+            .low_trust_action_summary(2)
+            .unwrap_or_default()
+            .contains("prior transcript"));
     }
 
     #[test]
@@ -765,13 +759,11 @@ path = "src/lib.rs"
                 <= memory_contract().memory.max_transcript_prompt_bytes
         );
         assert_eq!(prompt.trust_context.low_trust_sources().len(), 1);
-        assert!(
-            prompt
-                .trust_context
-                .low_trust_action_summary(2)
-                .unwrap_or_default()
-                .contains("prior transcript")
-        );
+        assert!(prompt
+            .trust_context
+            .low_trust_action_summary(2)
+            .unwrap_or_default()
+            .contains("prior transcript"));
     }
 
     #[test]
@@ -930,13 +922,11 @@ path = "src/lib.rs"
         assert!(
             grown.stats.index_prompt_bytes <= memory_contract().memory.max_index_prompt_bytes + 80
         );
-        assert!(
-            !grown
-                .prompt
-                .as_deref()
-                .unwrap_or_default()
-                .contains("ignored trajectory")
-        );
+        assert!(!grown
+            .prompt
+            .as_deref()
+            .unwrap_or_default()
+            .contains("ignored trajectory"));
     }
 
     #[test]
@@ -1012,12 +1002,10 @@ path = "src/lib.rs"
         assert!(report.lesson_file.is_some());
         assert!(report.procedure_file.is_none());
         assert!(report.trajectory_file.is_some());
-        assert!(
-            report
-                .notes
-                .iter()
-                .any(|note| note.contains("Procedure promotion blocked"))
-        );
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("Procedure promotion blocked")));
     }
 
     #[test]
@@ -1158,12 +1146,10 @@ path = "src/lib.rs"
         assert_eq!(reused.status, ProcedureStatus::Active);
         assert_eq!(reused.reuse_count, 1);
         assert_eq!(reused.revision_count, 0);
-        assert!(
-            prompt
-                .stats
-                .loaded_procedure_files
-                .contains(&first_procedure)
-        );
+        assert!(prompt
+            .stats
+            .loaded_procedure_files
+            .contains(&first_procedure));
     }
 
     #[test]
@@ -1216,12 +1202,10 @@ path = "src/lib.rs"
         assert_eq!(refined.status, ProcedureStatus::Active);
         assert_eq!(refined.reuse_count, 4);
         assert_eq!(refined.revision_count, 1);
-        assert!(
-            refined
-                .steps
-                .iter()
-                .any(|step| step.contains("Clear stale transcript state"))
-        );
+        assert!(refined
+            .steps
+            .iter()
+            .any(|step| step.contains("Clear stale transcript state")));
     }
 
     #[test]
@@ -1346,24 +1330,18 @@ path = "src/lib.rs"
             .build_prompt("repair approval mailbox compaction and restore flow", None)
             .unwrap();
         assert_eq!(prompt.stats.loaded_items.len(), 2);
-        assert!(
-            prompt
-                .stats
-                .loaded_items
-                .contains(&"Approval mailbox compaction playbook".to_string())
-        );
-        assert!(
-            prompt
-                .stats
-                .loaded_items
-                .contains(&"Approval mailbox restore flow".to_string())
-        );
-        assert!(
-            !prompt
-                .stats
-                .loaded_items
-                .contains(&"Operator response tone guide".to_string())
-        );
+        assert!(prompt
+            .stats
+            .loaded_items
+            .contains(&"Approval mailbox compaction playbook".to_string()));
+        assert!(prompt
+            .stats
+            .loaded_items
+            .contains(&"Approval mailbox restore flow".to_string()));
+        assert!(!prompt
+            .stats
+            .loaded_items
+            .contains(&"Operator response tone guide".to_string()));
     }
 
     #[test]
@@ -1698,21 +1676,17 @@ path = "src/lib.rs"
         .unwrap();
 
         assert!(task_result.final_verification_passed());
-        assert!(
-            task_result
-                .source_labels()
-                .iter()
-                .any(|label| label.kind == SourceKind::TranscriptPrior)
-        );
+        assert!(task_result
+            .source_labels()
+            .iter()
+            .any(|label| label.kind == SourceKind::TranscriptPrior));
         assert!(report.lesson_file.is_some());
         assert!(report.procedure_file.is_none());
         assert!(report.trajectory_file.is_some());
-        assert!(
-            report
-                .notes
-                .iter()
-                .any(|note| note.contains("Procedure promotion blocked"))
-        );
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("Procedure promotion blocked")));
     }
 
     #[test]
@@ -1738,26 +1712,22 @@ path = "src/lib.rs"
             .run(&write_ctx, "update src/lib.rs and verify")
             .unwrap();
         assert!(first_result.contains("verified update"));
-        assert!(
-            checkpoint_store
-                .latest_status()
-                .unwrap()
-                .expect("checkpoint should exist")
-                .captured_paths
-                .iter()
-                .any(|path| path == "src/lib.rs")
-        );
+        assert!(checkpoint_store
+            .latest_status()
+            .unwrap()
+            .expect("checkpoint should exist")
+            .captured_paths
+            .iter()
+            .any(|path| path == "src/lib.rs"));
 
         let restore_report = checkpoint_store
             .restore_latest()
             .unwrap()
             .expect("restore should succeed");
-        assert!(
-            restore_report
-                .restored_files
-                .iter()
-                .any(|path| path == "src/lib.rs")
-        );
+        assert!(restore_report
+            .restored_files
+            .iter()
+            .any(|path| path == "src/lib.rs"));
         assert_eq!(
             fs::read_to_string(temp.path().join("src/lib.rs")).unwrap(),
             "pub fn answer() -> u32 {\n    42\n}\n"
@@ -1915,12 +1885,10 @@ path = "src/lib.rs"
             .unwrap();
 
         assert!(prompt.stats.observation_hints_used > 0);
-        assert!(
-            prompt
-                .stats
-                .loaded_items
-                .contains(&"approval-flow".to_string())
-        );
+        assert!(prompt
+            .stats
+            .loaded_items
+            .contains(&"approval-flow".to_string()));
     }
 
     #[test]

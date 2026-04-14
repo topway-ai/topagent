@@ -12,8 +12,8 @@ use crate::runtime::RuntimeOptions;
 use crate::session::Session;
 use crate::task_result::TaskResult;
 use crate::tool_genesis::{
-    GeneratedToolRuntimeGuard, load_runtime_generated_tool_inventory,
-    register_generated_tool_authoring_tools,
+    load_runtime_generated_tool_inventory, register_generated_tool_authoring_tools,
+    GeneratedToolRuntimeGuard,
 };
 use crate::tools::{
     ManageOperatorPreferenceTool, SaveLessonTool, SavePlanTool, Tool, ToolRegistry, UpdatePlanTool,
@@ -662,7 +662,7 @@ fn extract_exit_code(result: &str) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{Agent, extract_exit_code};
+    use super::{extract_exit_code, Agent};
     use crate::approval::{
         ApprovalMailbox, ApprovalMailboxMode, ApprovalRequestDraft, ApprovalTriggerKind,
     };
@@ -671,9 +671,9 @@ mod tests {
     use crate::provider::{ProviderResponse, ScriptedProvider};
     use crate::runtime::RuntimeOptions;
     use crate::tool_genesis::{
-        ListGeneratedToolsTool, ToolGenesis, VerificationSpec, test_support,
+        test_support, ListGeneratedToolsTool, ToolGenesis, VerificationSpec,
     };
-    use crate::tools::{Tool, default_tools};
+    use crate::tools::{default_tools, Tool};
     use crate::{Error, Message};
     use std::collections::BTreeMap;
     use std::fs;
@@ -1005,23 +1005,19 @@ path = "src/lib.rs"
         assert!(runtime_scans >= 1);
         assert_eq!(maintenance_scans, 0);
         assert_eq!(test_support::generated_tool_revalidation_count(), 1);
-        assert!(
-            invoking_agent
-                .external_tools()
-                .get("drifted_tool")
-                .is_none()
-        );
-        assert!(
-            invoking_agent
-                .conversation_messages()
-                .iter()
-                .any(|message| matches!(
-                    &message.content,
-                    crate::message::Content::ToolResult { result, .. }
-                        if result.contains("generated tool 'drifted_tool' is unavailable")
-                            && result.contains("script.sh changed after approval")
-                ))
-        );
+        assert!(invoking_agent
+            .external_tools()
+            .get("drifted_tool")
+            .is_none());
+        assert!(invoking_agent
+            .conversation_messages()
+            .iter()
+            .any(|message| matches!(
+                &message.content,
+                crate::message::Content::ToolResult { result, .. }
+                    if result.contains("generated tool 'drifted_tool' is unavailable")
+                        && result.contains("script.sh changed after approval")
+            )));
     }
 
     #[test]

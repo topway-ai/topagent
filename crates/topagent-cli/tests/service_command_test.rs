@@ -571,10 +571,8 @@ fn test_reinstall_restarts_service_and_status_reads_updated_model_from_single_co
     let status = harness.command().arg("status").output().unwrap();
     assert!(status.status.success());
     let status_stdout = String::from_utf8_lossy(&status.stdout);
-    assert!(
-        status_stdout
-            .contains("Configured default model: anthropic/claude-sonnet-4.6 (persisted default)")
-    );
+    assert!(status_stdout
+        .contains("Configured default model: anthropic/claude-sonnet-4.6 (persisted default)"));
     assert!(
         status_stdout.contains("Effective model: anthropic/claude-sonnet-4.6 (persisted default)")
     );
@@ -589,11 +587,8 @@ fn test_reinstall_restarts_service_and_status_reads_updated_model_from_single_co
     assert!(model_stdout.contains(
         "Configured default model: anthropic/claude-sonnet-4.6 [OpenRouter] (persisted default)"
     ));
-    assert!(
-        model_stdout.contains(
-            "Effective model: anthropic/claude-sonnet-4.6 [OpenRouter] (persisted default)"
-        )
-    );
+    assert!(model_stdout
+        .contains("Effective model: anthropic/claude-sonnet-4.6 [OpenRouter] (persisted default)"));
 
     let calls = harness.calls_log();
     assert_eq!(
@@ -894,9 +889,7 @@ fn test_install_then_model_set_then_status_lifecycle_preserves_all_env_values() 
     assert!(model_set.status.success());
     let model_set_stdout = String::from_utf8_lossy(&model_set.stdout);
     assert!(model_set_stdout.contains("Previous model: minimax/minimax-m2.7"));
-    assert!(
-        model_set_stdout.contains("Configured model: anthropic/claude-sonnet-4.6 [OpenRouter]")
-    );
+    assert!(model_set_stdout.contains("Configured model: anthropic/claude-sonnet-4.6 [OpenRouter]"));
 
     let env_after_set = fs::read_to_string(harness.env_path()).unwrap();
     assert!(env_after_set.contains("TOPAGENT_MODEL=\"anthropic/claude-sonnet-4.6\""));

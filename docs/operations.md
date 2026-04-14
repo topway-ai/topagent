@@ -74,11 +74,11 @@ The Telegram bot runs as a systemd user service named `topagent-telegram.service
 
 ```bash
 topagent status              # show config paths, service state, and recent logs
-topagent model status        # show the configured default and effective OpenRouter model
-topagent model set <id>      # update the configured OpenRouter model
-topagent model pick          # pick the configured OpenRouter model interactively
-topagent model list          # show cached top OpenRouter models
-topagent model refresh       # refresh the cached top OpenRouter models
+topagent model status        # show the configured default and effective model
+topagent model set <id>      # update the configured model
+topagent model pick          # pick the configured model interactively
+topagent model list          # show cached top provider models
+topagent model refresh       # refresh the cached provider models
 topagent memory status       # show operator/workspace learning artifact status
 topagent procedure list      # list live procedures
 topagent procedure show <id> # show one procedure
@@ -103,15 +103,15 @@ topagent uninstall           # remove service, config, and installed binary
 
 ### Model management
 
-`topagent model status` reads the same managed env file that powers `topagent status`, then reports both the configured default model and the effective model for the current invocation.
+`topagent model status` reads the same managed env file that powers `topagent status`, then reports both the configured default model and the effective model for the current invocation. The effective provider is determined by the model ID.
 
-`topagent model set <openrouter-model-id>` updates only `TOPAGENT_MODEL` inside the managed env file, preserves the other managed values, and automatically restarts the Telegram service when it is installed.
+`topagent model set <model-id>` updates only `TOPAGENT_MODEL` inside the managed env file, preserves the other managed values, and automatically restarts the Telegram service when it is installed. Both OpenRouter and Opencode models are supported.
 
-`topagent model pick` uses the same OpenRouter model discovery and fallback logic as setup: live top-model lookup first, then cached models, then the curated starter list, with a manual custom-model entry path.
+`topagent model pick` uses the same provider model discovery and fallback logic as setup: live top-model lookup first, then cached models, then the curated starter list, with a manual custom-model entry path.
 
-`topagent model list` shows the cached OpenRouter starter list and marks the current configured model when it appears in that cache.
+`topagent model list` shows the cached provider starter list and marks the current configured model when it appears in that cache.
 
-`topagent model refresh` fetches the current top OpenRouter models and stores them in `~/.config/topagent/cache/openrouter-models.json`. If live refresh fails and a cache already exists, TopAgent keeps the stale cache and tells you so.
+`topagent model refresh` fetches the current top provider models and stores them in `~/.config/topagent/cache/openrouter-models.json`. If live refresh fails and a cache already exists, TopAgent keeps the stale cache and tells you so.
 
 ### Workspace checkpoints
 
@@ -450,7 +450,7 @@ curl "https://api.telegram.org/bot<YOUR_TOKEN>/deleteWebhook"
 
 ### Agent produces poor results
 
-- Try a different model: `topagent model set <openrouter-model-id>`
+- Try a different model: `topagent model set <model-id>`
 - Refresh the cached starter list first when you want fresh options: `topagent model refresh`
 - Use `--model <id>` for one-shot runs or foreground Telegram without changing the installed service
 - Enable generated-tool authoring explicitly when needed: `--tool-authoring on`

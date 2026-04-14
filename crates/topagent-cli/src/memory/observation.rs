@@ -557,17 +557,28 @@ pub(crate) mod tests {
 
     #[test]
     fn test_classify_source_kind() {
-        let mut report = TaskPromotionReport::default();
-        report.lesson_file = Some("l.md".to_string());
+        let report = TaskPromotionReport {
+            lesson_file: Some("l.md".to_string()),
+            ..Default::default()
+        };
         assert_eq!(classify_source_kind(&report), ObservationSourceKind::Lesson);
 
-        report.procedure_file = Some("p.md".to_string());
+        let report = TaskPromotionReport {
+            lesson_file: Some("l.md".to_string()),
+            procedure_file: Some("p.md".to_string()),
+            ..Default::default()
+        };
         assert_eq!(
             classify_source_kind(&report),
             ObservationSourceKind::LessonAndProcedure
         );
 
-        report.trajectory_file = Some("t.json".to_string());
+        let report = TaskPromotionReport {
+            lesson_file: Some("l.md".to_string()),
+            procedure_file: Some("p.md".to_string()),
+            trajectory_file: Some("t.json".to_string()),
+            ..Default::default()
+        };
         assert_eq!(classify_source_kind(&report), ObservationSourceKind::Full);
     }
 
@@ -726,16 +737,12 @@ pub(crate) mod tests {
 
         let result = progressive_retrieve(&obs_dir, "harden the approval mailbox", 8, 4).unwrap();
         assert_eq!(result.candidates.len(), 1);
-        assert!(
-            result
-                .artifact_paths
-                .contains(&".topagent/lessons/approval-lesson.md".to_string())
-        );
-        assert!(
-            result
-                .artifact_paths
-                .contains(&".topagent/procedures/approval-proc.md".to_string())
-        );
+        assert!(result
+            .artifact_paths
+            .contains(&".topagent/lessons/approval-lesson.md".to_string()));
+        assert!(result
+            .artifact_paths
+            .contains(&".topagent/procedures/approval-proc.md".to_string()));
         assert!(!result.provenance_notes.is_empty());
     }
 

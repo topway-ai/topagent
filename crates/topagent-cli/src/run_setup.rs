@@ -1,8 +1,8 @@
 use crate::memory::WorkspaceMemory;
 use std::path::PathBuf;
 use topagent_core::{
-    Agent, Message, ModelRoute, OpenRouterProvider, RuntimeOptions, classify_operator_instruction,
-    context::ExecutionContext, hooks::HookRegistry, tools::default_tools,
+    classify_operator_instruction, context::ExecutionContext, hooks::HookRegistry,
+    tools::default_tools, Agent, Message, ModelRoute, OpenRouterProvider, RuntimeOptions,
 };
 use tracing::warn;
 
@@ -120,23 +120,19 @@ mod tests {
             "test-key",
             RuntimeOptions::default(),
         );
-        assert!(
-            !disabled
-                .tool_specs()
-                .iter()
-                .any(|spec| spec.name == "create_tool")
-        );
+        assert!(!disabled
+            .tool_specs()
+            .iter()
+            .any(|spec| spec.name == "create_tool"));
 
         let enabled = build_agent(
             &ModelRoute::default(),
             "test-key",
             RuntimeOptions::default().with_generated_tool_authoring(true),
         );
-        assert!(
-            enabled
-                .tool_specs()
-                .iter()
-                .any(|spec| spec.name == "create_tool")
-        );
+        assert!(enabled
+            .tool_specs()
+            .iter()
+            .any(|spec| spec.name == "create_tool"));
     }
 }

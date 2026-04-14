@@ -2,21 +2,21 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use topagent_core::{
-    BehaviorContract, InfluenceMode, Message, PreferenceCategory, Role, RunTrustContext,
-    SourceKind, SourceLabel, load_operator_profile,
+    load_operator_profile, BehaviorContract, InfluenceMode, Message, PreferenceCategory, Role,
+    RunTrustContext, SourceKind, SourceLabel,
 };
 use tracing::warn;
 
 use super::memory_consolidation::{
-    MemoryIndexEntry, MemoryIndexEntryKind, parse_saved_lesson, parse_saved_plan,
-    render_saved_lesson_excerpt, render_saved_plan_excerpt,
+    parse_saved_lesson, parse_saved_plan, render_saved_lesson_excerpt, render_saved_plan_excerpt,
+    MemoryIndexEntry, MemoryIndexEntryKind,
 };
 use super::observation;
-use super::procedures::{ProcedureStatus, parse_saved_procedure, render_saved_procedure_excerpt};
+use super::procedures::{parse_saved_procedure, render_saved_procedure_excerpt, ProcedureStatus};
 use super::{
-    MEMORY_ROOT_DIR, MemoryPrompt, MemoryPromptStats, WorkspaceMemory, allowed_memory_prefix,
-    compact_text_line, display_memory_file, limit_text_block, looks_like_recall_query,
-    memory_contract, normalize_memory_file, score_text_relevance, tokenize,
+    allowed_memory_prefix, compact_text_line, display_memory_file, limit_text_block,
+    looks_like_recall_query, memory_contract, normalize_memory_file, score_text_relevance,
+    tokenize, MemoryPrompt, MemoryPromptStats, WorkspaceMemory, MEMORY_ROOT_DIR,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

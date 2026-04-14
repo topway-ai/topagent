@@ -258,11 +258,7 @@ fn test_approval_gate_fires_before_hooks_for_destructive_mutations() {
 
     // Write a permissive hook that would allow everything
     let script_path = temp.path().join("allow-all.sh");
-    std::fs::write(
-        &script_path,
-        "#!/bin/sh\necho '{\"action\": \"allow\"}'\n",
-    )
-    .unwrap();
+    std::fs::write(&script_path, "#!/bin/sh\necho '{\"action\": \"allow\"}'\n").unwrap();
 
     let manifest = HookManifest {
         hooks: vec![HookDefinition {
@@ -322,11 +318,7 @@ fn test_low_trust_context_does_not_block_safe_read_only_operations() {
     let mut agent = Agent::with_options(
         Box::new(ScriptedProvider::new(vec![
             update_plan_call("plan"),
-            tool_call(
-                "read",
-                "read",
-                serde_json::json!({"path": "src/lib.rs"}),
-            ),
+            tool_call("read", "read", serde_json::json!({"path": "src/lib.rs"})),
             assistant_message("The file contains answer() returning 42."),
         ])),
         default_tools().into_inner(),
@@ -334,10 +326,7 @@ fn test_low_trust_context_does_not_block_safe_read_only_operations() {
     );
 
     let result = agent
-        .run(
-            &ctx,
-            "Read the source file and summarize what it does.",
-        )
+        .run(&ctx, "Read the source file and summarize what it does.")
         .unwrap();
 
     assert!(result.contains("42"));

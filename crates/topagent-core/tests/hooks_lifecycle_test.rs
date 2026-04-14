@@ -1,14 +1,14 @@
 use std::fs;
 use tempfile::TempDir;
 use topagent_core::hooks::{
-    HookDefinition, HookEvent, HookInput, HookManifest, HookRegistry, HookVerdict, dispatch_hooks,
-    execute_hook,
+    dispatch_hooks, execute_hook, HookDefinition, HookEvent, HookInput, HookManifest, HookRegistry,
+    HookVerdict,
 };
 use topagent_core::tools::default_tools;
 use topagent_core::{
-    Agent, ApprovalMailbox, ApprovalMailboxMode, ApprovalTriggerKind, BehaviorContract,
-    DurablePromotionKind, Error, InfluenceMode, Message, ProviderResponse, Role, RunTrustContext,
-    RuntimeOptions, ScriptedProvider, SourceKind, SourceLabel, context::ExecutionContext,
+    context::ExecutionContext, Agent, ApprovalMailbox, ApprovalMailboxMode, ApprovalTriggerKind,
+    BehaviorContract, DurablePromotionKind, Error, InfluenceMode, Message, ProviderResponse, Role,
+    RunTrustContext, RuntimeOptions, ScriptedProvider, SourceKind, SourceLabel,
 };
 
 fn create_temp_crate() -> (TempDir, ExecutionContext) {
