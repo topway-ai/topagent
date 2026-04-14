@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use topagent_core::{
-    RuntimeOptions,
+    ProviderKind, RuntimeOptions,
     model::{DEFAULT_OPENROUTER_MODEL_ID, ModelRoute},
 };
 
@@ -17,6 +17,8 @@ pub(crate) const TOPAGENT_TOOL_AUTHORING_KEY: &str = "TOPAGENT_TOOL_AUTHORING";
 pub(crate) const TOPAGENT_MAX_STEPS_KEY: &str = "TOPAGENT_MAX_STEPS";
 pub(crate) const TOPAGENT_MAX_RETRIES_KEY: &str = "TOPAGENT_MAX_RETRIES";
 pub(crate) const TOPAGENT_TIMEOUT_SECS_KEY: &str = "TOPAGENT_TIMEOUT_SECS";
+pub(crate) const OPENROUTER_API_KEY_KEY: &str = "OPENROUTER_API_KEY";
+pub(crate) const OPENCODE_API_KEY_KEY: &str = "OPENCODE_API_KEY";
 
 fn normalize_nonempty_string(value: Option<String>) -> Option<String> {
     value
@@ -28,6 +30,7 @@ fn normalize_nonempty_string(value: Option<String>) -> Option<String> {
 #[derive(Debug, Clone)]
 pub(crate) struct CliParams {
     pub api_key: Option<String>,
+    pub opencode_api_key: Option<String>,
     pub model: Option<String>,
     pub workspace: Option<PathBuf>,
     pub max_steps: Option<usize>,
@@ -39,15 +42,31 @@ pub(crate) struct CliParams {
 #[derive(Debug, Clone)]
 pub(crate) struct TelegramModeConfig {
     pub token: String,
-    pub api_key: String,
+    pub openrouter_api_key: Option<String>,
+    pub opencode_api_key: Option<String>,
     pub route: ModelRoute,
     pub workspace: PathBuf,
     pub options: RuntimeOptions,
 }
 
+impl TelegramModeConfig {
+    pub(crate) fn effective_api_key(&self) -> Result<String> {
+        match self.route.provider {
+            ProviderKind::OpenRouter => self.openrouter_api_key.clone().ok_or_else(|| {
+                anyhow::anyhow!("OpenRouter API key required for OpenRouter models")
+            }),
+            ProviderKind::Opencode => self
+                .opencode_api_key
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("Opencode API key required for Opencode models")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TelegramModeDefaults {
     pub api_key: Option<String>,
+    pub opencode_api_key: Option<String>,
     pub token: Option<String>,
     pub workspace: Option<PathBuf>,
     pub model: Option<String>,
@@ -60,7 +79,8 @@ pub(crate) struct TelegramModeDefaults {
 impl TelegramModeDefaults {
     pub(crate) fn from_metadata(values: &HashMap<String, String>) -> Self {
         Self {
-            api_key: normalize_nonempty_string(values.get("OPENROUTER_API_KEY").cloned()),
+            api_key: normalize_nonempty_string(values.get(OPENROUTER_API_KEY_KEY).cloned()),
+            opencode_api_key: normalize_nonempty_string(values.get(OPENCODE_API_KEY_KEY).cloned()),
             token: normalize_nonempty_string(values.get("TELEGRAM_BOT_TOKEN").cloned()),
             workspace: values.get(TOPAGENT_WORKSPACE_KEY).map(PathBuf::from),
             model: normalize_nonempty_string(values.get(TOPAGENT_MODEL_KEY).cloned()),
@@ -249,11 +269,26 @@ pub(crate) fn require_openrouter_api_key(api_key: Option<String>) -> Result<Stri
     )
 }
 
-pub(crate) fn require_openrouter_api_key_with_default(
-    api_key: Option<String>,
-    persisted_default: Option<String>,
-) -> Result<String> {
-    require_openrouter_api_key(api_key.or(persisted_default))
+pub(crate) fn require_opencode_api_key(api_key: Option<String>) -> Result<String> {
+    require_param(
+        api_key,
+        "OPENCODE_API_KEY",
+        "Opencode API key required: set --opencode-api-key or OPENCODE_API_KEY",
+    )
+}
+
+pub(crate) fn resolve_provider_for_model(model_id: &str) -> ProviderKind {
+    let lower = model_id.to_lowercase();
+    if lower.starts_with("glm-")
+        || lower.starts_with("mimo-")
+        || lower.starts_with("minimax-m")
+        || lower.starts_with("kimi-")
+        || lower == "opencode"
+    {
+        ProviderKind::Opencode
+    } else {
+        ProviderKind::OpenRouter
+    }
 }
 
 pub(crate) fn require_telegram_token(token: Option<String>) -> Result<String> {
@@ -324,7 +359,8 @@ pub(crate) fn resolve_runtime_model_selection(
 }
 
 pub(crate) fn build_route_from_resolved(model: &ResolvedModel) -> ModelRoute {
-    ModelRoute::openrouter(&model.model_id)
+    let provider = resolve_provider_for_model(&model.model_id);
+    ModelRoute::new(provider, &model.model_id)
 }
 
 pub(crate) fn current_configured_model(persisted_model: Option<String>) -> ResolvedModel {
@@ -337,10 +373,14 @@ pub(crate) fn resolve_telegram_mode_config(
     defaults: TelegramModeDefaults,
 ) -> Result<TelegramModeConfig> {
     let model_selection = resolve_runtime_model_selection(params.model, defaults.model.clone());
+    let route = build_route_from_resolved(&model_selection.effective);
+    let openrouter_api_key = resolve_openrouter_api_key(params.api_key, &defaults)?;
+    let opencode_api_key = resolve_opencode_api_key(params.opencode_api_key, &defaults)?;
     Ok(TelegramModeConfig {
         token: require_telegram_token_with_default(token, defaults.token.clone())?,
-        api_key: require_openrouter_api_key_with_default(params.api_key, defaults.api_key.clone())?,
-        route: build_route_from_resolved(&model_selection.effective),
+        openrouter_api_key,
+        opencode_api_key,
+        route,
         workspace: resolve_workspace_path(params.workspace.or_else(|| defaults.workspace.clone()))?,
         options: build_runtime_options_with_defaults(
             params.max_steps,
@@ -350,6 +390,22 @@ pub(crate) fn resolve_telegram_mode_config(
             &defaults,
         ),
     })
+}
+
+fn resolve_openrouter_api_key(
+    cli_key: Option<String>,
+    defaults: &TelegramModeDefaults,
+) -> Result<Option<String>> {
+    let key = require_openrouter_api_key(cli_key.or_else(|| defaults.api_key.clone())).ok();
+    Ok(key)
+}
+
+fn resolve_opencode_api_key(
+    cli_key: Option<String>,
+    defaults: &TelegramModeDefaults,
+) -> Result<Option<String>> {
+    let key = require_opencode_api_key(cli_key.or_else(|| defaults.opencode_api_key.clone())).ok();
+    Ok(key)
 }
 
 #[cfg(test)]
@@ -502,6 +558,7 @@ mod tests {
         };
         let params = CliParams {
             api_key: None,
+            opencode_api_key: None,
             model: None,
             workspace: None,
             max_steps: None,
@@ -512,7 +569,7 @@ mod tests {
 
         let config = resolve_telegram_mode_config(None, params, defaults).unwrap();
 
-        assert_eq!(config.api_key, "persisted-key");
+        assert_eq!(config.openrouter_api_key.as_deref(), Some("persisted-key"));
         assert_eq!(config.token, "123456:abcdef");
         assert_eq!(config.route.model_id, "persisted/model");
     }
@@ -529,6 +586,7 @@ mod tests {
         };
         let params = CliParams {
             api_key: None,
+            opencode_api_key: None,
             model: Some("override/model".to_string()),
             workspace: None,
             max_steps: None,
@@ -570,6 +628,7 @@ mod tests {
         let defaults = TelegramModeDefaults::from_metadata(&values);
         let params = CliParams {
             api_key: None,
+            opencode_api_key: None,
             model: None,
             workspace: None,
             max_steps: None,
@@ -580,7 +639,7 @@ mod tests {
 
         let config = resolve_telegram_mode_config(None, params, defaults).unwrap();
 
-        assert_eq!(config.api_key, "persisted-key");
+        assert_eq!(config.openrouter_api_key.as_deref(), Some("persisted-key"));
         assert_eq!(config.token, "123456:abcdef");
         assert_eq!(config.route.model_id, "persisted/model");
         assert_eq!(config.workspace, workspace.path().canonicalize().unwrap());
@@ -617,7 +676,7 @@ mod tests {
     #[test]
     fn test_require_persisted_defaults_accept_trimmed_values() {
         assert_eq!(
-            require_openrouter_api_key_with_default(None, Some(" test-key ".to_string())).unwrap(),
+            require_openrouter_api_key(Some(" test-key ".to_string())).unwrap(),
             "test-key"
         );
         assert_eq!(
@@ -649,6 +708,7 @@ mod tests {
         let defaults = TelegramModeDefaults::from_metadata(&values);
         let params = CliParams {
             api_key: None,
+            opencode_api_key: None,
             model: None,
             workspace: None,
             max_steps: None,
@@ -658,7 +718,7 @@ mod tests {
         };
 
         let config = resolve_telegram_mode_config(None, params.clone(), defaults.clone()).unwrap();
-        assert_eq!(config.api_key, "shared-key");
+        assert_eq!(config.openrouter_api_key.as_deref(), Some("shared-key"));
         assert_eq!(config.token, "123456:shared-token");
         assert_eq!(config.route.model_id, "shared/model");
         assert_eq!(config.workspace, workspace.path().canonicalize().unwrap());
@@ -697,6 +757,7 @@ mod tests {
         let defaults = TelegramModeDefaults::from_metadata(&values);
         let params = CliParams {
             api_key: None,
+            opencode_api_key: None,
             model: Some("cli-override/model".to_string()),
             workspace: None,
             max_steps: None,
@@ -749,6 +810,7 @@ mod tests {
 
         let params = CliParams {
             api_key: None,
+            opencode_api_key: None,
             model: None,
             workspace: None,
             max_steps: None,
@@ -758,7 +820,7 @@ mod tests {
         };
 
         let config = resolve_telegram_mode_config(None, params, defaults).unwrap();
-        assert_eq!(config.api_key, "key-roundtrip");
+        assert_eq!(config.openrouter_api_key.as_deref(), Some("key-roundtrip"));
         assert_eq!(config.token, "111:token-roundtrip");
         assert_eq!(config.route.model_id, "model/roundtrip");
         assert_eq!(config.options.max_steps, 80);

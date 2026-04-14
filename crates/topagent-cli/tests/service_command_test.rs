@@ -227,7 +227,7 @@ fn test_install_prompts_creates_install_adjacent_workspace_and_starts_service() 
     let assert = harness
         .command()
         .arg("install")
-        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n\n123456:abcdef\n")
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
@@ -291,7 +291,7 @@ fn test_install_uses_curated_fallback_model_list_and_persists_selected_model() {
     let assert = harness
         .command()
         .arg("install")
-        .write_stdin("test-openrouter-key\n2\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n2\n123456:abcdef\n")
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
@@ -315,14 +315,14 @@ fn test_install_reuses_existing_config_when_prompt_is_left_blank() {
     harness
         .command()
         .arg("install")
-        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n\n123456:abcdef\n")
         .assert()
         .success();
 
     let assert = harness
         .command()
         .arg("install")
-        .write_stdin("\n\n\n")
+        .write_stdin("\n\n\n\n")
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
@@ -355,7 +355,7 @@ fn test_install_persists_explicit_tool_authoring_mode() {
     harness
         .command()
         .args(["--tool-authoring", "on", "install"])
-        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n\n123456:abcdef\n")
         .assert()
         .success();
 
@@ -396,7 +396,7 @@ fn test_reinstall_preserves_existing_model_and_runtime_settings_when_flags_are_o
     harness
         .command()
         .arg("install")
-        .write_stdin("\n\n\n")
+        .write_stdin("\n\n\n\n")
         .assert()
         .success();
 
@@ -414,7 +414,7 @@ fn test_status_reports_setup_and_service_health_after_install() {
     harness
         .command()
         .arg("install")
-        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n\n123456:abcdef\n")
         .assert()
         .success();
 
@@ -441,7 +441,7 @@ fn test_status_reports_unhealthy_hint_when_service_is_installed_but_failed() {
     harness
         .command()
         .arg("install")
-        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n\n123456:abcdef\n")
         .assert()
         .success();
 
@@ -469,7 +469,7 @@ fn test_model_status_reports_configured_model() {
     harness
         .command()
         .args(["--model", "qwen/qwen3.6-plus:free", "install"])
-        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
         .assert()
         .success();
 
@@ -486,7 +486,9 @@ fn test_model_status_reports_configured_model() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Configured default model: qwen/qwen3.6-plus:free"));
-    assert!(stdout.contains("Effective model: qwen/qwen3.6-plus:free (persisted default)"));
+    assert!(
+        stdout.contains("Effective model: qwen/qwen3.6-plus:free [OpenRouter] (persisted default)")
+    );
     assert!(stdout.contains("Setup installed: yes"));
     assert!(stdout.contains("Service installed: yes"));
 }
@@ -497,7 +499,7 @@ fn test_model_set_preserves_other_env_values_restarts_service_and_updates_status
     harness
         .command()
         .args(["--model", "minimax/minimax-m2.7", "install"])
-        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
         .assert()
         .success();
 
@@ -519,7 +521,7 @@ fn test_model_set_preserves_other_env_values_restarts_service_and_updates_status
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("TopAgent model updated."));
     assert!(stdout.contains("Previous model: minimax/minimax-m2.7"));
-    assert!(stdout.contains("Configured model: qwen/qwen3.6-plus:free"));
+    assert!(stdout.contains("Configured model: qwen/qwen3.6-plus:free [OpenRouter]"));
     assert!(stdout.contains("Service restart: yes"));
 
     let env = fs::read_to_string(harness.env_path()).unwrap();
@@ -545,14 +547,14 @@ fn test_reinstall_restarts_service_and_status_reads_updated_model_from_single_co
     harness
         .command()
         .arg("install")
-        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n\n123456:abcdef\n")
         .assert()
         .success();
 
     let reinstall = harness
         .command()
         .args(["--model", "anthropic/claude-sonnet-4.6", "install"])
-        .write_stdin("\n\n")
+        .write_stdin("\n\n\n")
         .output()
         .unwrap();
     assert!(
@@ -569,8 +571,10 @@ fn test_reinstall_restarts_service_and_status_reads_updated_model_from_single_co
     let status = harness.command().arg("status").output().unwrap();
     assert!(status.status.success());
     let status_stdout = String::from_utf8_lossy(&status.stdout);
-    assert!(status_stdout
-        .contains("Configured default model: anthropic/claude-sonnet-4.6 (persisted default)"));
+    assert!(
+        status_stdout
+            .contains("Configured default model: anthropic/claude-sonnet-4.6 (persisted default)")
+    );
     assert!(
         status_stdout.contains("Effective model: anthropic/claude-sonnet-4.6 (persisted default)")
     );
@@ -582,10 +586,13 @@ fn test_reinstall_restarts_service_and_status_reads_updated_model_from_single_co
         .unwrap();
     assert!(model_status.status.success());
     let model_stdout = String::from_utf8_lossy(&model_status.stdout);
-    assert!(model_stdout
-        .contains("Configured default model: anthropic/claude-sonnet-4.6 (persisted default)"));
+    assert!(model_stdout.contains(
+        "Configured default model: anthropic/claude-sonnet-4.6 [OpenRouter] (persisted default)"
+    ));
     assert!(
-        model_stdout.contains("Effective model: anthropic/claude-sonnet-4.6 (persisted default)")
+        model_stdout.contains(
+            "Effective model: anthropic/claude-sonnet-4.6 [OpenRouter] (persisted default)"
+        )
     );
 
     let calls = harness.calls_log();
@@ -608,7 +615,7 @@ fn test_model_pick_updates_configured_model_and_restarts_service() {
     harness
         .command()
         .args(["--model", "minimax/minimax-m2.7", "install"])
-        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
         .assert()
         .success();
 
@@ -640,7 +647,7 @@ fn test_model_pick_updates_configured_model_and_restarts_service() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("TopAgent model updated."));
     assert!(stdout.contains("Previous model: minimax/minimax-m2.7"));
-    assert!(stdout.contains("Configured model: anthropic/claude-sonnet-4.6"));
+    assert!(stdout.contains("Configured model: anthropic/claude-sonnet-4.6 [OpenRouter]"));
     assert!(stdout.contains("Selection source: interactive selection"));
 
     let env = fs::read_to_string(harness.env_path()).unwrap();
@@ -656,7 +663,7 @@ fn test_status_shows_effective_model_when_cli_override_is_present() {
     harness
         .command()
         .args(["--model", "qwen/qwen3.6-plus:free", "install"])
-        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
         .assert()
         .success();
 
@@ -682,7 +689,7 @@ fn test_model_set_surfaces_restart_failure_after_updating_env() {
     harness
         .command()
         .args(["--model", "minimax/minimax-m2.7", "install"])
-        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
         .assert()
         .success();
 
@@ -710,7 +717,7 @@ fn test_model_list_marks_current_model_when_cache_exists() {
     harness
         .command()
         .args(["--model", "qwen/qwen3.6-plus", "install"])
-        .write_stdin("test-openrouter-key\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
         .assert()
         .success();
 
@@ -760,7 +767,7 @@ fn test_uninstall_stops_service_removes_managed_files_and_preserves_workspace() 
     harness
         .command()
         .arg("install")
-        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n\n123456:abcdef\n")
         .assert()
         .success();
 
@@ -795,7 +802,7 @@ fn test_service_start_stop_and_restart_control_the_installed_service() {
     harness
         .command()
         .arg("install")
-        .write_stdin("test-openrouter-key\n\n123456:abcdef\n")
+        .write_stdin("test-openrouter-key\n\n\n123456:abcdef\n")
         .assert()
         .success();
 
@@ -868,7 +875,7 @@ fn test_install_then_model_set_then_status_lifecycle_preserves_all_env_values() 
             "on",
             "install",
         ])
-        .write_stdin("scenario-api-key\n123456:scenario-token\n")
+        .write_stdin("scenario-api-key\n\n123456:scenario-token\n")
         .assert()
         .success();
 
@@ -887,7 +894,9 @@ fn test_install_then_model_set_then_status_lifecycle_preserves_all_env_values() 
     assert!(model_set.status.success());
     let model_set_stdout = String::from_utf8_lossy(&model_set.stdout);
     assert!(model_set_stdout.contains("Previous model: minimax/minimax-m2.7"));
-    assert!(model_set_stdout.contains("Configured model: anthropic/claude-sonnet-4.6"));
+    assert!(
+        model_set_stdout.contains("Configured model: anthropic/claude-sonnet-4.6 [OpenRouter]")
+    );
 
     let env_after_set = fs::read_to_string(harness.env_path()).unwrap();
     assert!(env_after_set.contains("TOPAGENT_MODEL=\"anthropic/claude-sonnet-4.6\""));
@@ -932,13 +941,16 @@ fn test_checkpoint_status_on_fresh_workspace_reports_no_checkpoint() {
     harness
         .command()
         .arg("install")
-        .write_stdin("test-key\n\n123456:abcdef\n")
+        .write_stdin("test-key\n\n\n123456:abcdef\n")
         .assert()
         .success();
 
     let output = harness
         .command()
-        .args(["--workspace", &harness.workspace_path().display().to_string()])
+        .args([
+            "--workspace",
+            &harness.workspace_path().display().to_string(),
+        ])
         .args(["checkpoint", "status"])
         .output()
         .unwrap();
@@ -958,13 +970,16 @@ fn test_checkpoint_diff_on_fresh_workspace_reports_no_checkpoint() {
     harness
         .command()
         .arg("install")
-        .write_stdin("test-key\n\n123456:abcdef\n")
+        .write_stdin("test-key\n\n\n123456:abcdef\n")
         .assert()
         .success();
 
     let output = harness
         .command()
-        .args(["--workspace", &harness.workspace_path().display().to_string()])
+        .args([
+            "--workspace",
+            &harness.workspace_path().display().to_string(),
+        ])
         .args(["checkpoint", "diff"])
         .output()
         .unwrap();
@@ -987,7 +1002,7 @@ fn test_reinstall_with_new_model_replaces_old_model_atomically_in_env() {
     harness
         .command()
         .args(["--model", "model-a/original", "install"])
-        .write_stdin("key-a\n123456:token-a\n")
+        .write_stdin("key-a\n\n123456:token-a\n")
         .assert()
         .success();
 
@@ -1003,7 +1018,7 @@ fn test_reinstall_with_new_model_replaces_old_model_atomically_in_env() {
     harness
         .command()
         .args(["--model", "model-b/replacement", "install"])
-        .write_stdin("\n\n")
+        .write_stdin("\n\n\n")
         .assert()
         .success();
 
@@ -1028,13 +1043,16 @@ fn test_memory_status_after_install_shows_all_learning_layers() {
     harness
         .command()
         .arg("install")
-        .write_stdin("test-key\n\n123456:abcdef\n")
+        .write_stdin("test-key\n\n\n123456:abcdef\n")
         .assert()
         .success();
 
     let output = harness
         .command()
-        .args(["--workspace", &harness.workspace_path().display().to_string()])
+        .args([
+            "--workspace",
+            &harness.workspace_path().display().to_string(),
+        ])
         .args(["memory", "status"])
         .output()
         .unwrap();

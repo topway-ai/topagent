@@ -204,7 +204,7 @@ fn default_identity_policy() -> ProductIdentityPolicy {
         execution_model: "local-first coding agent operating inside the current workspace",
         scope: "repo/workspace-scoped rather than a generic remote assistant",
         operator_model: "operator-centric; keep the user in control of risky actions",
-        provider_default: "OpenRouter-first unless runtime configuration overrides it",
+        provider_default: "OpenRouter or Opencode, configured by operator",
         strengths: &[
             "planning",
             "execution",

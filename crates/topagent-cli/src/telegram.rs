@@ -31,16 +31,21 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
     let persisted_defaults = load_persisted_telegram_defaults().unwrap_or_default();
     let config = resolve_telegram_mode_config(token, params.clone(), persisted_defaults.clone())?;
     let model_selection = resolve_runtime_model_selection(params.model, persisted_defaults.model);
+    let api_key = config.effective_api_key()?;
     let token = config.token;
     let workspace = config.workspace;
     // Register known secrets for redaction in tool output and final replies.
     let mut secrets = topagent_core::SecretRegistry::new();
-    secrets.register(&config.api_key);
+    if let Some(ref openrouter_key) = config.openrouter_api_key {
+        secrets.register(openrouter_key);
+    }
+    if let Some(ref opencode_key) = config.opencode_api_key {
+        secrets.register(opencode_key);
+    }
     secrets.register(&token);
     let ctx = ExecutionContext::new(workspace).with_secrets(secrets.clone());
     let workspace_label = ctx.workspace_root.display().to_string();
     let options = config.options;
-    let api_key = config.api_key;
     let route = config.route;
     let adapter = TelegramAdapter::new(&token);
 

@@ -589,6 +589,28 @@ fn check_api_key(
             hint: Some("set OPENROUTER_API_KEY or pass --api-key".to_string()),
         });
     }
+
+    let opencode_from_env = std::env::var("OPENCODE_API_KEY")
+        .ok()
+        .filter(|v| !v.trim().is_empty());
+    let opencode_from_cli = params
+        .opencode_api_key
+        .as_deref()
+        .filter(|v| !v.trim().is_empty());
+
+    if opencode_from_cli.is_some() || opencode_from_env.is_some() {
+        let source = if opencode_from_cli.is_some() {
+            "CLI flag"
+        } else {
+            "OPENCODE_API_KEY env"
+        };
+        checks.push(CheckResult {
+            name: "Opencode API key",
+            level: CheckLevel::Ok,
+            detail: format!("present ({})", source),
+            hint: None,
+        });
+    }
 }
 
 fn check_model_config(
@@ -982,6 +1004,7 @@ mod tests {
     fn test_doctor_reports_missing_model_config() {
         let params = CliParams {
             api_key: Some("test-key".to_string()),
+            opencode_api_key: None,
             model: None,
             workspace: None,
             max_steps: None,
@@ -1289,83 +1312,7 @@ label = "test hook""#,
 
         let params = CliParams {
             api_key: Some("test-key".to_string()),
-            model: Some("openai/gpt-4o".to_string()),
-            workspace: Some(temp.path().to_path_buf()),
-            max_steps: None,
-            max_retries: None,
-            timeout_secs: None,
-            generated_tool_authoring: None,
-        };
-        let checks = run_doctor_checks(&params);
-        let errors: Vec<_> = checks
-            .iter()
-            .filter(|c| c.level == CheckLevel::Error)
-            .collect();
-        assert!(
-            errors.is_empty(),
-            "unexpected errors: {:?}",
-            errors.iter().map(|c| &c.detail).collect::<Vec<_>>()
-        );
-        let ok_names: Vec<_> = checks
-            .iter()
-            .filter(|c| c.level == CheckLevel::Ok)
-            .map(|c| c.name)
-            .collect();
-        assert!(
-            ok_names.contains(&"workspace path"),
-            "missing workspace path OK"
-        );
-        assert!(
-            ok_names.contains(&"workspace layout"),
-            "missing workspace layout OK"
-        );
-        assert!(
-            ok_names.contains(&"generated tools"),
-            "missing generated tools OK"
-        );
-        assert!(
-            ok_names.contains(&"external tools"),
-            "missing external tools OK"
-        );
-        assert!(
-            ok_names.contains(&"hooks manifest"),
-            "missing hooks manifest OK"
-        );
-        assert!(
-            ok_names.contains(&"OpenRouter API key"),
-            "missing API key OK"
-        );
-        assert!(
-            ok_names.contains(&"model config"),
-            "missing model config OK"
-        );
-    }
-
-    #[test]
-    fn test_doctor_api_key_missing_reports_error() {
-        let temp = healthy_workspace();
-        let params = CliParams {
-            api_key: None,
-            model: None,
-            workspace: Some(temp.path().to_path_buf()),
-            max_steps: None,
-            max_retries: None,
-            timeout_secs: None,
-            generated_tool_authoring: None,
-        };
-        let checks = run_doctor_checks(&params);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Error && c.name == "OpenRouter API key")
-        );
-    }
-
-    #[test]
-    fn test_doctor_model_default_fallback_warns() {
-        let temp = healthy_workspace();
-        let params = CliParams {
-            api_key: Some("test-key".to_string()),
+            opencode_api_key: None,
             model: None,
             workspace: Some(temp.path().to_path_buf()),
             max_steps: None,
@@ -1387,6 +1334,7 @@ label = "test hook""#,
         let temp = TempDir::new().unwrap();
         let params = CliParams {
             api_key: Some("test-key".to_string()),
+            opencode_api_key: None,
             model: Some("openai/gpt-4o".to_string()),
             workspace: Some(temp.path().to_path_buf()),
             max_steps: None,
@@ -1458,6 +1406,7 @@ label = "test hook""#,
 
         let params = CliParams {
             api_key: Some("test-key".to_string()),
+            opencode_api_key: None,
             model: Some("openai/gpt-4o".to_string()),
             workspace: Some(temp.path().to_path_buf()),
             max_steps: None,

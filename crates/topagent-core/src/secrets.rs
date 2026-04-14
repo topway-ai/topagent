@@ -17,6 +17,7 @@ const REDACTED: &str = "[REDACTED_SECRET]";
 /// Prevents the model from reading secrets via `echo $VAR` or `env`.
 pub const SECRET_ENV_VARS: &[&str] = &[
     "OPENROUTER_API_KEY",
+    "OPENCODE_API_KEY",
     "TELEGRAM_BOT_TOKEN",
     // Belt-and-suspenders: catch common alternative names
     "OPENAI_API_KEY",

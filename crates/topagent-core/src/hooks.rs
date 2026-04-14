@@ -696,10 +696,7 @@ label = "rust format check"
             verify_commands: vec![],
             execution_results: vec![],
         };
-        assert!(result
-            .annotation_context()
-            .unwrap()
-            .contains("cargo fmt"));
+        assert!(result.annotation_context().unwrap().contains("cargo fmt"));
     }
 
     #[test]

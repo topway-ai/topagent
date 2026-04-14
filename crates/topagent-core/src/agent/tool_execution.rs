@@ -1,11 +1,11 @@
-use super::{extract_exit_code, Agent};
+use super::{Agent, extract_exit_code};
 use crate::behavior::BashCommandClass;
 use crate::checkpoint::WorkspaceCheckpointStatus;
 use crate::context::{ExecutionContext, ToolContext};
 use crate::external::ExternalToolEffect;
-use crate::hooks::{dispatch_hooks, HookEvent, HookInput};
+use crate::hooks::{HookEvent, HookInput, dispatch_hooks};
 use crate::provenance::fetched_content_source;
-use crate::tool_genesis::{revalidate_runtime_tool, GeneratedToolRevalidationOutcome};
+use crate::tool_genesis::{GeneratedToolRevalidationOutcome, revalidate_runtime_tool};
 use crate::tools::risky_shell_changed_path_hints;
 use crate::{Message, ProgressUpdate, Result};
 
@@ -284,15 +284,17 @@ impl Agent {
         Ok(())
     }
 
-    fn run_post_write_hooks(&mut self, ctx: &ExecutionContext, tool_name: &str, args: &serde_json::Value) {
+    fn run_post_write_hooks(
+        &mut self,
+        ctx: &ExecutionContext,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) {
         let registry = ctx.hook_registry();
         if registry.is_empty() {
             return;
         }
-        let path = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
         let input = HookInput {
             event: HookEvent::PostWrite,
             subject: path.to_string(),

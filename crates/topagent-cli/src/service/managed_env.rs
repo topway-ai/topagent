@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::config::{
-    TOPAGENT_MAX_RETRIES_KEY, TOPAGENT_MAX_STEPS_KEY, TOPAGENT_MODEL_KEY,
+    OPENCODE_API_KEY_KEY, TOPAGENT_MAX_RETRIES_KEY, TOPAGENT_MAX_STEPS_KEY, TOPAGENT_MODEL_KEY,
     TOPAGENT_SERVICE_MANAGED_KEY, TOPAGENT_TIMEOUT_SECS_KEY, TOPAGENT_TOOL_AUTHORING_KEY,
     TOPAGENT_WORKSPACE_KEY, TelegramModeConfig,
 };
@@ -16,19 +16,30 @@ pub(super) fn render_service_env_file(config: &TelegramModeConfig) -> Result<Str
     let workspace = config.workspace.display().to_string();
     for value in [
         config.token.as_str(),
-        config.api_key.as_str(),
         workspace.as_str(),
         config.route.model_id.as_str(),
     ] {
         ensure_env_value_is_safe(value)?;
     }
+    if let Some(ref key) = config.openrouter_api_key {
+        ensure_env_value_is_safe(key)?;
+    }
+    if let Some(ref key) = config.opencode_api_key {
+        ensure_env_value_is_safe(key)?;
+    }
+
+    let opencode_line = config
+        .opencode_api_key
+        .as_ref()
+        .map(|key| format!("{}={}\n", OPENCODE_API_KEY_KEY, quote_env_value(key)))
+        .unwrap_or_default();
 
     Ok(format!(
         "{header}
 {managed_key}=1
 {token_key}={token}
 {api_key_key}={api_key}
-{workspace_key}={workspace}
+{opencode_line}{workspace_key}={workspace}
 {model_key}={model}
 {max_steps_key}={max_steps}
 {max_retries_key}={max_retries}
@@ -38,7 +49,8 @@ pub(super) fn render_service_env_file(config: &TelegramModeConfig) -> Result<Str
         header = TOPAGENT_MANAGED_HEADER,
         managed_key = TOPAGENT_SERVICE_MANAGED_KEY,
         token = quote_env_value(&config.token),
-        api_key = quote_env_value(&config.api_key),
+        api_key = quote_env_value(config.openrouter_api_key.as_deref().unwrap_or("")),
+        opencode_line = opencode_line,
         workspace_key = TOPAGENT_WORKSPACE_KEY,
         workspace = quote_env_value(&workspace),
         model_key = TOPAGENT_MODEL_KEY,

@@ -16,6 +16,7 @@ use super::lifecycle::{
     install_service_with_config,
 };
 use super::managed_env::{OPENROUTER_API_KEY_KEY, TELEGRAM_BOT_TOKEN_KEY, trim_nonempty};
+use crate::config::OPENCODE_API_KEY_KEY;
 
 const CUSTOM_MODEL_OPTION_LABEL: &str = "Custom model ID (type manually)";
 
@@ -49,6 +50,14 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
         }),
         require_openrouter_api_key,
     )?;
+    let opencode_api_key = prompt_for_install_value_optional(
+        "Opencode API key (optional, press Enter to skip)",
+        params.opencode_api_key.as_deref().or_else(|| {
+            existing_values
+                .get(OPENCODE_API_KEY_KEY)
+                .map(String::as_str)
+        }),
+    );
     let explicit_model = trim_nonempty(params.model.clone());
     let selected_model = if explicit_model.is_some() {
         let resolved = resolve_model_choice(params.model.clone(), None, defaults.model.clone());
@@ -71,7 +80,8 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
     let resolved_model = resolve_model_choice(params.model, selected_model, defaults.model.clone());
     let config = TelegramModeConfig {
         token,
-        api_key,
+        openrouter_api_key: Some(api_key),
+        opencode_api_key,
         route: build_route_from_resolved(&resolved_model),
         workspace,
         options: build_runtime_options_with_defaults(
@@ -186,6 +196,33 @@ fn prompt_for_install_value(
                 println!("{}", err);
             }
         }
+    }
+}
+
+fn prompt_for_install_value_optional(label: &str, existing_value: Option<&str>) -> Option<String> {
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+
+    if existing_value.is_some() {
+        print!("{label} [press Enter to keep the current value, or type 'clear' to remove]: ");
+    } else {
+        print!("{label}: ");
+    }
+    io::stdout().flush().ok()?;
+
+    let mut line = String::new();
+    let read = input.read_line(&mut line).ok()?;
+    if read == 0 {
+        return None;
+    }
+
+    let candidate = line.trim();
+    if candidate.eq_ignore_ascii_case("clear") {
+        None
+    } else if candidate.is_empty() {
+        existing_value.map(str::to_string)
+    } else {
+        Some(candidate.to_string())
     }
 }
 

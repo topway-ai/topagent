@@ -1,6 +1,6 @@
 use super::Agent;
 use crate::context::ExecutionContext;
-use crate::hooks::{dispatch_hooks, HookEvent, HookInput};
+use crate::hooks::{HookEvent, HookInput, dispatch_hooks};
 use crate::{Error, Message, ProviderResponse, Result};
 
 #[derive(Default)]
@@ -205,7 +205,12 @@ impl Agent {
             subject: String::new(),
             detail: instruction.to_string(),
         };
-        let result = dispatch_hooks(registry, HookEvent::OnSessionStart, &input, &ctx.workspace_root);
+        let result = dispatch_hooks(
+            registry,
+            HookEvent::OnSessionStart,
+            &input,
+            &ctx.workspace_root,
+        );
         if let Some(context) = result.annotation_context() {
             self.run_state.record_hook_note(context);
         }

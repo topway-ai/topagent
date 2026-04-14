@@ -70,10 +70,11 @@ pub(crate) fn prepare_run_context(
 
 pub(crate) fn build_agent(route: &ModelRoute, api_key: &str, options: RuntimeOptions) -> Agent {
     let tools = default_tools();
-    let provider = Box::new(OpenRouterProvider::with_tools_and_timeout(
+    let provider = Box::new(OpenRouterProvider::with_tools_timeout_and_base_url(
         api_key,
         tools.specs(),
         options.provider_timeout_secs,
+        route.provider.base_url().to_string(),
     ));
     Agent::with_route(provider, route.clone(), tools.into_inner(), options)
 }

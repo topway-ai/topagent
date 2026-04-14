@@ -113,8 +113,6 @@ impl AgentRunState {
         }
     }
 
-
-
     pub(crate) fn trust_context(&self, ctx: &ExecutionContext) -> RunTrustContext {
         let mut trust = ctx.run_trust_context().clone();
         trust.merge(&self.observed_trust.borrow());

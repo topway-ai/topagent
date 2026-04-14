@@ -8,9 +8,9 @@ pub mod command_exec;
 pub mod compaction;
 pub mod context;
 pub mod error;
-pub mod hooks;
 pub mod external;
 pub mod file_util;
+pub mod hooks;
 pub mod message;
 pub mod model;
 pub mod openrouter;
@@ -38,7 +38,7 @@ pub use approval::{
 };
 pub use behavior::{BashCommandClass, BehaviorContract, RunStateSnapshot};
 pub use cancel::CancellationToken;
-pub use channel::telegram::{ChannelError, TelegramAdapter, POLL_TIMEOUT_SECS};
+pub use channel::telegram::{ChannelError, POLL_TIMEOUT_SECS, TelegramAdapter};
 pub use checkpoint::{
     WorkspaceCheckpointRestoreReport, WorkspaceCheckpointStatus, WorkspaceCheckpointStore,
 };
@@ -50,30 +50,33 @@ pub use compaction::{
 pub use context::ExecutionContext;
 pub use error::{Error, Result};
 pub use external::{ExternalTool, ExternalToolEffect, ExternalToolRegistry, ExternalToolResult};
+pub use hooks::{
+    HookDispatchResult, HookEvent, HookInput, HookRegistry, HookVerdict, dispatch_hooks,
+};
 pub use message::{Content, Message, Role};
-pub use model::ModelRoute;
+pub use model::{
+    DEFAULT_OPENCODE_MODEL_ID, DEFAULT_OPENROUTER_MODEL_ID, ModelRoute, OPENCODE_BASE_URL,
+    OPENROUTER_BASE_URL, ProviderKind,
+};
 pub use openrouter::OpenRouterProvider;
 pub use operator_profile::{
-    load_operator_profile, migrate_legacy_operator_preferences, save_operator_profile,
-    user_profile_path, OperatorPreferenceRecord, OperatorProfile, OperatorProfileMigrationReport,
-    PreferenceCategory, USER_PROFILE_RELATIVE_PATH,
+    OperatorPreferenceRecord, OperatorProfile, OperatorProfileMigrationReport, PreferenceCategory,
+    USER_PROFILE_RELATIVE_PATH, load_operator_profile, migrate_legacy_operator_preferences,
+    save_operator_profile, user_profile_path,
 };
 pub use plan::{Plan, TaskMode, TodoItem, TodoStatus};
 pub use progress::{ProgressCallback, ProgressKind, ProgressUpdate};
 pub use project::{
-    get_project_instructions_or_error, load_project_instructions, ProjectInstructionResult,
+    ProjectInstructionResult, get_project_instructions_or_error, load_project_instructions,
 };
 pub use prompt::{BehaviorPromptContext, NO_PI_MD_NOTE, NO_PROJECT_INSTRUCTIONS_NOTE};
 pub use provenance::{
-    classify_operator_instruction, fetched_content_source, DurablePromotionKind, InfluenceMode,
-    RunTrustContext, SourceKind, SourceLabel, TrustLevel,
+    DurablePromotionKind, InfluenceMode, RunTrustContext, SourceKind, SourceLabel, TrustLevel,
+    classify_operator_instruction, fetched_content_source,
 };
 pub use provider::{Provider, ProviderResponse, ScriptedProvider, ToolCallEntry};
 pub use runtime::RuntimeOptions;
 pub use secrets::SecretRegistry;
 pub use session::Session;
 pub use task_result::{TaskEvidence, TaskResult, ToolTraceStep, VerificationCommand};
-pub use hooks::{
-    dispatch_hooks, HookDispatchResult, HookEvent, HookInput, HookRegistry, HookVerdict,
-};
 pub use tool_spec::ToolSpec;

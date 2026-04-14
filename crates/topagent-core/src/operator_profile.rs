@@ -463,9 +463,11 @@ mod tests {
         assert!(user_md.contains("# Operator Model"));
         assert!(user_md.contains("## concise_final_answers"));
         assert!(!index.contains("operator preference"));
-        assert!(!temp
-            .path()
-            .join(".topagent/topics/operator-preference-concise_final_answers.md")
-            .exists());
+        assert!(
+            !temp
+                .path()
+                .join(".topagent/topics/operator-preference-concise_final_answers.md")
+                .exists()
+        );
     }
 }

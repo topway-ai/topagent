@@ -1,11 +1,11 @@
 use super::{
-    script_sha256_hex, validate_manifest_interface, validate_tool_name, validate_verification_spec,
-    verification_command_argv, GenesisResult, ToolGenesis, ToolInput, ToolManifest,
-    VerificationSpec,
+    GenesisResult, ToolGenesis, ToolInput, ToolManifest, VerificationSpec, script_sha256_hex,
+    validate_manifest_interface, validate_tool_name, validate_verification_spec,
+    verification_command_argv,
 };
-use crate::command_exec::{run_command, CommandSandboxPolicy};
-use crate::error::Error;
 use crate::Result;
+use crate::command_exec::{CommandSandboxPolicy, run_command};
+use crate::error::Error;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn create_tool(

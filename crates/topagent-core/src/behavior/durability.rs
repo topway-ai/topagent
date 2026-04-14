@@ -18,8 +18,7 @@ pub(super) fn default_memory_policy() -> MemoryPolicy {
         index_is_pointer_only: true,
         topic_file_relative_dir: "topics",
         archival_relative_dirs: &["lessons", "plans", "procedures"],
-        index_entry_format:
-            "- topic: <name> | file: topics/<name>.md | status: verified|tentative|stale | tags: tag1, tag2 | note: short pointer",
+        index_entry_format: "- topic: <name> | file: topics/<name>.md | status: verified|tentative|stale | tags: tag1, tag2 | note: short pointer",
         max_index_entries: 24,
         max_index_note_chars: 120,
         max_index_prompt_bytes: 1_400,

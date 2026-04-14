@@ -40,16 +40,19 @@ fn run_model_status(params: CliParams) -> Result<()> {
     let state = load_control_plane_state(params.model)?;
     let cache_path = openrouter_model_cache_path()?;
     let cached = load_cached_openrouter_models(&cache_path)?;
+    let default_provider = resolve_provider_for_model(&state.model_selection.effective.model_id);
 
     println!("TopAgent model status");
     println!(
-        "Configured default model: {} ({})",
+        "Configured default model: {} [{}] ({})",
         state.model_selection.configured_default.model_id,
+        resolve_provider_for_model(&state.model_selection.configured_default.model_id),
         state.model_selection.configured_default.source.label()
     );
     println!(
-        "Effective model: {} ({})",
+        "Effective model: {} [{}] ({})",
         state.model_selection.effective.model_id,
+        default_provider,
         state.model_selection.effective.source.label()
     );
     println!(
@@ -83,15 +86,19 @@ fn run_model_status(params: CliParams) -> Result<()> {
 fn run_model_set(model_id: String) -> Result<()> {
     let model_id = model_id.trim().to_string();
     if model_id.is_empty() {
-        return Err(anyhow::anyhow!("OpenRouter model ID cannot be empty."));
+        return Err(anyhow::anyhow!("Model ID cannot be empty."));
     }
 
+    let provider = resolve_provider_for_model(&model_id);
     let paths = service_paths()?;
     let report = update_configured_model(&paths, model_id, None)?;
 
     println!("TopAgent model updated.");
     println!("Previous model: {}", report.previous_model);
-    println!("Configured model: {}", report.configured_model);
+    println!(
+        "Configured model: {} [{}]",
+        report.configured_model, provider
+    );
     println!("Config file: {}", report.config_path.display());
     println!(
         "Service restart: {}",
@@ -131,7 +138,7 @@ fn run_model_pick(params: CliParams) -> Result<()> {
             None,
             persisted_model_from_env_values(&values),
         );
-        println!("OpenRouter model: {} (--model)", resolved.model_id);
+        println!("Model: {} (--model)", resolved.model_id);
         None
     } else {
         Some(prompt_for_install_model(
@@ -145,6 +152,7 @@ fn run_model_pick(params: CliParams) -> Result<()> {
         selected_model,
         persisted_model_from_env_values(&values),
     );
+    let provider = resolve_provider_for_model(&resolved_model.model_id);
     let report = update_configured_model(
         &paths,
         resolved_model.model_id.clone(),
@@ -153,7 +161,10 @@ fn run_model_pick(params: CliParams) -> Result<()> {
 
     println!("TopAgent model updated.");
     println!("Previous model: {}", report.previous_model);
-    println!("Configured model: {}", report.configured_model);
+    println!(
+        "Configured model: {} [{}]",
+        report.configured_model, provider
+    );
     println!(
         "Selection source: {}",
         report
@@ -180,9 +191,10 @@ fn run_model_list() -> Result<()> {
     let cache_path = openrouter_model_cache_path()?;
     let current_model =
         current_configured_model(persisted_model_from_env_values(&env_values)).model_id;
+    let current_provider = resolve_provider_for_model(&current_model);
     let Some(cached) = load_cached_openrouter_models(&cache_path)? else {
         println!("TopAgent model list");
-        println!("Current model: {}", current_model);
+        println!("Current model: {} [{}]", current_model, current_provider);
         println!("No cached OpenRouter model list found.");
         println!("Run `topagent model refresh` to fetch the current top models.");
         return Ok(());

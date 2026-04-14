@@ -24,7 +24,7 @@ use std::sync::{
 use std::time::Duration;
 use topagent_core::{
     ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest, CancellationToken, ProgressCallback,
-    ProgressUpdate, WorkspaceCheckpointStore, context::ExecutionContext,
+    ProgressUpdate, ProviderKind, WorkspaceCheckpointStore, context::ExecutionContext,
 };
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -72,6 +72,9 @@ struct Cli {
         help = "OpenRouter API key (or OPENROUTER_API_KEY)"
     )]
     api_key: Option<String>,
+
+    #[arg(long, global = true, help = "Opencode API key (or OPENCODE_API_KEY)")]
+    opencode_api_key: Option<String>,
 
     #[arg(
         long,
@@ -128,7 +131,7 @@ enum Commands {
         #[command(subcommand)]
         command: ServiceCommands,
     },
-    /// Inspect and change the configured OpenRouter model.
+    /// Inspect and change the configured model.
     Model {
         #[command(subcommand)]
         command: ModelCommands,
@@ -187,15 +190,15 @@ pub(crate) enum ServiceCommands {
 
 #[derive(Subcommand)]
 pub(crate) enum ModelCommands {
-    /// Show the configured OpenRouter model.
+    /// Show the configured model.
     Status,
-    /// Set the configured OpenRouter model and restart the service when installed.
+    /// Set the configured model and restart the service when installed.
     Set { model_id: String },
-    /// Pick the configured OpenRouter model interactively.
+    /// Pick the configured model interactively.
     Pick,
-    /// Show the cached OpenRouter starter models.
+    /// Show the cached model list.
     List,
-    /// Refresh the cached OpenRouter starter models.
+    /// Refresh the cached model list.
     Refresh,
 }
 
@@ -277,6 +280,7 @@ fn main() -> Result<()> {
     let instruction = cli.instruction;
     let params = CliParams {
         api_key: cli.api_key,
+        opencode_api_key: cli.opencode_api_key,
         model: cli.model,
         workspace: cli.workspace,
         max_steps: cli.max_steps,
@@ -348,7 +352,15 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
     let model_selection =
         resolve_runtime_model_selection(params.model, persisted_defaults.model.clone());
     let route = build_route_from_resolved(&model_selection.effective);
-    let api_key = require_openrouter_api_key(params.api_key)?;
+    let api_key = match route.provider {
+        ProviderKind::OpenRouter => require_openrouter_api_key(params.api_key)?,
+        ProviderKind::Opencode => {
+            let defaults = load_persisted_telegram_defaults().unwrap_or_default();
+            crate::config::require_opencode_api_key(
+                params.opencode_api_key.or(defaults.opencode_api_key),
+            )?
+        }
+    };
     let workspace_memory = prepare_workspace_memory(ctx.workspace_root.clone());
     let prepared_run = prepare_run_context(&ctx, &workspace_memory, &instruction, None);
     let loaded_procedure_files = prepared_run.loaded_procedure_files.clone();
