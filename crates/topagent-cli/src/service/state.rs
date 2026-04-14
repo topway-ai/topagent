@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::config::{
     resolve_runtime_model_selection, RuntimeModelSelection, TOPAGENT_WORKSPACE_KEY,
@@ -48,12 +48,12 @@ pub(super) struct ServiceProbe {
 }
 
 impl ServiceProbe {
-    pub(super) fn unit_path(&self, default_path: &PathBuf) -> PathBuf {
+    pub(super) fn unit_path(&self, default_path: &Path) -> PathBuf {
         self.snapshot
             .as_ref()
             .and_then(|status| status.fragment_path.as_ref())
             .map(PathBuf::from)
-            .unwrap_or_else(|| default_path.clone())
+            .unwrap_or_else(|| default_path.to_path_buf())
     }
 }
 

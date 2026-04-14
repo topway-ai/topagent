@@ -38,17 +38,31 @@ impl PromotionDecision {
     }
 }
 
-pub(crate) fn promote_verified_task(
-    memory: &WorkspaceMemory,
-    ctx: &ExecutionContext,
-    options: &RuntimeOptions,
-    instruction: &str,
-    task_mode: TaskMode,
-    task_result: &TaskResult,
-    plan: &Plan,
-    durable_memory_written: bool,
-    loaded_procedure_files: &[String],
-) -> Result<TaskPromotionReport> {
+#[derive(Debug, Clone)]
+pub(crate) struct PromotionContext<'a> {
+    pub(crate) memory: &'a WorkspaceMemory,
+    pub(crate) ctx: &'a ExecutionContext,
+    pub(crate) options: &'a RuntimeOptions,
+    pub(crate) instruction: &'a str,
+    pub(crate) task_mode: TaskMode,
+    pub(crate) task_result: &'a TaskResult,
+    pub(crate) plan: &'a Plan,
+    pub(crate) durable_memory_written: bool,
+    pub(crate) loaded_procedure_files: &'a [String],
+}
+
+pub(crate) fn promote_verified_task(pc: &PromotionContext) -> Result<TaskPromotionReport> {
+    let PromotionContext {
+        memory,
+        ctx,
+        options,
+        instruction,
+        task_mode,
+        task_result,
+        plan,
+        durable_memory_written,
+        loaded_procedure_files,
+    } = *pc;
     let decision = evaluate_promotion(instruction, task_result, plan, durable_memory_written);
     if decision.is_empty() {
         return Ok(TaskPromotionReport::default());
@@ -427,8 +441,7 @@ fn build_lesson_args(instruction: &str, task_result: &TaskResult) -> Result<Save
     let avoid_next_time = task_result
         .verification_commands()
         .iter()
-        .filter(|command| !command.succeeded)
-        .last()
+        .rfind(|command| !command.succeeded)
         .map(|command| {
             format!(
                 "Do not stop after `{}` fails; rerun the final verification until it passes.",

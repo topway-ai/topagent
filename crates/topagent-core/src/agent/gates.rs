@@ -89,10 +89,10 @@ impl Agent {
             bash_command,
             external_effect,
             &PreExecutionState {
-                planning_required_for_task: self.planning_required_for_task,
+                planning_required_for_task: self.planning.is_required_for_task(),
                 plan_exists: self.plan_exists(),
                 execution_started: self.execution_started(),
-                task_mode: self.task_mode,
+                task_mode: self.planning.task_mode(),
             },
         )
     }
@@ -207,7 +207,7 @@ impl Agent {
         bash_args: Option<&serde_json::Value>,
         external_effect: Option<ExternalToolEffect>,
     ) -> Option<String> {
-        if !self.planning_gate_active {
+        if !self.planning.is_active() {
             return None;
         }
         let bash_command = bash_args

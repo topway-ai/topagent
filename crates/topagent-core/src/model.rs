@@ -133,4 +133,48 @@ mod tests {
         assert_eq!(format!("{}", ProviderKind::OpenRouter), "OpenRouter");
         assert_eq!(format!("{}", ProviderKind::Opencode), "Opencode");
     }
+
+    #[test]
+    fn test_dual_provider_seam_uses_distinct_base_urls() {
+        let openrouter_url = ProviderKind::OpenRouter.base_url();
+        let opencode_url = ProviderKind::Opencode.base_url();
+        assert_ne!(
+            openrouter_url, opencode_url,
+            "providers must not share a base URL"
+        );
+        assert!(
+            openrouter_url.starts_with("https://"),
+            "OpenRouter base URL must be HTTPS"
+        );
+        assert!(
+            opencode_url.starts_with("https://"),
+            "Opencode base URL must be HTTPS"
+        );
+    }
+
+    #[test]
+    fn test_opencode_route_uses_opencode_provider_kind() {
+        let route = ModelRoute::opencode("glm-5.1");
+        assert_eq!(route.provider, ProviderKind::Opencode);
+        assert_eq!(route.model_id, "glm-5.1");
+        assert_eq!(route.provider.base_url(), OPENCODE_BASE_URL);
+    }
+
+    #[test]
+    fn test_model_route_preserves_explicit_model_id_across_providers() {
+        let or_route = ModelRoute::openrouter("anthropic/claude-sonnet-4.6");
+        let oc_route = ModelRoute::opencode("qwen/qwen3.6-plus");
+        assert_eq!(or_route.model_id, "anthropic/claude-sonnet-4.6");
+        assert_eq!(oc_route.model_id, "qwen/qwen3.6-plus");
+        assert_eq!(or_route.provider, ProviderKind::OpenRouter);
+        assert_eq!(oc_route.provider, ProviderKind::Opencode);
+    }
+
+    #[test]
+    fn test_with_override_switches_provider_kind() {
+        let route =
+            ModelRoute::with_override(ProviderKind::Opencode, Some("custom-opencode-model"));
+        assert_eq!(route.provider, ProviderKind::Opencode);
+        assert_eq!(route.model_id, "custom-opencode-model");
+    }
 }

@@ -38,7 +38,7 @@ use crate::doctor::run_doctor;
 use crate::learning::{
     run_memory_command, run_observation_command, run_procedure_command, run_trajectory_command,
 };
-use crate::memory::promote_verified_task;
+use crate::memory::{promote_verified_task, PromotionContext};
 use crate::progress::LiveProgress;
 use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
 use crate::service::{
@@ -389,17 +389,17 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
             let mut final_output = result;
             if let Some(task_result) = agent.last_task_result().cloned() {
                 match agent.plan().lock() {
-                    Ok(plan) => match promote_verified_task(
-                        &workspace_memory,
-                        &ctx,
-                        &distill_options,
-                        &instruction,
-                        agent.task_mode(),
-                        &task_result,
-                        &plan.clone(),
-                        agent.durable_memory_written_this_run(),
-                        &loaded_procedure_files,
-                    ) {
+                    Ok(plan) => match promote_verified_task(&PromotionContext {
+                        memory: &workspace_memory,
+                        ctx: &ctx,
+                        options: &distill_options,
+                        instruction: &instruction,
+                        task_mode: agent.task_mode(),
+                        task_result: &task_result,
+                        plan: &plan.clone(),
+                        durable_memory_written: agent.durable_memory_written_this_run(),
+                        loaded_procedure_files: &loaded_procedure_files,
+                    }) {
                         Ok(report) => {
                             if report.lesson_file.is_some()
                                 || report.procedure_file.is_some()

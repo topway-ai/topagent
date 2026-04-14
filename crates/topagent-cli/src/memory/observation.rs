@@ -1,12 +1,11 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use topagent_core::{RunTrustContext, SourceLabel};
 
+use super::compact_text_line;
 use super::promotion::TaskPromotionReport;
-use super::{compact_text_line, score_text_relevance};
 
 use crate::managed_files::write_managed_file;
 
@@ -56,18 +55,7 @@ pub(crate) struct ObservationRecord {
     pub verification_command: Option<String>,
 }
 
-#[derive(Debug, Clone, Default)]
-pub(crate) struct RetrievalResult {
-    pub candidates: Vec<ObservationRecord>,
-    /// Temporal neighbors of the top candidate that share changed files or verification.
-    /// Used during stage-3 artifact resolution and available for future expansion display.
-    #[allow(dead_code)]
-    pub expanded: Vec<ObservationRecord>,
-    pub artifact_paths: Vec<String>,
-    pub provenance_notes: Vec<String>,
-}
-
-// ── Emission ──
+// ── Loading ──
 
 pub(crate) fn emit_observation(
     observations_dir: &Path,
@@ -206,163 +194,6 @@ pub(crate) fn scan_observations(
     }
 
     Ok(records)
-}
-
-// ── Matching ──
-
-pub(crate) fn match_observations<'a>(
-    observations: &'a [ObservationRecord],
-    instruction: &str,
-    max_candidates: usize,
-) -> Vec<&'a ObservationRecord> {
-    let mut scored: Vec<(usize, &ObservationRecord)> = observations
-        .iter()
-        .filter_map(|obs| {
-            let mut haystack = obs.task_intent.clone();
-            haystack.push(' ');
-            haystack.push_str(&obs.summary);
-            for file in &obs.changed_files {
-                haystack.push(' ');
-                haystack.push_str(file);
-            }
-            let score = score_text_relevance(instruction, &haystack);
-            // Recency bonus: observations from last 7 days get +1
-            let recency_bonus = if obs.timestamp_unix_secs + 604_800 >= unix_timestamp_secs() {
-                1
-            } else {
-                0
-            };
-            let total = score + recency_bonus;
-            (total > 0).then_some((total, obs))
-        })
-        .collect();
-
-    scored.sort_by(|(score_a, obs_a), (score_b, obs_b)| {
-        score_b
-            .cmp(score_a)
-            .then_with(|| obs_b.timestamp_unix_secs.cmp(&obs_a.timestamp_unix_secs))
-    });
-
-    scored
-        .into_iter()
-        .take(max_candidates)
-        .map(|(_, obs)| obs)
-        .collect()
-}
-
-// ── Progressive Retrieval ──
-
-pub(crate) fn progressive_retrieve(
-    observations_dir: &Path,
-    instruction: &str,
-    max_candidates: usize,
-    max_expansion: usize,
-) -> Result<RetrievalResult> {
-    if !observations_dir.is_dir() {
-        return Ok(RetrievalResult::default());
-    }
-
-    // Stage 1: scan and match
-    let all_observations = scan_observations(observations_dir, MAX_OBSERVATION_SCAN)?;
-    if all_observations.is_empty() {
-        return Ok(RetrievalResult::default());
-    }
-
-    let matched = match_observations(&all_observations, instruction, max_candidates);
-    if matched.is_empty() {
-        return Ok(RetrievalResult::default());
-    }
-
-    let candidates: Vec<ObservationRecord> = matched.into_iter().cloned().collect();
-    let candidate_ids: HashSet<&str> = candidates.iter().map(|obs| obs.id.as_str()).collect();
-
-    // Stage 2: expand temporal neighbors of top candidate
-    let mut expanded = Vec::new();
-    if let Some(top) = candidates.first() {
-        let top_files: HashSet<&str> = top.changed_files.iter().map(|f| f.as_str()).collect();
-
-        for obs in &all_observations {
-            if candidate_ids.contains(obs.id.as_str()) {
-                continue;
-            }
-            if expanded.len() >= max_expansion {
-                break;
-            }
-
-            // Temporal proximity: within 2 positions in the sorted list
-            let time_diff = (obs.timestamp_unix_secs - top.timestamp_unix_secs).unsigned_abs();
-            let is_temporal_neighbor = time_diff <= 86_400; // within 1 day
-
-            // File overlap
-            let has_file_overlap = obs
-                .changed_files
-                .iter()
-                .any(|f| top_files.contains(f.as_str()));
-
-            // Same verification command
-            let has_same_verification = top.verification_command.is_some()
-                && obs.verification_command == top.verification_command;
-
-            if is_temporal_neighbor && (has_file_overlap || has_same_verification) {
-                expanded.push(obs.clone());
-            }
-        }
-    }
-
-    // Stage 3: collect artifact paths + provenance notes
-    let mut artifact_paths = Vec::new();
-    let mut provenance_notes = Vec::new();
-    let mut seen_paths: HashSet<String> = HashSet::new();
-
-    for obs in candidates.iter().chain(expanded.iter()) {
-        // Skip low-trust observations for artifact boosting
-        let is_low_trust = obs.trust_class == ObservationTrustClass::LowTrustPresent;
-
-        for path in artifact_links_iter(&obs.artifact_links) {
-            if seen_paths.insert(path.clone()) {
-                if !is_low_trust {
-                    artifact_paths.push(path.clone());
-                }
-
-                let trust_note = if is_low_trust {
-                    " [low-trust, not boosted]"
-                } else {
-                    ""
-                };
-                if provenance_notes.len() < 4 {
-                    provenance_notes.push(format!(
-                        "{} -> {} ({}{})",
-                        obs.id,
-                        path,
-                        obs.source_kind.label(),
-                        trust_note,
-                    ));
-                }
-            }
-        }
-    }
-
-    Ok(RetrievalResult {
-        candidates,
-        expanded,
-        artifact_paths,
-        provenance_notes,
-    })
-}
-
-fn artifact_links_iter(links: &ObservationArtifactLinks) -> Vec<String> {
-    let mut paths = Vec::new();
-    if let Some(ref path) = links.lesson_file {
-        paths.push(path.clone());
-    }
-    if let Some(ref path) = links.procedure_file {
-        paths.push(path.clone());
-    }
-    // Trajectories are off-prompt; include only for provenance tracing, not boosting
-    if let Some(ref path) = links.trajectory_file {
-        paths.push(path.clone());
-    }
-    paths
 }
 
 impl ObservationSourceKind {
@@ -635,115 +466,6 @@ pub(crate) mod tests {
         assert_eq!(results.len(), 10);
         // Newest first
         assert!(results[0].timestamp_unix_secs > results[9].timestamp_unix_secs);
-    }
-
-    #[test]
-    fn test_match_observations_returns_bounded_candidates() {
-        let observations: Vec<ObservationRecord> = (0..20)
-            .map(|i| ObservationRecord {
-                id: format!("obs-{i}"),
-                timestamp_unix_secs: 1000000 + i,
-                task_intent: format!("fix parsing bug in module {i}"),
-                source_kind: ObservationSourceKind::Lesson,
-                trust_class: ObservationTrustClass::Trusted,
-                summary: format!("[lesson] fix parsing bug in module {i}"),
-                artifact_links: ObservationArtifactLinks {
-                    lesson_file: Some(format!("lessons/{i}.md")),
-                    procedure_file: None,
-                    trajectory_file: None,
-                    superseded_procedure_file: None,
-                },
-                changed_files: vec![format!("src/module_{i}.rs")],
-                verification_command: Some("cargo test".to_string()),
-            })
-            .collect();
-
-        let matched = match_observations(&observations, "fix parsing bug", 5);
-        assert!(matched.len() <= 5);
-        assert!(!matched.is_empty());
-    }
-
-    #[test]
-    fn test_progressive_retrieve_empty_dir() {
-        let temp = TempDir::new().unwrap();
-        let obs_dir = temp.path().join("observations");
-        let result = progressive_retrieve(&obs_dir, "anything", 8, 4).unwrap();
-        assert!(result.candidates.is_empty());
-        assert!(result.artifact_paths.is_empty());
-    }
-
-    #[test]
-    fn test_progressive_retrieve_excludes_low_trust_from_boosting() {
-        let temp = TempDir::new().unwrap();
-        let obs_dir = temp.path().join("observations");
-        std::fs::create_dir_all(&obs_dir).unwrap();
-
-        let record = ObservationRecord {
-            id: "obs-1-low-trust-task".to_string(),
-            timestamp_unix_secs: unix_timestamp_secs(),
-            task_intent: "fix approval bug".to_string(),
-            source_kind: ObservationSourceKind::Lesson,
-            trust_class: ObservationTrustClass::LowTrustPresent,
-            summary: "[lesson] fix approval bug".to_string(),
-            artifact_links: ObservationArtifactLinks {
-                lesson_file: Some(".topagent/lessons/low-trust-lesson.md".to_string()),
-                procedure_file: None,
-                trajectory_file: None,
-                superseded_procedure_file: None,
-            },
-            changed_files: vec!["src/approval.rs".to_string()],
-            verification_command: Some("cargo test".to_string()),
-        };
-        let json = serde_json::to_string_pretty(&record).unwrap();
-        std::fs::write(obs_dir.join("obs-1-low-trust-task.json"), json).unwrap();
-
-        let result = progressive_retrieve(&obs_dir, "fix approval bug", 8, 4).unwrap();
-        assert_eq!(result.candidates.len(), 1);
-        assert_eq!(
-            result.candidates[0].trust_class,
-            ObservationTrustClass::LowTrustPresent
-        );
-        // Low-trust artifacts not in boosting paths
-        assert!(result.artifact_paths.is_empty());
-        // But provenance notes still mention it
-        assert!(!result.provenance_notes.is_empty());
-        assert!(result.provenance_notes[0].contains("low-trust"));
-    }
-
-    #[test]
-    fn test_progressive_retrieve_resolves_artifact_paths() {
-        let temp = TempDir::new().unwrap();
-        let obs_dir = temp.path().join("observations");
-        std::fs::create_dir_all(&obs_dir).unwrap();
-
-        let record = ObservationRecord {
-            id: "obs-1-approval-fix".to_string(),
-            timestamp_unix_secs: unix_timestamp_secs(),
-            task_intent: "harden the approval mailbox".to_string(),
-            source_kind: ObservationSourceKind::LessonAndProcedure,
-            trust_class: ObservationTrustClass::Trusted,
-            summary: "[lesson+procedure] harden the approval mailbox".to_string(),
-            artifact_links: ObservationArtifactLinks {
-                lesson_file: Some(".topagent/lessons/approval-lesson.md".to_string()),
-                procedure_file: Some(".topagent/procedures/approval-proc.md".to_string()),
-                trajectory_file: None,
-                superseded_procedure_file: None,
-            },
-            changed_files: vec!["src/approval.rs".to_string()],
-            verification_command: Some("cargo test".to_string()),
-        };
-        let json = serde_json::to_string_pretty(&record).unwrap();
-        std::fs::write(obs_dir.join("obs-1-approval-fix.json"), json).unwrap();
-
-        let result = progressive_retrieve(&obs_dir, "harden the approval mailbox", 8, 4).unwrap();
-        assert_eq!(result.candidates.len(), 1);
-        assert!(result
-            .artifact_paths
-            .contains(&".topagent/lessons/approval-lesson.md".to_string()));
-        assert!(result
-            .artifact_paths
-            .contains(&".topagent/procedures/approval-proc.md".to_string()));
-        assert!(!result.provenance_notes.is_empty());
     }
 
     #[test]

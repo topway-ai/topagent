@@ -21,7 +21,7 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 
 | Module | Responsibility |
 |--------|---------------|
-| `agent` | Agent struct and orchestration shell; internal `agent/gates`, `agent/tool_execution`, and `agent/run_loop` keep loop control, gate sequencing, and tool-result application narrow |
+| `agent` | Agent struct and orchestration shell; internal `agent/gates`, `agent/planning_gate`, `agent/tool_execution`, and `agent/run_loop` keep loop control, gate sequencing, planning state, and tool-result application narrow |
 | `behavior` | Typed behavior contract and policy root; internal task/action/approval/durability/compaction modules keep runtime policy seams narrow |
 | `approval` | Approval mailbox, request/state transitions, runtime approval enforcement objects |
 | `compaction` | Layered transcript compaction and prompt rebuild support |
@@ -58,8 +58,8 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 | `config` | CliParams struct, parameter validation, route/options construction |
 | `operational_paths` | Shared config-home, service unit, and managed env path ownership for the operational control plane |
 | `run_setup` | Shared agent/provider/context assembly for one-shot CLI and Telegram runs |
-| `telegram` | Telegram polling loop, ChatSessionManager, per-chat transcript persistence |
-| `memory` | Workspace memory facade; `memory/briefing` handles bounded prompt briefing, `memory/promotion` handles verified-task governance, `memory/observation` provides a thin retrieval index for progressive recall, and sibling modules keep procedures, trajectories, and consolidation file-backed and narrow |
+| `telegram` | Telegram polling loop, ChatSessionManager, per-chat transcript persistence; internal `telegram/history` owns transcript I/O, `telegram/approval` owns callback data and keyboard rendering |
+| `memory` | Workspace memory facade; `memory/briefing` handles bounded prompt briefing, `memory/promotion` handles verified-task governance, `memory/observation` provides thin observation CLI rendering only (progressive retrieval was removed from the hot path), and sibling modules keep procedures, trajectories, and consolidation file-backed and narrow |
 | `service/` | Operational control plane split by ownership: `install` handles setup and model prompts, `model` handles persisted model changes, `state` owns shared status/config reads, `lifecycle` owns systemd/status/uninstall, and `managed_env` owns the single managed env truth |
 | `managed_files` | Managed file guards, env file I/O, safe file removal |
 | `progress` | LiveProgress: CLI and Telegram progress formatting |
@@ -177,7 +177,7 @@ Generated tools use the same workspace sandbox policy as bash. Workspace externa
 
 ### Memory and persistence flow
 
-TopAgent now uses five local learning layers:
+TopAgent uses five local learning layers:
 
 1. **Operator Model**: `workspace/.topagent/USER.md`
    - stable operator preferences and collaboration habits only
@@ -203,14 +203,11 @@ TopAgent now uses five local learning layers:
    - carry the run's compact provenance labels so later review/export can reject low-trust artifacts
    - saved locally first, then reviewed and exported explicitly into `workspace/.topagent/exports/trajectories/`
    - stay off the prompt hot path unless exported or reviewed manually
-6. **Observation index**: `workspace/.topagent/observations/*.json`
-   - lightweight retrieval-oriented records emitted when tasks are promoted (lesson/procedure/trajectory)
-   - each record links back to its promoted artifacts, changed files, verification command, and trust class
-   - used for progressive retrieval: candidate observations are matched, optionally expanded to temporal neighbors, then resolved to linked artifact paths
-   - observation-matched artifacts get a score boost during briefing, improving recall of relevant prior work
-   - never loaded into the prompt directly; only influence which existing artifacts rank higher
-   - low-trust observations are retrieved for provenance tracing but do not boost artifact scores
+6. **Observation records**: `workspace/.topagent/observations/*.json`
+   - lightweight records emitted when tasks are promoted (lesson/procedure/trajectory)
+   - link back to promoted artifacts, changed files, verification command, and trust class
    - inspectable via `topagent observation list` and `topagent observation show`
+   - no longer used for hot-path retrieval or briefing score boosting
 
 `/reset` deletes only the per-chat transcript file. It does not touch `MEMORY.md`, topics, lessons, procedures, plans, trajectories, or observations.
 
@@ -225,7 +222,7 @@ Curated consolidation keeps the index practical:
 - missing or unreadable topic files are skipped during retrieval
 - the index load path caps injected bytes so startup memory stays cheap
 - trajectory review/export stays explicit and local; saved artifacts do not become a second prompt-memory system
-- observation records are emitted alongside promotions and link back to promoted artifacts; they improve retrieval targeting without adding prompt bulk
+- observation records are emitted alongside promotions and inspectable via CLI; they no longer affect briefing ranking
 
 ### Performance invariants
 
@@ -234,7 +231,7 @@ Curated consolidation keeps the index practical:
 - Transcript use stays targeted. Prior chat is searched for narrow snippets only and is never replayed wholesale into the prompt.
 - Procedures are a latency aid, not a ceremony layer. They are loaded sparsely, only when relevant, and superseded procedures stay off the hot path.
 - Trajectories are export artifacts, not prompt memory. Saving more trajectories must not make normal task startup heavier.
-- Observations are a retrieval aid, not prompt content. More observation files on disk must not increase prompt bytes or loaded item counts. Retrieval is capped at a small fixed candidate set.
+- Observations are CLI-inspectable records, not prompt content. They are emitted during promotion and no longer affect briefing retrieval.
 - Provenance/trust metadata stays lightweight and attached at key boundaries only. It must not become deep always-on analysis over every artifact.
 - Durable artifact count must not imply linear growth in prompt assembly cost, retrieval cost, approval checks, or planning work.
 - Lifecycle hooks are zero-cost when absent. No `.topagent/hooks.toml` means no manifest parse, no dispatch, and no prompt section. When present, hooks run only at their declared event boundary and are bounded by timeout and output caps.

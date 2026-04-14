@@ -67,13 +67,6 @@ fn render_memory_recall(workspace: &Path, instruction: &str) -> Result<String> {
         ));
     }
 
-    if stats.observation_hints_used > 0 {
-        output.push_str(&format!(
-            "Observation hints used: {}\n",
-            stats.observation_hints_used
-        ));
-    }
-
     if !stats.provenance_notes.is_empty() {
         output.push('\n');
         output.push_str("Provenance:\n");
@@ -931,7 +924,7 @@ mod tests {
             "# Operator Model\n\n## big_pref\n**Category:** style\n**Updated:** <t:1>\n**Preference:** ",
         );
         content.push_str(&"x".repeat(4097));
-        content.push_str("\n");
+        content.push('\n');
         fs::write(user_profile_path(temp.path()), &content).unwrap();
         let output = render_memory_lint(temp.path()).unwrap();
         assert!(output.contains("USER.md"));

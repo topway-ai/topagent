@@ -59,7 +59,7 @@ TopAgent keeps Telegram memory in three layers:
 
 For strong verified runs, TopAgent can also emit compact trajectory artifacts under `workspace/.topagent/trajectories/`. These are structured export records for later eval or training work, not prompt memory, and they stay local until reviewed and exported explicitly.
 
-Alongside promotion, TopAgent emits lightweight observation records under `workspace/.topagent/observations/`. These are a retrieval aid — they link back to promoted artifacts (lessons, procedures, trajectories) and are used for progressive recall of relevant prior work without replaying broad history. Observations never enter the prompt directly; they only influence which existing artifacts rank higher during briefing.
+Alongside promotion, TopAgent emits lightweight observation records under `workspace/.topagent/observations/`. These are CLI-inspectable records that link back to promoted artifacts — they are no longer used for hot-path retrieval or briefing score boosting.
 
 TopAgent also keeps a narrow trust boundary for external content:
 
@@ -136,7 +136,7 @@ Workspace memory is separate from `TOPAGENT.md`:
 - `.topagent/procedures/` holds reusable workspace-local playbooks distilled from strong verified runs, revised through proven reuse, and loaded lazily in small batches
 - `.topagent/plans/` holds manual saved plans; auto-promotion no longer uses plans as the reusable workflow artifact
 - `.topagent/trajectories/` holds compact structured execution traces from high-quality verified runs; they are reviewable export artifacts, not hot-path prompt memory
-- `.topagent/observations/` holds lightweight retrieval-oriented observation records emitted during promotion, used for progressive recall
+- `.topagent/observations/` holds lightweight observation records emitted during promotion, inspectable via CLI
 - `.topagent/exports/trajectories/` holds reviewed trajectory export packages
 - `.topagent/telegram-history/` stores searchable per-chat transcript evidence
 - `.topagent/checkpoints/` stores the most recent automatic workspace checkpoints for restore

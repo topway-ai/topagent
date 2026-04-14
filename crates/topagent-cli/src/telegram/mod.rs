@@ -1,31 +1,32 @@
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
-use topagent_core::channel::telegram::{
-    TelegramInlineKeyboardButton, TelegramInlineKeyboardMarkup,
-};
+use topagent_core::channel::telegram::TelegramInlineKeyboardMarkup;
 use topagent_core::{
     context::ExecutionContext, model::ModelRoute, Agent, ApprovalEntry, ApprovalMailbox,
-    ApprovalMailboxMode, CancellationToken, Message, ProgressCallback, ProgressUpdate, Role,
+    ApprovalMailboxMode, CancellationToken, Message, ProgressCallback, ProgressUpdate,
     RuntimeOptions, TelegramAdapter, WorkspaceCheckpointStore, POLL_TIMEOUT_SECS,
 };
 use tracing::{error, info, warn};
 
 use crate::config::*;
-use crate::managed_files::write_managed_file;
-use crate::memory::{promote_verified_task, WorkspaceMemory};
+use crate::memory::{promote_verified_task, PromotionContext, WorkspaceMemory};
 use crate::progress::LiveProgress;
 use crate::run_setup::{
     build_agent, prepare_run_context, prepare_workspace_memory, PreparedRunContext,
 };
+use crate::telegram::approval::{
+    approval_reply_markup, format_approval_resolution, parse_approval_callback_data,
+};
+use crate::telegram::history::{persist_visible_exchange_to_store, ChatHistoryStore};
 
-const TELEGRAM_HISTORY_VERSION: u32 = 1;
-const MAX_PERSISTED_TRANSCRIPT_MESSAGES: usize = 100;
-const APPROVAL_CALLBACK_PREFIX: &str = "approval";
+mod approval;
+pub(crate) mod history;
+
+pub(crate) use history::clear_workspace_telegram_history;
 
 pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<()> {
     let persisted_defaults = load_persisted_telegram_defaults().unwrap_or_default();
@@ -34,7 +35,6 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
     let api_key = config.effective_api_key()?;
     let token = config.token;
     let workspace = config.workspace;
-    // Register known secrets for redaction in tool output and final replies.
     let mut secrets = topagent_core::SecretRegistry::new();
     if let Some(ref openrouter_key) = config.openrouter_api_key {
         secrets.register(openrouter_key);
@@ -350,7 +350,6 @@ fn send_telegram_with_markup(
     };
 
     for (index, chunk) in chunks.into_iter().enumerate() {
-        // Last-mile secret redaction before the message reaches Telegram.
         let text = match secrets {
             Some(reg) => reg.redact(&chunk).into_owned(),
             None => chunk,
@@ -372,273 +371,6 @@ fn send_telegram_with_markup(
 
     report
 }
-
-fn approval_callback_data(approve: bool, request_id: &str) -> String {
-    format!(
-        "{APPROVAL_CALLBACK_PREFIX}:{}:{request_id}",
-        if approve { "approve" } else { "deny" }
-    )
-}
-
-fn parse_approval_callback_data(data: &str) -> Option<(bool, &str)> {
-    let mut parts = data.splitn(3, ':');
-    if parts.next()? != APPROVAL_CALLBACK_PREFIX {
-        return None;
-    }
-
-    let approve = match parts.next()? {
-        "approve" => true,
-        "deny" => false,
-        _ => return None,
-    };
-
-    let request_id = parts.next()?.trim();
-    if request_id.is_empty() {
-        return None;
-    }
-
-    Some((approve, request_id))
-}
-
-fn approval_reply_markup(request_id: &str) -> TelegramInlineKeyboardMarkup {
-    TelegramInlineKeyboardMarkup {
-        inline_keyboard: vec![vec![
-            TelegramInlineKeyboardButton {
-                text: "Approve".to_string(),
-                callback_data: approval_callback_data(true, request_id),
-            },
-            TelegramInlineKeyboardButton {
-                text: "Deny".to_string(),
-                callback_data: approval_callback_data(false, request_id),
-            },
-        ]],
-    }
-}
-
-fn format_approval_resolution(entry: &ApprovalEntry, approve: bool) -> String {
-    format!(
-        "Approval {} {}.",
-        entry.request.id,
-        if approve { "approved" } else { "denied" }
-    )
-}
-
-fn build_persisted_transcript(messages: &[Message], final_response: Option<&str>) -> Vec<Message> {
-    let mut transcript: Vec<_> = messages
-        .iter()
-        .filter_map(|message| match (message.role, message.as_text()) {
-            (Role::User, Some(text)) => Some(Message::user(text)),
-            (Role::Assistant, Some(text)) => Some(Message::assistant(text)),
-            _ => None,
-        })
-        .collect();
-
-    if let Some(final_response) = final_response {
-        if let Some(last_assistant) = transcript
-            .iter_mut()
-            .rev()
-            .find(|message| message.role == Role::Assistant)
-        {
-            *last_assistant = Message::assistant(final_response);
-        } else {
-            transcript.push(Message::assistant(final_response));
-        }
-    }
-
-    if transcript.len() > MAX_PERSISTED_TRANSCRIPT_MESSAGES {
-        let keep_start = transcript.len() - MAX_PERSISTED_TRANSCRIPT_MESSAGES;
-        transcript.drain(..keep_start);
-    }
-
-    transcript
-}
-
-fn persist_messages_to_store(history_store: &ChatHistoryStore, chat_id: i64, messages: &[Message]) {
-    if messages.is_empty() {
-        if let Err(err) = history_store.clear(chat_id) {
-            warn!(
-                "failed to clear empty Telegram history for chat {} from {}: {}",
-                chat_id,
-                history_store.path_for_chat(chat_id).display(),
-                err
-            );
-        }
-        return;
-    }
-
-    match history_store.save(chat_id, messages) {
-        Ok(path) => {
-            info!(
-                "saved {} Telegram history messages for chat {} to {}",
-                messages.len(),
-                chat_id,
-                path.display()
-            );
-        }
-        Err(err) => {
-            warn!(
-                "failed to save Telegram history for chat {} to {}: {}",
-                chat_id,
-                history_store.path_for_chat(chat_id).display(),
-                err
-            );
-        }
-    }
-}
-
-fn persist_visible_exchange_to_store(
-    history_store: &ChatHistoryStore,
-    chat_id: i64,
-    user_text: &str,
-    assistant_text: Option<&str>,
-) {
-    let mut messages = match history_store.load(chat_id) {
-        Ok(existing) => build_persisted_transcript(&existing, None),
-        Err(err) => {
-            warn!(
-                "failed to load existing Telegram transcript for chat {} from {} before appending visible exchange: {}",
-                chat_id,
-                history_store.path_for_chat(chat_id).display(),
-                err
-            );
-            Vec::new()
-        }
-    };
-
-    let user_text = user_text.trim();
-    if !user_text.is_empty() {
-        messages.push(Message::user(user_text));
-    }
-
-    if let Some(assistant_text) = assistant_text
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-    {
-        messages.push(Message::assistant(assistant_text));
-    }
-
-    if messages.len() > MAX_PERSISTED_TRANSCRIPT_MESSAGES {
-        let keep_start = messages.len() - MAX_PERSISTED_TRANSCRIPT_MESSAGES;
-        messages.drain(..keep_start);
-    }
-
-    persist_messages_to_store(history_store, chat_id, &messages);
-}
-
-#[cfg(test)]
-fn persist_agent_history_to_store(
-    history_store: &ChatHistoryStore,
-    chat_id: i64,
-    agent: &Agent,
-    final_response: Option<&str>,
-) {
-    let mut messages = match history_store.load(chat_id) {
-        Ok(existing) => build_persisted_transcript(&existing, None),
-        Err(err) => {
-            warn!(
-                "failed to load existing Telegram transcript for chat {} from {} before saving: {}",
-                chat_id,
-                history_store.path_for_chat(chat_id).display(),
-                err
-            );
-            Vec::new()
-        }
-    };
-    messages.extend(build_persisted_transcript(
-        &agent.conversation_messages(),
-        final_response,
-    ));
-    if messages.len() > MAX_PERSISTED_TRANSCRIPT_MESSAGES {
-        let keep_start = messages.len() - MAX_PERSISTED_TRANSCRIPT_MESSAGES;
-        messages.drain(..keep_start);
-    }
-    persist_messages_to_store(history_store, chat_id, &messages);
-}
-
-// ── Chat history persistence ──
-
-#[derive(Debug, Clone)]
-struct ChatHistoryStore {
-    history_dir: PathBuf,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedChatHistory {
-    version: u32,
-    messages: Vec<topagent_core::Message>,
-}
-
-impl ChatHistoryStore {
-    fn new(workspace_root: PathBuf) -> Self {
-        Self {
-            history_dir: workspace_root.join(".topagent").join("telegram-history"),
-        }
-    }
-
-    fn path_for_chat(&self, chat_id: i64) -> PathBuf {
-        self.history_dir.join(format!("chat-{chat_id}.json"))
-    }
-
-    fn load(&self, chat_id: i64) -> Result<Vec<topagent_core::Message>> {
-        let path = self.path_for_chat(chat_id);
-        if !path.exists() {
-            return Ok(Vec::new());
-        }
-
-        let contents = std::fs::read_to_string(&path)
-            .with_context(|| format!("failed to read {}", path.display()))?;
-        let history: PersistedChatHistory = serde_json::from_str(&contents)
-            .with_context(|| format!("failed to parse {}", path.display()))?;
-        if history.version != TELEGRAM_HISTORY_VERSION {
-            return Err(anyhow::anyhow!(
-                "unsupported Telegram history version {} in {}",
-                history.version,
-                path.display()
-            ));
-        }
-
-        Ok(history.messages)
-    }
-
-    fn save(&self, chat_id: i64, messages: &[topagent_core::Message]) -> Result<PathBuf> {
-        std::fs::create_dir_all(&self.history_dir)
-            .with_context(|| format!("failed to create {}", self.history_dir.display()))?;
-        let path = self.path_for_chat(chat_id);
-        let history = PersistedChatHistory {
-            version: TELEGRAM_HISTORY_VERSION,
-            messages: messages.to_vec(),
-        };
-        let contents = serde_json::to_string_pretty(&history)
-            .with_context(|| format!("failed to encode {}", path.display()))?;
-        write_managed_file(&path, &contents, true)?;
-        Ok(path)
-    }
-
-    fn clear(&self, chat_id: i64) -> Result<bool> {
-        let path = self.path_for_chat(chat_id);
-        if !path.exists() {
-            return Ok(false);
-        }
-        std::fs::remove_file(&path)
-            .with_context(|| format!("failed to remove {}", path.display()))?;
-        Ok(true)
-    }
-
-    fn clear_all(&self) -> Result<bool> {
-        if !self.history_dir.exists() {
-            return Ok(false);
-        }
-        std::fs::remove_dir_all(&self.history_dir)
-            .with_context(|| format!("failed to remove {}", self.history_dir.display()))?;
-        Ok(true)
-    }
-}
-
-pub(crate) fn clear_workspace_telegram_history(workspace_root: &Path) -> Result<bool> {
-    ChatHistoryStore::new(workspace_root.to_path_buf()).clear_all()
-}
-
-use anyhow::Context;
 
 // ── Session manager ──
 
@@ -735,7 +467,7 @@ impl ChatSessionManager {
 
     #[cfg(test)]
     pub fn persist_agent_history(&self, chat_id: i64, agent: &Agent) {
-        persist_agent_history_to_store(&self.history_store, chat_id, agent, None);
+        history::persist_agent_history_to_store(&self.history_store, chat_id, agent, None);
     }
 
     fn collect_finished_tasks(&mut self) {
@@ -958,17 +690,17 @@ impl ChatSessionManager {
             if let Ok(_response) = &result {
                 if let Some(task_result) = agent.last_task_result().cloned() {
                     match agent.plan().lock() {
-                        Ok(plan) => match promote_verified_task(
-                            &memory,
-                            &run_ctx,
-                            &distill_options,
-                            &instruction,
-                            agent.task_mode(),
-                            &task_result,
-                            &plan.clone(),
-                            agent.durable_memory_written_this_run(),
-                            &loaded_procedure_files,
-                        ) {
+                        Ok(plan) => match promote_verified_task(&PromotionContext {
+                            memory: &memory,
+                            ctx: &run_ctx,
+                            options: &distill_options,
+                            instruction: &instruction,
+                            task_mode: agent.task_mode(),
+                            task_result: &task_result,
+                            plan: &plan.clone(),
+                            durable_memory_written: agent.durable_memory_written_this_run(),
+                            loaded_procedure_files: &loaded_procedure_files,
+                        }) {
                             Ok(report) => {
                                 if report.lesson_file.is_some()
                                     || report.procedure_file.is_some()
@@ -1025,8 +757,6 @@ impl ChatSessionManager {
                     persist_visible_exchange_to_store(&history_store, chat_id, &instruction, None);
                 }
                 Err(e) => {
-                    // When progress is active, the status message already shows the
-                    // failure via ProgressUpdate::failed. Don't send a duplicate error.
                     if !has_progress {
                         let error_text = format!("Error: {}", e);
                         let delivery = send_telegram(
@@ -1084,6 +814,7 @@ fn current_model_label_for_help(
 
 #[cfg(test)]
 mod tests {
+    use super::history::persist_agent_history_to_store;
     use super::*;
     use crate::memory::procedures::{save_procedure, ProcedureDraft};
     use crate::memory::{MEMORY_PROCEDURES_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR};

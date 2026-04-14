@@ -57,7 +57,7 @@ impl Agent {
                     .set_system_prompt(&self.build_run_system_prompt(ctx)?);
             }
 
-            if self.planning_gate_active && !self.plan_exists() {
+            if self.planning.is_active() && !self.plan_exists() {
                 counters.planning_phase_steps += 1;
                 if counters.planning_phase_steps
                     >= self.behavior.planning.max_research_steps_without_plan
@@ -128,7 +128,7 @@ impl Agent {
                             continue;
                         }
 
-                        if self.planning_gate_active && !self.plan_exists() {
+                        if self.planning.is_active() && !self.plan_exists() {
                             counters.planning_redirects += 1;
                             if counters.planning_redirects
                                 >= self.behavior.planning.max_text_redirects_before_auto_plan

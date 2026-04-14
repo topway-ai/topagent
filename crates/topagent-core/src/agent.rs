@@ -24,6 +24,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 mod gates;
+mod planning_gate;
 mod run_loop;
 mod tool_execution;
 
@@ -32,7 +33,7 @@ mod tool_execution;
 // Two independent counters protect against distinct planning failures.
 // They are intentionally separate:
 //
-// 1. `planning_block_count` (vs behavior.planning.max_blocked_mutations_before_auto_plan):
+// 1. `PlanningGate::block_count` (vs behavior.planning.max_blocked_mutations_before_auto_plan):
 //    Counts consecutive mutation-tool calls blocked by the planning gate.
 //    Covers: model actively tries to mutate without creating a plan.
 //
@@ -58,16 +59,10 @@ pub struct Agent {
     behavior: BehaviorContract,
     plan: Arc<Mutex<Plan>>,
     run_state: AgentRunState,
-    planning_gate_active: bool,
-    planning_required_for_task: bool,
-    task_mode: plan::TaskMode,
-    /// Set to true if the planning gate was activated mid-run by runtime
-    /// escalation (risk #3). Prevents re-escalation after auto-plan.
-    planning_escalated: bool,
+    planning: planning_gate::PlanningGate,
     resolved_route: ModelRoute,
     execution_stage: ExecutionStage,
     progress_callback: Option<ProgressCallback>,
-    planning_block_count: usize,
     compaction_state: CompactionRuntimeState,
     generated_tool_warnings: Vec<String>,
     generated_tool_guards: HashMap<String, GeneratedToolRuntimeGuard>,
@@ -140,14 +135,10 @@ impl Agent {
             behavior,
             plan,
             run_state: AgentRunState::default(),
-            planning_gate_active: false,
-            planning_required_for_task: false,
-            task_mode: plan::TaskMode::PlanAndExecute,
-            planning_escalated: false,
+            planning: planning_gate::PlanningGate::new(),
             resolved_route: route,
             execution_stage: ExecutionStage::Research,
             progress_callback: None,
-            planning_block_count: 0,
             compaction_state: CompactionRuntimeState::default(),
             generated_tool_warnings: Vec::new(),
             generated_tool_guards: HashMap::new(),
@@ -181,7 +172,7 @@ impl Agent {
     }
 
     pub fn task_mode(&self) -> plan::TaskMode {
-        self.task_mode
+        self.planning.task_mode()
     }
 
     pub fn durable_memory_written_this_run(&self) -> bool {
@@ -207,7 +198,7 @@ impl Agent {
     }
 
     fn current_progress_phase(&self) -> &'static str {
-        if self.planning_gate_active {
+        if self.planning.is_active() {
             return "planning";
         }
 
@@ -219,7 +210,7 @@ impl Agent {
     }
 
     fn current_working_progress(&self) -> ProgressUpdate {
-        if self.planning_gate_active {
+        if self.planning.is_active() {
             return ProgressUpdate::planning();
         }
 
@@ -242,8 +233,7 @@ impl Agent {
     }
 
     fn deactivate_planning_gate(&mut self) {
-        self.planning_gate_active = false;
-        self.clear_planning_block_state();
+        self.planning.deactivate();
     }
 
     fn maybe_compact_context(&mut self, ctx: &ExecutionContext) {
@@ -255,7 +245,7 @@ impl Agent {
         let snapshot = self.run_state.build_snapshot(
             &self.behavior,
             ctx,
-            self.planning_gate_active && !self.plan_exists(),
+            self.planning.is_active() && !self.plan_exists(),
         );
         let compactor = TranscriptCompactor::new(&self.behavior.compaction);
 
@@ -450,13 +440,13 @@ impl Agent {
     }
 
     fn note_planning_block(&mut self, ctx: &ExecutionContext, instruction: &str) -> Result<()> {
-        if !self.planning_gate_active || self.plan_exists() {
-            self.planning_block_count = 0;
+        if !self.planning.is_active() || self.plan_exists() {
+            self.planning.reset_block_count();
             return Ok(());
         }
 
-        self.planning_block_count += 1;
-        if self.planning_block_count
+        self.planning.note_block();
+        if self.planning.block_count()
             >= self
                 .behavior
                 .planning
@@ -475,25 +465,19 @@ impl Agent {
     fn maybe_escalate_to_planning(&mut self) {
         let distinct_files = self.run_state.changed_file_count();
         if self.behavior.should_escalate_to_planning(
-            self.planning_gate_active,
-            self.planning_escalated,
+            self.planning.is_active(),
+            self.planning.is_escalated(),
             self.plan_exists(),
             distinct_files,
         ) {
-            self.planning_gate_active = true;
-            self.planning_required_for_task = true;
-            self.planning_escalated = true;
+            self.planning.escalate();
             self.emit_progress(ProgressUpdate::planning());
         }
     }
 
-    fn clear_planning_block_state(&mut self) {
-        self.planning_block_count = 0;
-    }
-
     #[allow(dead_code)]
     fn planning_still_blocked(&self) -> bool {
-        self.planning_gate_active && !self.plan_exists() && self.planning_block_count > 0
+        self.planning.is_blocked(self.plan_exists())
     }
 
     fn check_cancelled(&self, ctx: &ExecutionContext) -> Result<()> {
@@ -512,7 +496,7 @@ impl Agent {
     }
 
     pub fn is_planning_gate_active(&self) -> bool {
-        self.planning_gate_active
+        self.planning.is_active()
     }
 
     fn execution_started(&self) -> bool {
@@ -596,16 +580,14 @@ impl Agent {
         self.last_task_result = None;
         self.durable_memory_written_this_run = false;
 
-        self.planning_required_for_task = self.behavior.planning.require_plan_by_default
+        let required_for_task = self.behavior.planning.require_plan_by_default
             && self.classify_task(instruction, ctx.cancel_token())?;
-        self.task_mode = if self.planning_required_for_task {
+        let task_mode = if required_for_task {
             self.classify_task_mode(instruction, ctx.cancel_token())?
         } else {
             plan::TaskMode::PlanAndExecute
         };
-        self.planning_gate_active = self.planning_required_for_task;
-        self.planning_escalated = false;
-        self.planning_block_count = 0;
+        self.planning.activate(required_for_task, task_mode);
         self.execution_stage = ExecutionStage::Research;
         Ok(())
     }
@@ -623,7 +605,7 @@ impl Agent {
         let run_state = self.run_state.build_snapshot(
             &self.behavior,
             ctx,
-            self.planning_gate_active && !plan_exists,
+            self.planning.is_active() && !plan_exists,
         );
 
         let hook_summary_lines = ctx.hook_registry().summary_lines();
@@ -638,7 +620,7 @@ impl Agent {
             run_state: Some(&run_state),
             generated_tool_warnings: &self.generated_tool_warnings,
             hook_summary_lines: &hook_summary_lines,
-            planning_required_now: self.planning_gate_active && !plan_exists,
+            planning_required_now: self.planning.is_active() && !plan_exists,
             approval_mailbox_available: ctx.approval_mailbox().is_some(),
         }))
     }

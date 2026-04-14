@@ -8,7 +8,7 @@ pub(crate) mod trajectories;
 pub(crate) use self::procedures::{
     disable_procedure, parse_saved_procedure, ParsedProcedure, ProcedureStatus,
 };
-pub(crate) use self::promotion::promote_verified_task;
+pub(crate) use self::promotion::{promote_verified_task, PromotionContext};
 pub(crate) use self::trajectories::{
     export_trajectory as write_exported_trajectory, mark_trajectory_ready, parse_saved_trajectory,
     TrajectoryReviewState, TRAJECTORY_EXPORTS_RELATIVE_DIR,
@@ -108,7 +108,6 @@ pub(crate) struct MemoryPromptStats {
     pub loaded_items: Vec<String>,
     pub loaded_procedure_files: Vec<String>,
     pub transcript_snippets: usize,
-    pub observation_hints_used: usize,
     pub provenance_notes: Vec<String>,
 }
 
@@ -336,7 +335,7 @@ fn artifact_filename(path: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::procedures::{save_procedure, ProcedureDraft};
-    use super::promotion::TaskPromotionReport;
+    use super::promotion::{PromotionContext, TaskPromotionReport};
     use super::*;
     use std::fs;
     use tempfile::TempDir;
@@ -935,17 +934,17 @@ path = "src/lib.rs"
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
         let ctx = ExecutionContext::new(temp.path().to_path_buf());
         let options = RuntimeOptions::default();
-        let report = promote_verified_task(
-            &memory,
-            &ctx,
-            &options,
-            "Repair the approval mailbox compaction workflow",
-            TaskMode::PlanAndExecute,
-            &strong_verified_task_result("super-secret-output-value"),
-            &strong_plan(),
-            false,
-            &[],
-        )
+        let report = promote_verified_task(&PromotionContext {
+            memory: &memory,
+            ctx: &ctx,
+            options: &options,
+            instruction: "Repair the approval mailbox compaction workflow",
+            task_mode: TaskMode::PlanAndExecute,
+            task_result: &strong_verified_task_result("super-secret-output-value"),
+            plan: &strong_plan(),
+            durable_memory_written: false,
+            loaded_procedure_files: &[],
+        })
         .unwrap();
 
         assert!(report.lesson_file.is_some());
@@ -986,17 +985,17 @@ path = "src/lib.rs"
         let task_result = strong_verified_task_result("trusted local verification")
             .with_source_labels(vec![low_trust_transcript_source()]);
 
-        let report = promote_verified_task(
-            &memory,
-            &ctx,
-            &options,
-            "Repair the approval mailbox compaction workflow",
-            TaskMode::PlanAndExecute,
-            &task_result,
-            &strong_plan(),
-            false,
-            &[],
-        )
+        let report = promote_verified_task(&PromotionContext {
+            memory: &memory,
+            ctx: &ctx,
+            options: &options,
+            instruction: "Repair the approval mailbox compaction workflow",
+            task_mode: TaskMode::PlanAndExecute,
+            task_result: &task_result,
+            plan: &strong_plan(),
+            durable_memory_written: false,
+            loaded_procedure_files: &[],
+        })
         .unwrap();
 
         assert!(report.lesson_file.is_some());
@@ -1022,17 +1021,17 @@ path = "src/lib.rs"
             succeeded: false,
         });
 
-        let report = promote_verified_task(
-            &memory,
-            &ctx,
-            &options,
-            "Unify the model control path and rerun CLI tests",
-            TaskMode::PlanAndExecute,
-            &failed,
-            &Plan::new(),
-            false,
-            &[],
-        )
+        let report = promote_verified_task(&PromotionContext {
+            memory: &memory,
+            ctx: &ctx,
+            options: &options,
+            instruction: "Unify the model control path and rerun CLI tests",
+            task_mode: TaskMode::PlanAndExecute,
+            task_result: &failed,
+            plan: &Plan::new(),
+            durable_memory_written: false,
+            loaded_procedure_files: &[],
+        })
         .unwrap();
 
         assert_eq!(report, TaskPromotionReport::default());
@@ -1055,17 +1054,17 @@ path = "src/lib.rs"
                 exit_code: 0,
                 succeeded: true,
             });
-        let report = promote_verified_task(
-            &memory,
-            &ctx,
-            &options,
-            "Update one README line and rerun the CLI test",
-            TaskMode::PlanAndExecute,
-            &trivial,
-            &Plan::new(),
-            false,
-            &[],
-        )
+        let report = promote_verified_task(&PromotionContext {
+            memory: &memory,
+            ctx: &ctx,
+            options: &options,
+            instruction: "Update one README line and rerun the CLI test",
+            task_mode: TaskMode::PlanAndExecute,
+            task_result: &trivial,
+            plan: &Plan::new(),
+            durable_memory_written: false,
+            loaded_procedure_files: &[],
+        })
         .unwrap();
 
         assert_eq!(report, TaskPromotionReport::default());
@@ -1081,17 +1080,17 @@ path = "src/lib.rs"
         let ctx = ExecutionContext::new(temp.path().to_path_buf());
         let options = RuntimeOptions::default();
 
-        let report = promote_verified_task(
-            &memory,
-            &ctx,
-            &options,
-            "Repair the approval mailbox compaction workflow",
-            TaskMode::PlanAndExecute,
-            &strong_verified_task_result("already saved elsewhere"),
-            &strong_plan(),
-            true,
-            &[],
-        )
+        let report = promote_verified_task(&PromotionContext {
+            memory: &memory,
+            ctx: &ctx,
+            options: &options,
+            instruction: "Repair the approval mailbox compaction workflow",
+            task_mode: TaskMode::PlanAndExecute,
+            task_result: &strong_verified_task_result("already saved elsewhere"),
+            plan: &strong_plan(),
+            durable_memory_written: true,
+            loaded_procedure_files: &[],
+        })
         .unwrap();
 
         assert_eq!(report, TaskPromotionReport::default());
@@ -1107,32 +1106,33 @@ path = "src/lib.rs"
         let ctx = ExecutionContext::new(temp.path().to_path_buf());
         let options = RuntimeOptions::default();
 
-        let first = promote_verified_task(
-            &memory,
-            &ctx,
-            &options,
-            "Repair approval mailbox compaction workflow",
-            TaskMode::PlanAndExecute,
-            &strong_verified_task_result("first output"),
-            &strong_plan(),
-            false,
-            &[],
-        )
+        let first = promote_verified_task(&PromotionContext {
+            memory: &memory,
+            ctx: &ctx,
+            options: &options,
+            instruction: "Repair approval mailbox compaction workflow",
+            task_mode: TaskMode::PlanAndExecute,
+            task_result: &strong_verified_task_result("first output"),
+            plan: &strong_plan(),
+            durable_memory_written: false,
+            loaded_procedure_files: &[],
+        })
         .unwrap();
         let prompt = memory
             .build_prompt("repair approval mailbox compaction workflow", None)
             .unwrap();
-        let second = promote_verified_task(
-            &memory,
-            &ctx,
-            &options,
-            "Repair approval mailbox compaction workflow with pending anchor retention",
-            TaskMode::PlanAndExecute,
-            &strong_verified_task_result("second output"),
-            &strong_plan(),
-            false,
-            &prompt.stats.loaded_procedure_files,
-        )
+        let second = promote_verified_task(&PromotionContext {
+            memory: &memory,
+            ctx: &ctx,
+            options: &options,
+            instruction:
+                "Repair approval mailbox compaction workflow with pending anchor retention",
+            task_mode: TaskMode::PlanAndExecute,
+            task_result: &strong_verified_task_result("second output"),
+            plan: &strong_plan(),
+            durable_memory_written: false,
+            loaded_procedure_files: &prompt.stats.loaded_procedure_files,
+        })
         .unwrap();
 
         let first_procedure = first.procedure_file.unwrap();
@@ -1159,17 +1159,17 @@ path = "src/lib.rs"
         let ctx = ExecutionContext::new(temp.path().to_path_buf());
         let options = RuntimeOptions::default();
 
-        let first = promote_verified_task(
-            &memory,
-            &ctx,
-            &options,
-            "Repair approval mailbox compaction workflow",
-            TaskMode::PlanAndExecute,
-            &strong_verified_task_result("first output"),
-            &strong_plan(),
-            false,
-            &[],
-        )
+        let first = promote_verified_task(&PromotionContext {
+            memory: &memory,
+            ctx: &ctx,
+            options: &options,
+            instruction: "Repair approval mailbox compaction workflow",
+            task_mode: TaskMode::PlanAndExecute,
+            task_result: &strong_verified_task_result("first output"),
+            plan: &strong_plan(),
+            durable_memory_written: false,
+            loaded_procedure_files: &[],
+        })
         .unwrap();
 
         let procedure_path = temp.path().join(first.procedure_file.as_deref().unwrap());
@@ -1180,17 +1180,17 @@ path = "src/lib.rs"
         let prompt = memory
             .build_prompt("repair approval mailbox compaction workflow", None)
             .unwrap();
-        let second = promote_verified_task(
-            &memory,
-            &ctx,
-            &options,
-            "Repair approval mailbox compaction workflow",
-            TaskMode::PlanAndExecute,
-            &strong_verified_task_result("second output"),
-            &strong_plan_with_extra_item(),
-            false,
-            &prompt.stats.loaded_procedure_files,
-        )
+        let second = promote_verified_task(&PromotionContext {
+            memory: &memory,
+            ctx: &ctx,
+            options: &options,
+            instruction: "Repair approval mailbox compaction workflow",
+            task_mode: TaskMode::PlanAndExecute,
+            task_result: &strong_verified_task_result("second output"),
+            plan: &strong_plan_with_extra_item(),
+            durable_memory_written: false,
+            loaded_procedure_files: &prompt.stats.loaded_procedure_files,
+        })
         .unwrap();
 
         let procedure_path = temp.path().join(first.procedure_file.unwrap());
@@ -1215,17 +1215,17 @@ path = "src/lib.rs"
         let ctx = ExecutionContext::new(temp.path().to_path_buf());
         let options = RuntimeOptions::default();
 
-        let first = promote_verified_task(
-            &memory,
-            &ctx,
-            &options,
-            "Repair approval mailbox compaction workflow",
-            TaskMode::PlanAndExecute,
-            &strong_verified_task_result("first output"),
-            &strong_plan(),
-            false,
-            &[],
-        )
+        let first = promote_verified_task(&PromotionContext {
+            memory: &memory,
+            ctx: &ctx,
+            options: &options,
+            instruction: "Repair approval mailbox compaction workflow",
+            task_mode: TaskMode::PlanAndExecute,
+            task_result: &strong_verified_task_result("first output"),
+            plan: &strong_plan(),
+            durable_memory_written: false,
+            loaded_procedure_files: &[],
+        })
         .unwrap();
 
         let procedure_path = temp.path().join(first.procedure_file.as_deref().unwrap());
@@ -1236,20 +1236,20 @@ path = "src/lib.rs"
         let prompt = memory
             .build_prompt("repair approval mailbox compaction workflow", None)
             .unwrap();
-        let second = promote_verified_task(
-            &memory,
-            &ctx,
-            &options,
-            "Repair approval mailbox compaction workflow with restore verification",
-            TaskMode::PlanAndExecute,
-            &strong_verified_task_result_with_command(
+        let second = promote_verified_task(&PromotionContext {
+            memory: &memory,
+            ctx: &ctx,
+            options: &options,
+            instruction: "Repair approval mailbox compaction workflow with restore verification",
+            task_mode: TaskMode::PlanAndExecute,
+            task_result: &strong_verified_task_result_with_command(
                 "second output",
                 "cargo test -p topagent-core",
             ),
-            &strong_plan(),
-            false,
-            &prompt.stats.loaded_procedure_files,
-        )
+            plan: &strong_plan(),
+            durable_memory_written: false,
+            loaded_procedure_files: &prompt.stats.loaded_procedure_files,
+        })
         .unwrap();
 
         let first_procedure = first.procedure_file.unwrap();
@@ -1512,17 +1512,17 @@ path = "src/lib.rs"
         let ctx = ExecutionContext::new(temp.path().to_path_buf()).with_secrets(secrets);
         let options = RuntimeOptions::default();
 
-        let report = promote_verified_task(
-            &memory,
-            &ctx,
-            &options,
-            "Repair approval mailbox compaction workflow",
-            TaskMode::PlanAndExecute,
-            &strong_verified_task_result("super-secret-output-value"),
-            &strong_plan(),
-            false,
-            &[],
-        )
+        let report = promote_verified_task(&PromotionContext {
+            memory: &memory,
+            ctx: &ctx,
+            options: &options,
+            instruction: "Repair approval mailbox compaction workflow",
+            task_mode: TaskMode::PlanAndExecute,
+            task_result: &strong_verified_task_result("super-secret-output-value"),
+            plan: &strong_plan(),
+            durable_memory_written: false,
+            loaded_procedure_files: &[],
+        })
         .unwrap();
 
         let lesson = fs::read_to_string(temp.path().join(report.lesson_file.unwrap())).unwrap();
@@ -1662,17 +1662,17 @@ path = "src/lib.rs"
             .last_task_result()
             .cloned()
             .expect("expected a structured task result");
-        let report = promote_verified_task(
-            &memory,
-            &ctx,
-            &options,
-            "apply the transcript-derived fix and verify",
-            agent.task_mode(),
-            &task_result,
-            &strong_plan(),
-            agent.durable_memory_written_this_run(),
-            &[],
-        )
+        let report = promote_verified_task(&PromotionContext {
+            memory: &memory,
+            ctx: &ctx,
+            options: &options,
+            instruction: "apply the transcript-derived fix and verify",
+            task_mode: agent.task_mode(),
+            task_result: &task_result,
+            plan: &strong_plan(),
+            durable_memory_written: agent.durable_memory_written_this_run(),
+            loaded_procedure_files: &[],
+        })
         .unwrap();
 
         assert!(task_result.final_verification_passed());
@@ -1755,17 +1755,17 @@ path = "src/lib.rs"
         assert!(second_task_result.files_changed().is_empty());
         assert!(second_task_result.verification_commands().is_empty());
 
-        let report = promote_verified_task(
-            &memory,
-            &base_ctx,
-            &options,
-            "inspect the restored workspace",
-            second_agent.task_mode(),
-            &second_task_result,
-            &Plan::new(),
-            second_agent.durable_memory_written_this_run(),
-            &[],
-        )
+        let report = promote_verified_task(&PromotionContext {
+            memory: &memory,
+            ctx: &base_ctx,
+            options: &options,
+            instruction: "inspect the restored workspace",
+            task_mode: second_agent.task_mode(),
+            task_result: &second_task_result,
+            plan: &Plan::new(),
+            durable_memory_written: second_agent.durable_memory_written_this_run(),
+            loaded_procedure_files: &[],
+        })
         .unwrap();
 
         assert_eq!(report, TaskPromotionReport::default());
@@ -1840,7 +1840,7 @@ path = "src/lib.rs"
     }
 
     #[test]
-    fn test_observation_boosting_promotes_relevant_artifacts() {
+    fn test_relevant_lesson_loads_by_keyword_match() {
         let temp = TempDir::new().unwrap();
         write_memory_index(
             temp.path(),
@@ -1857,34 +1857,11 @@ path = "src/lib.rs"
             "# Unrelated Topic\nSome other content.\n",
         );
 
-        // Write an observation that links to the approval lesson
-        let obs_dir = temp.path().join(MEMORY_OBSERVATIONS_RELATIVE_DIR);
-        std::fs::create_dir_all(&obs_dir).unwrap();
-        let record = observation::ObservationRecord {
-            id: "obs-1-approval-hardening".to_string(),
-            timestamp_unix_secs: observation::tests::current_timestamp(),
-            task_intent: "harden the approval mailbox".to_string(),
-            source_kind: observation::ObservationSourceKind::Lesson,
-            trust_class: observation::ObservationTrustClass::Trusted,
-            summary: "[lesson] harden the approval mailbox".to_string(),
-            artifact_links: observation::ObservationArtifactLinks {
-                lesson_file: Some(".topagent/lessons/approval-fix.md".to_string()),
-                procedure_file: None,
-                trajectory_file: None,
-                superseded_procedure_file: None,
-            },
-            changed_files: vec!["src/approval.rs".to_string()],
-            verification_command: Some("cargo test".to_string()),
-        };
-        let json = serde_json::to_string_pretty(&record).unwrap();
-        std::fs::write(obs_dir.join("obs-1-approval-hardening.json"), json).unwrap();
-
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
         let prompt = memory
             .build_prompt("harden the approval mailbox", None)
             .unwrap();
 
-        assert!(prompt.stats.observation_hints_used > 0);
         assert!(prompt
             .stats
             .loaded_items
@@ -1933,7 +1910,7 @@ path = "src/lib.rs"
     }
 
     #[test]
-    fn test_low_trust_observations_do_not_boost_artifacts() {
+    fn test_observations_do_not_enter_prompt_directly() {
         let temp = TempDir::new().unwrap();
         write_memory_index(
             temp.path(),
@@ -1948,11 +1925,11 @@ path = "src/lib.rs"
         let obs_dir = temp.path().join(MEMORY_OBSERVATIONS_RELATIVE_DIR);
         std::fs::create_dir_all(&obs_dir).unwrap();
         let record = observation::ObservationRecord {
-            id: "obs-1-low-trust".to_string(),
+            id: "obs-1-trusted".to_string(),
             timestamp_unix_secs: observation::tests::current_timestamp(),
             task_intent: "audit secret handling".to_string(),
             source_kind: observation::ObservationSourceKind::Lesson,
-            trust_class: observation::ObservationTrustClass::LowTrustPresent,
+            trust_class: observation::ObservationTrustClass::Trusted,
             summary: "[lesson] audit secret handling".to_string(),
             artifact_links: observation::ObservationArtifactLinks {
                 lesson_file: Some(".topagent/topics/security.md".to_string()),
@@ -1964,14 +1941,81 @@ path = "src/lib.rs"
             verification_command: None,
         };
         let json = serde_json::to_string_pretty(&record).unwrap();
-        std::fs::write(obs_dir.join("obs-1-low-trust.json"), json).unwrap();
+        std::fs::write(obs_dir.join("obs-1-trusted.json"), json).unwrap();
 
-        let retrieval =
-            observation::progressive_retrieve(&obs_dir, "audit secret handling", 8, 4).unwrap();
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let prompt = memory.build_prompt("audit secret handling", None).unwrap();
 
-        // Low-trust observation is retrieved but its artifacts are not in boost paths
-        assert_eq!(retrieval.candidates.len(), 1);
-        assert!(retrieval.artifact_paths.is_empty());
-        assert!(retrieval.provenance_notes[0].contains("low-trust"));
+        assert!(prompt.stats.loaded_items.contains(&"security".to_string()));
+        assert!(prompt
+            .prompt
+            .as_deref()
+            .unwrap_or_default()
+            .contains("Security"));
+    }
+
+    #[test]
+    fn test_observations_have_zero_effect_on_prompt_content() {
+        let temp = TempDir::new().unwrap();
+        write_memory_index(
+            temp.path(),
+            "# TopAgent Memory Index\n\n- topic: auth | file: topics/auth.md | status: verified | tags: login, token\n",
+        );
+        write_topic(
+            temp.path(),
+            "auth.md",
+            "# Auth\nLogin token rotation policy",
+        );
+
+        let memory_without_obs = WorkspaceMemory::new(temp.path().to_path_buf());
+        let prompt_without = memory_without_obs
+            .build_prompt("rotate login tokens", None)
+            .unwrap();
+
+        let obs_dir = temp.path().join(MEMORY_OBSERVATIONS_RELATIVE_DIR);
+        std::fs::create_dir_all(&obs_dir).unwrap();
+        for i in 0..5 {
+            let record = observation::ObservationRecord {
+                id: format!("obs-many-{i}"),
+                timestamp_unix_secs: observation::tests::current_timestamp(),
+                task_intent: "rotate login tokens".to_string(),
+                source_kind: observation::ObservationSourceKind::Lesson,
+                trust_class: observation::ObservationTrustClass::Trusted,
+                summary: format!("[lesson] observation {i} about token rotation"),
+                artifact_links: observation::ObservationArtifactLinks {
+                    lesson_file: Some(".topagent/topics/auth.md".to_string()),
+                    procedure_file: None,
+                    trajectory_file: None,
+                    superseded_procedure_file: None,
+                },
+                changed_files: vec![format!("src/auth_{i}.rs")],
+                verification_command: None,
+            };
+            let json = serde_json::to_string_pretty(&record).unwrap();
+            std::fs::write(obs_dir.join(format!("obs-many-{i}.json")), json).unwrap();
+        }
+
+        let memory_with_obs = WorkspaceMemory::new(temp.path().to_path_buf());
+        let prompt_with = memory_with_obs
+            .build_prompt("rotate login tokens", None)
+            .unwrap();
+
+        assert_eq!(
+            prompt_without.stats.loaded_items, prompt_with.stats.loaded_items,
+            "observations must not change which durable artifacts are loaded"
+        );
+        assert_eq!(
+            prompt_without.stats.loaded_items, prompt_with.stats.loaded_items,
+            "observations must not change which durable artifacts are loaded"
+        );
+        assert_eq!(
+            prompt_without.prompt.as_deref().map(|s| s.len()),
+            prompt_with.prompt.as_deref().map(|s| s.len()),
+            "observations must not change prompt length"
+        );
+        assert_eq!(
+            prompt_without.stats.transcript_snippets, prompt_with.stats.transcript_snippets,
+            "observations must not change transcript snippet count"
+        );
     }
 }
