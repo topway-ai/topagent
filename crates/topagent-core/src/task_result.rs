@@ -166,13 +166,18 @@ impl TaskResult {
         if !self.evidence.verification_commands_run.is_empty() {
             output.push_str("### Verification\n\n");
             for vc in &self.evidence.verification_commands_run {
-                // Derive verdict from exit code — the single source of truth.
                 let status = if vc.exit_code == 0 { "PASS" } else { "FAIL" };
                 output.push_str(&format!(
                     "- `{}` → exit {} ({})\n",
                     vc.command, vc.exit_code, status
                 ));
-                if !vc.output.is_empty() {
+                if vc.exit_code != 0 && !vc.output.is_empty() {
+                    let failure_summary = Self::summarize_failure(&vc.output);
+                    if !failure_summary.is_empty() {
+                        output.push_str(&format!("  Error: {}\n", failure_summary));
+                    }
+                }
+                if !vc.output.is_empty() && vc.exit_code == 0 {
                     output.push_str("  ```\n  ");
                     output.push_str(&vc.output);
                     output.push_str("\n  ```\n");
@@ -182,6 +187,9 @@ impl TaskResult {
                 &self.evidence.verification_commands_run,
             ));
             output.push('\n');
+        } else if !self.evidence.files_changed.is_empty() {
+            output.push_str("### Verification\n\n");
+            output.push_str("- Not performed (files were changed)\n\n");
         }
 
         if !self.evidence.unresolved_issues.is_empty() {
@@ -212,6 +220,40 @@ impl TaskResult {
         }
 
         output.trim_end_matches('\n').to_string()
+    }
+
+    fn summarize_failure(output: &str) -> String {
+        let lines: Vec<&str> = output.lines().collect();
+        if lines.is_empty() {
+            return String::new();
+        }
+        let key_phrases = [
+            "error:",
+            "failed:",
+            "panicked",
+            "error\0",
+            "Syntax error",
+            "cannot find",
+            "no such file",
+            "undefined reference",
+        ];
+        for line in lines.iter().take(10) {
+            let lower = line.to_lowercase();
+            for phrase in &key_phrases {
+                if lower.contains(phrase) {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() && trimmed.len() < 200 {
+                        return trimmed.to_string();
+                    }
+                }
+            }
+        }
+        let first_line = lines.first().map(|s| s.trim()).unwrap_or("");
+        if first_line.len() < 200 {
+            first_line.to_string()
+        } else {
+            format!("{}...", &first_line[..200])
+        }
     }
 
     fn verification_summary(commands: &[VerificationCommand]) -> String {
@@ -281,6 +323,15 @@ mod tests {
     }
 
     #[test]
+    fn test_task_result_files_changed_no_verification_shows_not_performed() {
+        let result = TaskResult::new("Files updated".to_string())
+            .with_files_changed(vec!["src/main.rs".to_string()]);
+        let proof = result.format_proof_of_work();
+        assert!(proof.contains("### Verification"));
+        assert!(proof.contains("Not performed"));
+    }
+
+    #[test]
     fn test_task_result_with_failed_verification() {
         let cmd = VerificationCommand {
             command: "cargo build".to_string(),
@@ -291,6 +342,27 @@ mod tests {
         let result = TaskResult::new("Build failed".to_string()).with_verification_command(cmd);
         let proof = result.format_proof_of_work();
         assert!(proof.contains("FAIL"));
+    }
+
+    #[test]
+    fn test_verification_failure_shows_summary() {
+        let cmd = VerificationCommand {
+            command: "cargo test".to_string(),
+            output: "test result: FAILED\nerror: file not found".to_string(),
+            exit_code: 1,
+            succeeded: false,
+        };
+        let result = TaskResult::new("Tests failed".to_string()).with_verification_command(cmd);
+        let proof = result.format_proof_of_work();
+        assert!(proof.contains("FAIL"));
+        assert!(proof.contains("error: file not found"));
+    }
+
+    #[test]
+    fn test_analysis_only_returns_summary() {
+        let result = TaskResult::new("Analysis complete".to_string());
+        let proof = result.format_proof_of_work();
+        assert_eq!(proof, "Analysis complete");
     }
 
     #[test]
