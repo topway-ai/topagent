@@ -310,7 +310,10 @@ fn main() -> Result<()> {
         }
         Some(Commands::Checkpoint { command }) => run_checkpoint_command(command, params.workspace),
         Some(Commands::Uninstall { purge }) => run_uninstall(purge),
-        Some(Commands::Service { command }) => run_service_command(command, params, false),
+        Some(Commands::Service { command }) => {
+            let purge = matches!(command, crate::ServiceCommands::Uninstall { purge: true });
+            run_service_command(command, params, purge)
+        }
         Some(Commands::Telegram { token }) => run_telegram(token, params),
         Some(Commands::Run { instruction }) => run_one_shot(params, instruction),
         None => {
