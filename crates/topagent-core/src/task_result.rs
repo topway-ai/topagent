@@ -300,6 +300,24 @@ impl TaskResult {
             summary.push('\n');
         }
 
+        if !self.evidence.verification_commands_run.is_empty() {
+            summary.push_str("### Verification Status\n\n");
+            let last = self.evidence.verification_commands_run.last().unwrap();
+            if last.exit_code == 0 {
+                summary.push_str("- ✅ All checks passed\n");
+            } else {
+                summary.push_str("- ❌ Verification failed\n");
+            }
+            summary.push('\n');
+        } else if !self.evidence.files_changed.is_empty() {
+            summary.push_str("### Verification Status\n\n");
+            summary.push_str("- ⚠️ Not verified");
+            if let Some(reason) = &self.evidence.verification_skip_reason {
+                summary.push_str(&format!(" ({})", reason));
+            }
+            summary.push_str("\n\n");
+        }
+
         summary.push_str("### Suggested Next Step\n\n");
         match self.evidence.delivery_outcome {
             DeliveryOutcome::CodeChangingVerified => {

@@ -169,6 +169,8 @@ fn test_format_delivery_summary_with_files_and_verification() {
     assert!(summary.contains("Delivery Summary"));
     assert!(summary.contains("Files Touched"));
     assert!(summary.contains("src/main.rs"));
+    assert!(summary.contains("Verification Status"));
+    assert!(summary.contains("All checks passed"));
     assert!(summary.contains("Suggested Next Step"));
     assert!(summary.contains("Review changes"));
 }
@@ -198,6 +200,9 @@ fn test_format_delivery_summary_unverified_with_reason() {
         .with_verification_skip_reason("verification not attempted".to_string());
 
     let summary = result.format_delivery_summary().unwrap();
+    assert!(summary.contains("Verification Status"));
+    assert!(summary.contains("Not verified"));
+    assert!(summary.contains("verification not attempted"));
     assert!(summary.contains("Run verification manually"));
 }
 
@@ -215,6 +220,8 @@ fn test_format_delivery_summary_failed_verification() {
         });
 
     let summary = result.format_delivery_summary().unwrap();
+    assert!(summary.contains("Verification Status"));
+    assert!(summary.contains("Verification failed"));
     assert!(summary.contains("Fix failing verification"));
 }
 
