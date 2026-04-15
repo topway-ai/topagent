@@ -1,7 +1,7 @@
-use topagent_core::ApprovalEntry;
 use topagent_core::channel::telegram::{
     TelegramInlineKeyboardButton, TelegramInlineKeyboardMarkup,
 };
+use topagent_core::ApprovalEntry;
 
 const APPROVAL_CALLBACK_PREFIX: &str = "approval";
 

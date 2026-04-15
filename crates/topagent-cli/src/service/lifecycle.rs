@@ -4,10 +4,10 @@ use std::process::{Command, Output};
 
 use crate::config::*;
 use crate::managed_files::*;
-use crate::operational_paths::{ServicePaths, resolve_config_home, service_paths};
+use crate::operational_paths::{resolve_config_home, service_paths, ServicePaths};
 
 use super::managed_env::render_service_env_file;
-use super::state::{ServiceStatusSnapshot, load_control_plane_state, load_service_probe};
+use super::state::{load_control_plane_state, load_service_probe, ServiceStatusSnapshot};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallRootKind {
@@ -689,7 +689,11 @@ fn is_enabled_state(state: Option<&str>) -> bool {
 }
 
 fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
 }
 
 #[cfg(test)]

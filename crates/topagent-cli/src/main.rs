@@ -18,27 +18,27 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::{
-    Arc,
     atomic::{AtomicUsize, Ordering},
+    Arc,
 };
 use std::time::Duration;
 use topagent_core::{
-    ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest, CancellationToken, ProgressCallback,
-    ProgressUpdate, ProviderKind, WorkspaceCheckpointStore, context::ExecutionContext,
+    context::ExecutionContext, ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest,
+    CancellationToken, ProgressCallback, ProgressUpdate, ProviderKind, WorkspaceCheckpointStore,
 };
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::checkpoint::run_checkpoint_command;
 use crate::config::{
-    CliParams, build_route_from_resolved, build_runtime_options, load_persisted_telegram_defaults,
-    require_openrouter_api_key, resolve_runtime_model_selection, resolve_workspace_path,
+    build_route_from_resolved, build_runtime_options, load_persisted_telegram_defaults,
+    require_openrouter_api_key, resolve_runtime_model_selection, resolve_workspace_path, CliParams,
 };
 use crate::doctor::run_doctor;
 use crate::learning::{
     run_memory_command, run_observation_command, run_procedure_command, run_trajectory_command,
 };
-use crate::memory::{PromotionContext, promote_verified_task};
+use crate::memory::{promote_verified_task, PromotionContext};
 use crate::progress::LiveProgress;
 use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
 use crate::service::{
@@ -559,11 +559,9 @@ mod tests {
         let approved = prompt_for_cli_approval_with_io(&request, &mut reader, &mut output).unwrap();
 
         assert!(approved);
-        assert!(
-            String::from_utf8(output)
-                .unwrap()
-                .contains("Approve this action?")
-        );
+        assert!(String::from_utf8(output)
+            .unwrap()
+            .contains("Approve this action?"));
     }
 
     #[test]

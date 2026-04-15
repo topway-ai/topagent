@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use topagent_core::{ProgressCallback, ProgressKind, ProgressUpdate, TelegramAdapter};
@@ -274,11 +274,9 @@ mod tests {
         progress.wait();
 
         let rendered = rendered.lock().unwrap();
-        assert!(
-            rendered
-                .iter()
-                .any(|line| line.contains("Blocked: approval required."))
-        );
+        assert!(rendered
+            .iter()
+            .any(|line| line.contains("Blocked: approval required.")));
     }
 
     #[test]

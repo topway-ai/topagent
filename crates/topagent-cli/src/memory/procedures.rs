@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use topagent_core::BehaviorContract;
 
-use super::{WorkspaceMemory, artifact_filename, compact_text_line, score_text_relevance};
+use super::{artifact_filename, compact_text_line, score_text_relevance, WorkspaceMemory};
 use crate::managed_files::write_managed_file;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

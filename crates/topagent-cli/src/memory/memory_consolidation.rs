@@ -1,7 +1,7 @@
 use super::{
-    AUTO_PROMOTED_TAG, WorkspaceMemory, compact_note, compact_text_line, display_memory_file,
-    limit_text_block, memory_contract, normalize_memory_file, procedures::ParsedProcedure,
-    procedures::ProcedureStatus, procedures::parse_saved_procedure,
+    compact_note, compact_text_line, display_memory_file, limit_text_block, memory_contract,
+    normalize_memory_file, procedures::parse_saved_procedure, procedures::ParsedProcedure,
+    procedures::ProcedureStatus, WorkspaceMemory, AUTO_PROMOTED_TAG,
 };
 use anyhow::{Context, Result};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -932,7 +932,7 @@ fn file_stem_or_default(path: &Path, default: &str) -> String {
 mod tests {
     use super::*;
     use crate::memory::{
-        MEMORY_INDEX_RELATIVE_PATH, MEMORY_PROCEDURES_RELATIVE_DIR, WorkspaceMemory,
+        WorkspaceMemory, MEMORY_INDEX_RELATIVE_PATH, MEMORY_PROCEDURES_RELATIVE_DIR,
     };
     use std::fs;
     use tempfile::TempDir;

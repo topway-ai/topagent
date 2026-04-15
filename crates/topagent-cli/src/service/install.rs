@@ -6,16 +6,16 @@ use std::path::PathBuf;
 use crate::config::*;
 use crate::managed_files::{assert_managed_or_absent, read_managed_env_metadata};
 use crate::openrouter_models::{
-    OpenRouterCatalogSource, discover_install_openrouter_models, humanize_age,
-    openrouter_model_cache_path,
+    discover_install_openrouter_models, humanize_age, openrouter_model_cache_path,
+    OpenRouterCatalogSource,
 };
 use crate::operational_paths::service_paths;
 
 use super::lifecycle::{
-    ServiceConfigApplyAction, detect_install_root, ensure_systemd_user_available,
-    install_service_with_config,
+    detect_install_root, ensure_systemd_user_available, install_service_with_config,
+    ServiceConfigApplyAction,
 };
-use super::managed_env::{OPENROUTER_API_KEY_KEY, TELEGRAM_BOT_TOKEN_KEY, trim_nonempty};
+use super::managed_env::{trim_nonempty, OPENROUTER_API_KEY_KEY, TELEGRAM_BOT_TOKEN_KEY};
 use crate::config::{
     OPENCODE_API_KEY_KEY, TELEGRAM_ALLOWED_DM_USERNAME_KEY, TOPAGENT_PROVIDER_KEY,
 };

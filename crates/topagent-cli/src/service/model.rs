@@ -7,14 +7,14 @@ use crate::openrouter_models::{
     fetch_openrouter_top_models, humanize_age, load_cached_openrouter_models,
     openrouter_model_cache_path, save_cached_openrouter_models,
 };
-use crate::operational_paths::{ServicePaths, service_paths};
+use crate::operational_paths::{service_paths, ServicePaths};
 use topagent_core::ProviderKind;
 
 use super::install::prompt_for_install_model;
 use super::lifecycle::restart_service_if_installed;
 use super::managed_env::{
-    OPENROUTER_API_KEY_KEY, persisted_model_from_env_values, trim_nonempty,
-    write_managed_env_values,
+    persisted_model_from_env_values, trim_nonempty, write_managed_env_values,
+    OPENROUTER_API_KEY_KEY,
 };
 use super::state::load_control_plane_state;
 
