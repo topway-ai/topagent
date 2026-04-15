@@ -1,7 +1,9 @@
 use super::Agent;
 use crate::context::ExecutionContext;
-use crate::hooks::{dispatch_hooks, HookEvent, HookInput};
+use crate::hooks::{HookEvent, HookInput, dispatch_hooks};
+use crate::task_result::VerificationCommand;
 use crate::{Error, Message, ProviderResponse, Result};
+use std::process::Command;
 
 #[derive(Default)]
 struct LoopCounters {
@@ -181,6 +183,9 @@ impl Agent {
             &self.behavior,
             &self.generated_tool_warnings,
         );
+
+        let task_result = self.run_bounded_verification_follow_through(task_result, ctx);
+
         let final_response = if self.behavior.should_attach_proof_of_work(
             task_result.files_changed().len(),
             task_result.verification_commands().len(),
@@ -193,6 +198,72 @@ impl Agent {
         };
         self.last_task_result = Some(task_result);
         final_response
+    }
+
+    fn run_bounded_verification_follow_through(
+        &mut self,
+        mut task_result: crate::task_result::TaskResult,
+        ctx: &ExecutionContext,
+    ) -> crate::task_result::TaskResult {
+        let files_changed = task_result.files_changed();
+        let verification_run = task_result.verification_commands();
+
+        if files_changed.is_empty() || !verification_run.is_empty() {
+            return task_result;
+        }
+
+        if let Some(cmd) = self.suggest_verification_command(&ctx.workspace_root) {
+            match Command::new("sh")
+                .arg("-c")
+                .arg(&cmd)
+                .current_dir(&ctx.workspace_root)
+                .output()
+            {
+                Ok(output) => {
+                    let exit_code = output.status.code().unwrap_or(-1);
+                    let verification = VerificationCommand {
+                        command: cmd.clone(),
+                        output: String::from_utf8_lossy(&output.stdout).to_string(),
+                        exit_code,
+                        succeeded: exit_code == 0,
+                    };
+                    task_result = task_result.with_verification_command(verification);
+                    tracing::info!("Verification follow-through: {} -> exit {}", cmd, exit_code);
+                }
+                Err(e) => {
+                    tracing::debug!("Verification follow-through skipped: {}", e);
+                }
+            }
+        }
+
+        task_result
+    }
+
+    fn suggest_verification_command(&self, _workspace: &std::path::Path) -> Option<String> {
+        let candidates = [
+            "cargo test --quiet",
+            "cargo check --quiet",
+            "npm test 2>/dev/null",
+            "pnpm test 2>/dev/null",
+            "yarn test 2>/dev/null",
+            "make test 2>/dev/null",
+            "go test ./... 2>/dev/null",
+        ];
+        for candidate in candidates {
+            if let Ok(output) = Command::new("sh")
+                .arg("-c")
+                .arg(format!(
+                    "which {}",
+                    candidate.split_whitespace().next().unwrap_or("")
+                ))
+                .output()
+            {
+                if output.status.success() {
+                    return Some(candidate.to_string());
+                }
+            }
+        }
+        None
     }
 
     fn run_on_session_start_hooks(&mut self, ctx: &ExecutionContext, instruction: &str) {
