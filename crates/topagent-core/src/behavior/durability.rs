@@ -1,6 +1,7 @@
 use super::{BehaviorContract, GeneratedToolPolicy, MemoryPolicy, OutputPolicy};
 use crate::provenance::{DurablePromotionKind, RunTrustContext};
 use crate::runtime::RuntimeOptions;
+use crate::task_result::VerificationCommand;
 
 pub(super) fn default_memory_policy() -> MemoryPolicy {
     MemoryPolicy {
@@ -172,6 +173,37 @@ impl OutputPolicy {
             || unresolved_issues > 0 && self.include_unresolved_issues
             || workspace_warnings > 0 && self.include_workspace_warnings
     }
+
+    pub(crate) fn should_attach_code_delivery_summary(
+        &self,
+        task_mode: crate::plan::TaskMode,
+        files_changed: usize,
+        _verification_commands: usize,
+    ) -> bool {
+        task_mode == crate::plan::TaskMode::PlanAndExecute && files_changed > 0
+    }
+
+    pub(crate) fn format_verification_status(
+        &self,
+        task_mode: crate::plan::TaskMode,
+        files_changed: usize,
+        verification_commands: &[VerificationCommand],
+    ) -> Option<String> {
+        if task_mode != crate::plan::TaskMode::PlanAndExecute || files_changed == 0 {
+            return None;
+        }
+
+        if verification_commands.is_empty() {
+            return Some("⚠️ Result not verified".to_string());
+        }
+
+        let last = verification_commands.last()?;
+        if last.exit_code == 0 {
+            Some("✅ Verification passed".to_string())
+        } else {
+            Some("❌ Verification failed".to_string())
+        }
+    }
 }
 
 impl BehaviorContract {
@@ -226,5 +258,28 @@ impl BehaviorContract {
             unresolved_issues,
             workspace_warnings,
         )
+    }
+
+    pub fn should_attach_code_delivery_summary(
+        &self,
+        task_mode: crate::plan::TaskMode,
+        files_changed: usize,
+        verification_commands: usize,
+    ) -> bool {
+        self.output.should_attach_code_delivery_summary(
+            task_mode,
+            files_changed,
+            verification_commands,
+        )
+    }
+
+    pub fn format_verification_status(
+        &self,
+        task_mode: crate::plan::TaskMode,
+        files_changed: usize,
+        verification_commands: &[crate::task_result::VerificationCommand],
+    ) -> Option<String> {
+        self.output
+            .format_verification_status(task_mode, files_changed, verification_commands)
     }
 }

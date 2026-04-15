@@ -1,5 +1,6 @@
 use topagent_core::{
-    BehaviorContract, DurablePromotionKind, InfluenceMode, RunTrustContext, SourceKind, SourceLabel,
+    BehaviorContract, DurablePromotionKind, InfluenceMode, RunTrustContext, SourceKind,
+    SourceLabel, TaskMode, VerificationCommand,
 };
 
 fn low_trust_context() -> RunTrustContext {
@@ -65,4 +66,69 @@ fn test_render_memory_index_template_uses_contract_policy() {
     assert!(template.contains("Use this file as an index only"));
     assert!(template.contains(contract.memory.index_entry_format));
     assert!(template.contains("transcripts, logs"));
+}
+
+#[test]
+fn test_should_attach_code_delivery_summary_plan_and_execute_with_files() {
+    let contract = BehaviorContract::default();
+
+    assert!(contract.should_attach_code_delivery_summary(TaskMode::PlanAndExecute, 1, 0));
+    assert!(contract.should_attach_code_delivery_summary(TaskMode::PlanAndExecute, 1, 1));
+    assert!(!contract.should_attach_code_delivery_summary(TaskMode::PlanAndExecute, 0, 0));
+    assert!(!contract.should_attach_code_delivery_summary(TaskMode::InspectOnly, 1, 0));
+    assert!(!contract.should_attach_code_delivery_summary(TaskMode::VerifyOnly, 1, 0));
+}
+
+#[test]
+fn test_format_verification_status_no_files() {
+    let contract = BehaviorContract::default();
+
+    assert!(contract
+        .format_verification_status(TaskMode::PlanAndExecute, 0, &[])
+        .is_none());
+    assert!(contract
+        .format_verification_status(TaskMode::InspectOnly, 1, &[])
+        .is_none());
+}
+
+#[test]
+fn test_format_verification_status_no_verification() {
+    let contract = BehaviorContract::default();
+
+    let status = contract
+        .format_verification_status(TaskMode::PlanAndExecute, 1, &[])
+        .unwrap();
+    assert!(status.contains("not verified"));
+}
+
+#[test]
+fn test_format_verification_status_passed() {
+    let contract = BehaviorContract::default();
+
+    let cmd = VerificationCommand {
+        command: "cargo test".to_string(),
+        output: "ok".to_string(),
+        exit_code: 0,
+        succeeded: true,
+    };
+    let status = contract
+        .format_verification_status(TaskMode::PlanAndExecute, 1, &[cmd])
+        .unwrap();
+    assert!(status.contains("passed"));
+}
+
+#[test]
+fn test_format_verification_status_failed() {
+    let contract = BehaviorContract::default();
+
+    let cmd = VerificationCommand {
+        command: "cargo test".to_string(),
+        output: "error".to_string(),
+        exit_code: 1,
+        succeeded: false,
+    };
+    let status = contract
+        .format_verification_status(TaskMode::PlanAndExecute, 1, &[cmd])
+        .unwrap();
+    assert!(status.contains("failed"));
 }

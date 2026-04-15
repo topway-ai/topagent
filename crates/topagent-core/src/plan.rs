@@ -25,7 +25,7 @@ pub struct Plan {
     next_id: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum TaskMode {
     PlanAndExecute,
     InspectOnly,

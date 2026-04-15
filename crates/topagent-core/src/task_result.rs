@@ -11,6 +11,8 @@ pub struct TaskEvidence {
     pub workspace_warnings: Vec<String>,
     #[serde(default)]
     pub source_labels: Vec<SourceLabel>,
+    #[serde(default)]
+    pub task_mode: Option<crate::plan::TaskMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -104,6 +106,15 @@ impl TaskResult {
 
     pub fn source_labels(&self) -> &[SourceLabel] {
         &self.evidence.source_labels
+    }
+
+    pub fn task_mode(&self) -> Option<crate::plan::TaskMode> {
+        self.evidence.task_mode
+    }
+
+    pub fn with_task_mode(mut self, mode: crate::plan::TaskMode) -> Self {
+        self.evidence.task_mode = Some(mode);
+        self
     }
 
     pub fn trust_context(&self) -> RunTrustContext {

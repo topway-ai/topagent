@@ -176,23 +176,44 @@ impl Agent {
         // PreFinal hooks: check or annotate before the final response
         self.run_pre_final_hooks(ctx, &text);
 
-        let task_result = self.run_state.build_task_result(
-            &text,
-            ctx,
-            &ctx.workspace_root,
-            &self.behavior,
-            &self.generated_tool_warnings,
-        );
+        let task_mode = self.task_mode();
+        let task_result = self
+            .run_state
+            .build_task_result(
+                &text,
+                ctx,
+                &ctx.workspace_root,
+                &self.behavior,
+                &self.generated_tool_warnings,
+            )
+            .with_task_mode(task_mode);
 
         let task_result = self.run_bounded_verification_follow_through(task_result, ctx);
 
+        let task_mode = task_result
+            .task_mode()
+            .unwrap_or(crate::plan::TaskMode::PlanAndExecute);
         let final_response = if self.behavior.should_attach_proof_of_work(
             task_result.files_changed().len(),
             task_result.verification_commands().len(),
             task_result.unresolved_issues().len(),
             self.generated_tool_warnings.len(),
         ) {
-            task_result.format_proof_of_work()
+            let mut formatted = task_result.format_proof_of_work();
+            if self.behavior.should_attach_code_delivery_summary(
+                task_mode,
+                task_result.files_changed().len(),
+                task_result.verification_commands().len(),
+            ) {
+                if let Some(status) = self.behavior.format_verification_status(
+                    task_mode,
+                    task_result.files_changed().len(),
+                    task_result.verification_commands(),
+                ) {
+                    formatted = format!("{}\n\n**Delivery Status:** {}", formatted, status);
+                }
+            }
+            formatted
         } else {
             text
         };

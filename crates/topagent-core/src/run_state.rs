@@ -321,6 +321,7 @@ impl AgentRunState {
             unresolved_issues: Vec::new(),
             workspace_warnings: Vec::new(),
             source_labels: self.trust_context(ctx).sources,
+            task_mode: None,
         };
 
         if let Some(issue) =
