@@ -1,6 +1,6 @@
 use topagent_core::{
-    BehaviorContract, DurablePromotionKind, InfluenceMode, RunTrustContext, SourceKind,
-    SourceLabel, TaskMode, VerificationCommand,
+    BehaviorContract, DeliveryOutcome, DurablePromotionKind, InfluenceMode, RunTrustContext,
+    SourceKind, SourceLabel, TaskMode, TaskResult, VerificationCommand,
 };
 
 fn low_trust_context() -> RunTrustContext {
@@ -131,4 +131,98 @@ fn test_format_verification_status_failed() {
         .format_verification_status(TaskMode::PlanAndExecute, 1, &[cmd])
         .unwrap();
     assert!(status.contains("failed"));
+}
+
+#[test]
+fn test_delivery_outcome_enum_values() {
+    assert_eq!(DeliveryOutcome::None, DeliveryOutcome::None);
+    assert_eq!(DeliveryOutcome::AnalysisOnly, DeliveryOutcome::AnalysisOnly);
+    assert_eq!(DeliveryOutcome::NoOp, DeliveryOutcome::NoOp);
+    assert_eq!(
+        DeliveryOutcome::CodeChangingVerified,
+        DeliveryOutcome::CodeChangingVerified
+    );
+    assert_eq!(
+        DeliveryOutcome::CodeChangingUnverified,
+        DeliveryOutcome::CodeChangingUnverified
+    );
+    assert_eq!(
+        DeliveryOutcome::CodeChangingFailed,
+        DeliveryOutcome::CodeChangingFailed
+    );
+}
+
+#[test]
+fn test_format_delivery_summary_with_files_and_verification() {
+    let result = TaskResult::new("Fixed the bug".to_string())
+        .with_files_changed(vec!["src/main.rs".to_string()])
+        .with_task_mode(TaskMode::PlanAndExecute)
+        .with_delivery_outcome(DeliveryOutcome::CodeChangingVerified)
+        .with_verification_command(VerificationCommand {
+            command: "cargo test".to_string(),
+            output: "test result: ok".to_string(),
+            exit_code: 0,
+            succeeded: true,
+        });
+
+    let summary = result.format_delivery_summary().unwrap();
+    assert!(summary.contains("Delivery Summary"));
+    assert!(summary.contains("Files Touched"));
+    assert!(summary.contains("src/main.rs"));
+    assert!(summary.contains("Suggested Next Step"));
+    assert!(summary.contains("Review changes"));
+}
+
+#[test]
+fn test_format_delivery_summary_no_files() {
+    let result = TaskResult::new("Analyzed the codebase".to_string())
+        .with_task_mode(TaskMode::PlanAndExecute)
+        .with_delivery_outcome(DeliveryOutcome::AnalysisOnly)
+        .with_verification_command(VerificationCommand {
+            command: "cargo check".to_string(),
+            output: "ok".to_string(),
+            exit_code: 0,
+            succeeded: true,
+        });
+
+    let summary = result.format_delivery_summary().unwrap();
+    assert!(summary.contains("Analysis/verification run"));
+}
+
+#[test]
+fn test_format_delivery_summary_unverified_with_reason() {
+    let result = TaskResult::new("Updated config".to_string())
+        .with_files_changed(vec!["config.yaml".to_string()])
+        .with_task_mode(TaskMode::PlanAndExecute)
+        .with_delivery_outcome(DeliveryOutcome::CodeChangingUnverified)
+        .with_verification_skip_reason("verification not attempted".to_string());
+
+    let summary = result.format_delivery_summary().unwrap();
+    assert!(summary.contains("Run verification manually"));
+}
+
+#[test]
+fn test_format_delivery_summary_failed_verification() {
+    let result = TaskResult::new("Made changes".to_string())
+        .with_files_changed(vec!["src/lib.rs".to_string()])
+        .with_task_mode(TaskMode::PlanAndExecute)
+        .with_delivery_outcome(DeliveryOutcome::CodeChangingFailed)
+        .with_verification_command(VerificationCommand {
+            command: "cargo test".to_string(),
+            output: "error: test failed".to_string(),
+            exit_code: 1,
+            succeeded: false,
+        });
+
+    let summary = result.format_delivery_summary().unwrap();
+    assert!(summary.contains("Fix failing verification"));
+}
+
+#[test]
+fn test_format_delivery_summary_inspect_only_returns_none() {
+    let result = TaskResult::new("Analysis complete".to_string())
+        .with_task_mode(TaskMode::InspectOnly)
+        .with_files_changed(vec![]);
+
+    assert!(result.format_delivery_summary().is_none());
 }

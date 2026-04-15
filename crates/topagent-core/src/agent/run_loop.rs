@@ -1,6 +1,6 @@
 use super::Agent;
 use crate::context::ExecutionContext;
-use crate::hooks::{dispatch_hooks, HookEvent, HookInput};
+use crate::hooks::{HookEvent, HookInput, dispatch_hooks};
 use crate::task_result::VerificationCommand;
 use crate::{Error, Message, ProviderResponse, Result};
 use std::process::Command;
@@ -190,6 +190,8 @@ impl Agent {
 
         let task_result = self.run_bounded_verification_follow_through(task_result, ctx);
 
+        let task_result = self.compute_delivery_outcome(task_result);
+
         let task_mode = task_result
             .task_mode()
             .unwrap_or(crate::plan::TaskMode::PlanAndExecute);
@@ -205,12 +207,8 @@ impl Agent {
                 task_result.files_changed().len(),
                 task_result.verification_commands().len(),
             ) {
-                if let Some(status) = self.behavior.format_verification_status(
-                    task_mode,
-                    task_result.files_changed().len(),
-                    task_result.verification_commands(),
-                ) {
-                    formatted = format!("{}\n\n**Delivery Status:** {}", formatted, status);
+                if let Some(summary) = task_result.format_delivery_summary() {
+                    formatted = format!("{}\n\n{}", formatted, summary);
                 }
             }
             formatted
@@ -221,6 +219,42 @@ impl Agent {
         final_response
     }
 
+    fn compute_delivery_outcome(
+        &self,
+        mut task_result: crate::task_result::TaskResult,
+    ) -> crate::task_result::TaskResult {
+        let files_changed = task_result.files_changed().to_vec();
+        let has_verification = !task_result.verification_commands().is_empty();
+        let verification_passed = task_result.final_verification_passed();
+        let _has_unresolved = task_result.has_unresolved_issues();
+
+        let outcome = if files_changed.is_empty() {
+            if has_verification {
+                crate::task_result::DeliveryOutcome::AnalysisOnly
+            } else {
+                crate::task_result::DeliveryOutcome::NoOp
+            }
+        } else if verification_passed {
+            crate::task_result::DeliveryOutcome::CodeChangingVerified
+        } else if has_verification {
+            crate::task_result::DeliveryOutcome::CodeChangingFailed
+        } else {
+            crate::task_result::DeliveryOutcome::CodeChangingUnverified
+        };
+
+        task_result = task_result.with_delivery_outcome(outcome);
+        if files_changed.is_empty() && !has_verification {
+            task_result = task_result.with_verification_skip_reason("no files changed".to_string());
+        } else if !files_changed.is_empty()
+            && !has_verification
+            && task_result.verification_skip_reason().is_none()
+        {
+            task_result =
+                task_result.with_verification_skip_reason("verification not attempted".to_string());
+        }
+        task_result
+    }
+
     fn run_bounded_verification_follow_through(
         &mut self,
         mut task_result: crate::task_result::TaskResult,
@@ -229,7 +263,11 @@ impl Agent {
         let files_changed = task_result.files_changed();
         let verification_run = task_result.verification_commands();
 
-        if files_changed.is_empty() || !verification_run.is_empty() {
+        if files_changed.is_empty() {
+            return task_result;
+        }
+
+        if !verification_run.is_empty() {
             return task_result;
         }
 
@@ -253,8 +291,14 @@ impl Agent {
                 }
                 Err(e) => {
                     tracing::debug!("Verification follow-through skipped: {}", e);
+                    task_result = task_result
+                        .with_verification_skip_reason(format!("command not available: {}", e));
                 }
             }
+        } else {
+            task_result = task_result.with_verification_skip_reason(
+                "no obvious verification command available".to_string(),
+            );
         }
 
         task_result

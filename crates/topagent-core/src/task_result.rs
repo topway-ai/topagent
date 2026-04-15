@@ -1,6 +1,17 @@
 use crate::provenance::{RunTrustContext, SourceLabel};
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub enum DeliveryOutcome {
+    #[default]
+    None,
+    AnalysisOnly,
+    NoOp,
+    CodeChangingVerified,
+    CodeChangingUnverified,
+    CodeChangingFailed,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TaskEvidence {
     pub files_changed: Vec<String>,
@@ -13,6 +24,10 @@ pub struct TaskEvidence {
     pub source_labels: Vec<SourceLabel>,
     #[serde(default)]
     pub task_mode: Option<crate::plan::TaskMode>,
+    #[serde(default)]
+    pub delivery_outcome: DeliveryOutcome,
+    #[serde(default)]
+    pub verification_skip_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +129,24 @@ impl TaskResult {
 
     pub fn with_task_mode(mut self, mode: crate::plan::TaskMode) -> Self {
         self.evidence.task_mode = Some(mode);
+        self
+    }
+
+    pub fn delivery_outcome(&self) -> DeliveryOutcome {
+        self.evidence.delivery_outcome
+    }
+
+    pub fn with_delivery_outcome(mut self, outcome: DeliveryOutcome) -> Self {
+        self.evidence.delivery_outcome = outcome;
+        self
+    }
+
+    pub fn verification_skip_reason(&self) -> Option<&str> {
+        self.evidence.verification_skip_reason.as_deref()
+    }
+
+    pub fn with_verification_skip_reason(mut self, reason: String) -> Self {
+        self.evidence.verification_skip_reason = Some(reason);
         self
     }
 
@@ -231,6 +264,66 @@ impl TaskResult {
         }
 
         output.trim_end_matches('\n').to_string()
+    }
+
+    pub fn format_delivery_summary(&self) -> Option<String> {
+        let task_mode = self.evidence.task_mode?;
+        if task_mode != crate::plan::TaskMode::PlanAndExecute {
+            return None;
+        }
+
+        if self.evidence.files_changed.is_empty() {
+            if self.evidence.verification_commands_run.is_empty() {
+                return None;
+            }
+            return Some("Analysis/verification run - no files changed".to_string());
+        }
+
+        let mut summary = String::new();
+        summary.push_str("## Delivery Summary\n\n");
+
+        summary.push_str("### What Changed\n\n");
+        summary.push_str(&self.outcome_summary);
+        summary.push_str("\n\n");
+
+        summary.push_str("### Files Touched\n\n");
+        for file in &self.evidence.files_changed {
+            summary.push_str(&format!("- {}\n", file));
+        }
+        summary.push('\n');
+
+        if !self.evidence.unresolved_issues.is_empty() {
+            summary.push_str("### Remaining Risks\n\n");
+            for issue in &self.evidence.unresolved_issues {
+                summary.push_str(&format!("- {}\n", issue));
+            }
+            summary.push('\n');
+        }
+
+        summary.push_str("### Suggested Next Step\n\n");
+        match self.evidence.delivery_outcome {
+            DeliveryOutcome::CodeChangingVerified => {
+                summary
+                    .push_str("- Review changes and consider promoting to procedure if reusable\n");
+            }
+            DeliveryOutcome::CodeChangingUnverified => {
+                summary.push_str("- Run verification manually before relying on changes\n");
+            }
+            DeliveryOutcome::CodeChangingFailed => {
+                summary.push_str("- Fix failing verification before relying on changes\n");
+            }
+            DeliveryOutcome::NoOp => {
+                summary.push_str("- No code changes were made\n");
+            }
+            DeliveryOutcome::AnalysisOnly => {
+                summary.push_str("- Analysis complete, no code changes\n");
+            }
+            DeliveryOutcome::None => {
+                summary.push_str("- Check verification status\n");
+            }
+        }
+
+        Some(summary.trim_end_matches('\n').to_string())
     }
 
     fn summarize_failure(output: &str) -> String {

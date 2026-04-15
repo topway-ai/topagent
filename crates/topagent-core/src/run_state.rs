@@ -322,6 +322,8 @@ impl AgentRunState {
             workspace_warnings: Vec::new(),
             source_labels: self.trust_context(ctx).sources,
             task_mode: None,
+            delivery_outcome: crate::task_result::DeliveryOutcome::None,
+            verification_skip_reason: None,
         };
 
         if let Some(issue) =
