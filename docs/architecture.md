@@ -136,7 +136,7 @@ topagent install
   -> check systemd user services available
   -> check for existing managed files (refuse to overwrite non-managed files)
   -> resolve workspace (--workspace, existing config, or auto-create)
-  -> prompt for OpenRouter API key and Telegram bot token
+  -> prompt for API key (OpenRouter or Opencode) and Telegram bot token
   -> write env file to ~/.config/topagent/services/topagent-telegram.env (mode 0600, includes model + runtime settings)
   -> write systemd unit to ~/.config/systemd/user/topagent-telegram.service
   -> systemctl --user daemon-reload

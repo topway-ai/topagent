@@ -42,7 +42,7 @@ Press Ctrl-C once to request a graceful stop. Press again to force exit.
 topagent setup
 ```
 
-This prompts for your OpenRouter API key, lets you pick an OpenRouter model (or type a custom model ID), and asks for your Telegram bot token (from [BotFather](https://t.me/BotFather)), then:
+This prompts for your API key (OpenRouter or Opencode), lets you pick a model (or type a custom model ID), and asks for your Telegram bot token (from [BotFather](https://t.me/BotFather)), then:
 
 - creates a workspace directory for the agent to operate in
 - writes a managed config file under `~/.config/topagent/`
