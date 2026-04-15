@@ -1,19 +1,20 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
-use crate::config::*;
+use crate::config::{SelectedProvider, *};
 use crate::managed_files::{assert_managed_or_absent, read_managed_env_metadata};
 use crate::openrouter_models::{
     fetch_openrouter_top_models, humanize_age, load_cached_openrouter_models,
     openrouter_model_cache_path, save_cached_openrouter_models,
 };
-use crate::operational_paths::{service_paths, ServicePaths};
+use crate::operational_paths::{ServicePaths, service_paths};
+use topagent_core::ProviderKind;
 
 use super::install::prompt_for_install_model;
 use super::lifecycle::restart_service_if_installed;
 use super::managed_env::{
-    persisted_model_from_env_values, trim_nonempty, write_managed_env_values,
-    OPENROUTER_API_KEY_KEY,
+    OPENROUTER_API_KEY_KEY, persisted_model_from_env_values, trim_nonempty,
+    write_managed_env_values,
 };
 use super::state::load_control_plane_state;
 
@@ -132,6 +133,15 @@ fn run_model_pick(params: CliParams) -> Result<()> {
         });
 
     let explicit_model = trim_nonempty(params.model.clone());
+    let resolved_for_check = resolve_model_choice(
+        explicit_model.clone(),
+        None,
+        persisted_model_from_env_values(&values),
+    );
+    let provider = match resolve_provider_for_model(&resolved_for_check.model_id) {
+        ProviderKind::OpenRouter => SelectedProvider::OpenRouter,
+        ProviderKind::Opencode => SelectedProvider::Opencode,
+    };
     let selected_model = if explicit_model.is_some() {
         let resolved = resolve_model_choice(
             params.model.clone(),
@@ -142,6 +152,7 @@ fn run_model_pick(params: CliParams) -> Result<()> {
         None
     } else {
         Some(prompt_for_install_model(
+            provider,
             api_key.as_deref(),
             persisted_model_from_env_values(&values),
         )?)
@@ -152,7 +163,6 @@ fn run_model_pick(params: CliParams) -> Result<()> {
         selected_model,
         persisted_model_from_env_values(&values),
     );
-    let provider = resolve_provider_for_model(&resolved_model.model_id);
     let report = update_configured_model(
         &paths,
         resolved_model.model_id.clone(),
@@ -163,7 +173,8 @@ fn run_model_pick(params: CliParams) -> Result<()> {
     println!("Previous model: {}", report.previous_model);
     println!(
         "Configured model: {} [{}]",
-        report.configured_model, provider
+        report.configured_model,
+        provider.label()
     );
     println!(
         "Selection source: {}",

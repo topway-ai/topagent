@@ -18,27 +18,27 @@ use clap::{Parser, Subcommand, ValueEnum};
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
 use topagent_core::{
-    context::ExecutionContext, ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest,
-    CancellationToken, ProgressCallback, ProgressUpdate, ProviderKind, WorkspaceCheckpointStore,
+    ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest, CancellationToken, ProgressCallback,
+    ProgressUpdate, ProviderKind, WorkspaceCheckpointStore, context::ExecutionContext,
 };
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::checkpoint::run_checkpoint_command;
 use crate::config::{
-    build_route_from_resolved, build_runtime_options, load_persisted_telegram_defaults,
-    require_openrouter_api_key, resolve_runtime_model_selection, resolve_workspace_path, CliParams,
+    CliParams, build_route_from_resolved, build_runtime_options, load_persisted_telegram_defaults,
+    require_openrouter_api_key, resolve_runtime_model_selection, resolve_workspace_path,
 };
 use crate::doctor::run_doctor;
 use crate::learning::{
     run_memory_command, run_observation_command, run_procedure_command, run_trajectory_command,
 };
-use crate::memory::{promote_verified_task, PromotionContext};
+use crate::memory::{PromotionContext, promote_verified_task};
 use crate::progress::LiveProgress;
 use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
 use crate::service::{
@@ -164,7 +164,11 @@ enum Commands {
     /// Run health diagnostics on TopAgent setup, config, workspace, and tools.
     Doctor,
     /// Remove the installed TopAgent setup and, when applicable, the installed binary.
-    Uninstall,
+    Uninstall {
+        /// Also remove workspace .topagent/ data, cache files, and auto-created workspace
+        #[arg(long, short = 'p')]
+        purge: bool,
+    },
     #[command(hide = true)]
     Run { instruction: String },
 }
@@ -185,7 +189,11 @@ pub(crate) enum ServiceCommands {
     /// Restart the installed Telegram background service.
     Restart,
     /// Remove the Telegram background service and managed env file.
-    Uninstall,
+    Uninstall {
+        /// Also remove workspace .topagent/ data and cache files
+        #[arg(long, short = 'p')]
+        purge: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -301,8 +309,8 @@ fn main() -> Result<()> {
             run_observation_command(command, params.workspace)
         }
         Some(Commands::Checkpoint { command }) => run_checkpoint_command(command, params.workspace),
-        Some(Commands::Uninstall) => run_uninstall(),
-        Some(Commands::Service { command }) => run_service_command(command, params),
+        Some(Commands::Uninstall { purge }) => run_uninstall(purge),
+        Some(Commands::Service { command }) => run_service_command(command, params, false),
         Some(Commands::Telegram { token }) => run_telegram(token, params),
         Some(Commands::Run { instruction }) => run_one_shot(params, instruction),
         None => {
@@ -548,9 +556,11 @@ mod tests {
         let approved = prompt_for_cli_approval_with_io(&request, &mut reader, &mut output).unwrap();
 
         assert!(approved);
-        assert!(String::from_utf8(output)
-            .unwrap()
-            .contains("Approve this action?"));
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("Approve this action?")
+        );
     }
 
     #[test]

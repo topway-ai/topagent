@@ -44,18 +44,21 @@ Interactive setup that configures and starts the Telegram background service. `t
    - `--workspace` flag if provided
    - existing value from a previous install
    - otherwise creates `workspace/` next to the installed binary (or in the repo root if running from source)
-4. Prompts for API key (pre-fills from `--api-key`, `--opencode-api-key`, env vars, or previous install). Supports both OpenRouter and Opencode.
-5. Prompts for the model unless `--model` was provided:
-- tries to fetch a short list of current top models from the selected provider
-- falls back to the cached list under `~/.config/topagent/cache/openrouter-models.json`
-- falls back again to a curated starter list when no live or cached list is available
-- always offers `Custom model ID (type manually)`
-6. Prompts for Telegram bot token (pre-fills from previous install)
-7. Writes config file: `~/.config/topagent/services/topagent-telegram.env` (mode 0600)
-8. Writes systemd unit: `~/.config/systemd/user/topagent-telegram.service`
-9. Runs `systemctl --user daemon-reload`, then:
-   - on fresh setup: `systemctl --user enable --now topagent-telegram.service`
-   - on re-running setup over an existing managed install: `systemctl --user enable topagent-telegram.service` and `systemctl --user restart topagent-telegram.service`
+4. **Prompts for provider** — Choose OpenRouter or Opencode (provider selection is explicit and comes before model selection)
+5. Prompts for API key for the selected provider (pre-fills from env vars or previous install)
+6. Prompts for model — scoped to the selected provider; always offers `Custom model ID (type manually)`
+7. Prompts for Telegram bot token (pre-fills from previous install)
+8. **Prompts for allowed Telegram username** (optional) — Enter the username (without `@`) of the user allowed to send direct messages. If specified, the bot will only accept DMs from that user.
+9. Writes config file: `~/.config/topagent/services/topagent-telegram.env` (mode 0600)
+10. Writes systemd unit: `~/.config/systemd/user/topagent-telegram.service`
+11. Runs `systemctl --user daemon-reload`, then:
+    - on fresh setup: `systemctl --user enable --now topagent-telegram.service`
+    - on re-running setup over an existing managed install: `systemctl --user enable topagent-telegram.service` and `systemctl --user restart topagent-telegram.service`
+
+**Telegram DM access control**: If you enter an allowed username during setup:
+- The first direct message from a matching username binds and persists the numeric Telegram user ID
+- After binding, enforcement switches to numeric user ID — so if the user changes their username later, access still works
+- Direct messages from other users are quietly rejected
 
 Model precedence during install is:
 
@@ -156,6 +159,17 @@ Low-trust content may still be summarized, quoted, or analyzed as data. It does 
 `topagent service uninstall` does steps 1-2 only.
 
 Neither command removes the workspace directory, curated memory files, or chat transcripts. Delete those manually if needed.
+
+### What `topagent uninstall --purge` removes
+
+`topagent uninstall --purge` adds to the standard uninstall:
+
+4. Removes the workspace `.topagent/` directory (memory, procedures, transcripts, checkpoints, etc.)
+5. Removes the model cache under `~/.config/topagent/cache/`
+
+**Preserved:** The workspace directory itself (e.g., `workspace/`) is never deleted — only its `.topagent/` subdirectory.
+
+Plain `topagent uninstall` is the safer default; `--purge` is for when you want a complete cleanup.
 
 ## Workspace behavior
 

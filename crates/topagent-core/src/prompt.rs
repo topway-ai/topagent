@@ -465,7 +465,7 @@ mod tests {
                 active_files: vec!["src/lib.rs".to_string()],
                 proof_of_work_anchors: vec!["verification: cargo test --lib (exit 0)".to_string()],
                 trust_notes: vec![
-                    "Low-trust content is active in this run: prior transcript.".to_string(),
+                    "Low-trust content is active in this run: prior transcript.".to_string()
                 ],
                 hook_notes: vec!["[fmt] run cargo fmt after editing Rust files".to_string()],
                 memory_context_loaded: true,

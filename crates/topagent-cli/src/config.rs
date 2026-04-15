@@ -19,6 +19,9 @@ pub(crate) const TOPAGENT_MAX_RETRIES_KEY: &str = "TOPAGENT_MAX_RETRIES";
 pub(crate) const TOPAGENT_TIMEOUT_SECS_KEY: &str = "TOPAGENT_TIMEOUT_SECS";
 pub(crate) const OPENROUTER_API_KEY_KEY: &str = "OPENROUTER_API_KEY";
 pub(crate) const OPENCODE_API_KEY_KEY: &str = "OPENCODE_API_KEY";
+pub(crate) const TELEGRAM_ALLOWED_DM_USERNAME_KEY: &str = "TELEGRAM_ALLOWED_DM_USERNAME";
+pub(crate) const TELEGRAM_BOUND_DM_USER_ID_KEY: &str = "TELEGRAM_BOUND_DM_USER_ID";
+pub(crate) const TOPAGENT_PROVIDER_KEY: &str = "TOPAGENT_PROVIDER";
 
 fn normalize_nonempty_string(value: Option<String>) -> Option<String> {
     value
@@ -63,6 +66,29 @@ impl TelegramModeConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SelectedProvider {
+    OpenRouter,
+    Opencode,
+}
+
+impl SelectedProvider {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::OpenRouter => "OpenRouter",
+            Self::Opencode => "Opencode",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "openrouter" | "open router" => Some(Self::OpenRouter),
+            "opencode" => Some(Self::Opencode),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub(crate) struct TelegramModeDefaults {
     pub api_key: Option<String>,
@@ -74,6 +100,9 @@ pub(crate) struct TelegramModeDefaults {
     pub max_retries: Option<usize>,
     pub timeout_secs: Option<u64>,
     pub generated_tool_authoring: Option<bool>,
+    pub provider: Option<SelectedProvider>,
+    pub allowed_dm_username: Option<String>,
+    pub bound_dm_user_id: Option<i64>,
 }
 
 impl TelegramModeDefaults {
@@ -94,6 +123,15 @@ impl TelegramModeDefaults {
             generated_tool_authoring: parse_env_bool(
                 values.get(TOPAGENT_TOOL_AUTHORING_KEY).map(String::as_str),
             ),
+            provider: values
+                .get(TOPAGENT_PROVIDER_KEY)
+                .and_then(|v| SelectedProvider::from_str(v)),
+            allowed_dm_username: normalize_nonempty_string(
+                values.get(TELEGRAM_ALLOWED_DM_USERNAME_KEY).cloned(),
+            ),
+            bound_dm_user_id: values
+                .get(TELEGRAM_BOUND_DM_USER_ID_KEY)
+                .and_then(|v| v.parse().ok()),
         }
     }
 }

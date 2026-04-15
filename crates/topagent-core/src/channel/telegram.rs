@@ -307,6 +307,8 @@ pub struct TelegramMessage {
     pub message_id: i64,
     pub chat: TelegramChat,
     pub text: Option<String>,
+    #[serde(default)]
+    pub from: Option<TelegramUser>,
 }
 
 #[derive(Debug, Deserialize)]

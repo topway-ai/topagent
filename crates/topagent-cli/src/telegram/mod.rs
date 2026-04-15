@@ -13,7 +13,9 @@ use topagent_core::{
 use tracing::{debug, error, info, warn};
 
 use crate::config::*;
+use crate::managed_files::read_managed_env_metadata;
 use crate::memory::{PromotionContext, WorkspaceMemory, promote_verified_task};
+use crate::operational_paths::managed_service_env_path;
 use crate::progress::LiveProgress;
 use crate::run_setup::{
     PreparedRunContext, build_agent, prepare_run_context, prepare_workspace_memory,
@@ -90,6 +92,9 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
         options,
         ctx.workspace_root.clone(),
         secrets.clone(),
+        persisted_defaults.allowed_dm_username.clone(),
+        persisted_defaults.bound_dm_user_id,
+        Some(managed_service_env_path().ok()).flatten(),
     );
     let mut offset = 0i64;
     let mut polling_retries = 0usize;
@@ -198,6 +203,23 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                     let Some(msg) = &update.message else { continue };
                     let chat_id = msg.chat.id;
                     let message_id = msg.message_id;
+                    let sender_username = msg.from.as_ref().and_then(|u| u.username.as_deref());
+
+                    let dm_check = session_manager.check_dm_admission(chat_id, sender_username);
+                    match dm_check {
+                        DmAdmission::Allowed => {}
+                        DmAdmission::AllowedFirstBinding(user_id) => {
+                            info!(
+                                "binding allowed DM user: username matched, binding numeric user ID {}",
+                                user_id
+                            );
+                            let _ = session_manager.bind_dm_user_id(user_id);
+                        }
+                        DmAdmission::Denied => {
+                            send_telegram(&adapter, chat_id, vec!["Access denied. This bot is not authorized to accept messages from this chat.".into()], None);
+                            continue;
+                        }
+                    }
 
                     if msg.chat.chat_type != "private" {
                         send_telegram(&adapter, chat_id, vec!["This bot currently supports private chats only. Open a private chat with the bot and try again.".into()], None);
@@ -377,6 +399,13 @@ fn send_telegram_with_markup(
     report
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DmAdmission {
+    Allowed,
+    AllowedFirstBinding(i64),
+    Denied,
+}
+
 // ── Session manager ──
 
 pub(crate) struct ChatSessionManager {
@@ -390,6 +419,9 @@ pub(crate) struct ChatSessionManager {
     pub sessions: HashMap<i64, RunningChatTask>,
     completed_tx: mpsc::Sender<i64>,
     completed_rx: mpsc::Receiver<i64>,
+    allowed_dm_username: Option<String>,
+    bound_dm_user_id: Option<i64>,
+    env_path: Option<PathBuf>,
 }
 
 pub(crate) struct RunningChatTask {
@@ -406,6 +438,9 @@ impl ChatSessionManager {
         options: RuntimeOptions,
         workspace_root: PathBuf,
         secrets: topagent_core::SecretRegistry,
+        allowed_dm_username: Option<String>,
+        bound_dm_user_id: Option<i64>,
+        env_path: Option<PathBuf>,
     ) -> Self {
         let (completed_tx, completed_rx) = mpsc::channel();
         let memory = prepare_workspace_memory(workspace_root.clone());
@@ -421,6 +456,9 @@ impl ChatSessionManager {
             sessions: HashMap::new(),
             completed_tx,
             completed_rx,
+            allowed_dm_username,
+            bound_dm_user_id,
+            env_path,
         }
     }
 
@@ -434,6 +472,49 @@ impl ChatSessionManager {
 
     fn model_label_for_help(&self) -> String {
         current_model_label_for_help(&self.route, &self.configured_default_model)
+    }
+
+    pub fn check_dm_admission(
+        &self,
+        sender_chat_id: i64,
+        sender_username: Option<&str>,
+    ) -> DmAdmission {
+        if let Some(bound_id) = self.bound_dm_user_id {
+            if sender_chat_id == bound_id {
+                DmAdmission::Allowed
+            } else {
+                DmAdmission::Denied
+            }
+        } else if let Some(ref allowed_username) = self.allowed_dm_username {
+            if let Some(sender_username) = sender_username {
+                if sender_username == allowed_username {
+                    DmAdmission::AllowedFirstBinding(sender_chat_id)
+                } else {
+                    DmAdmission::Denied
+                }
+            } else {
+                DmAdmission::Denied
+            }
+        } else {
+            DmAdmission::Allowed
+        }
+    }
+
+    pub fn bind_dm_user_id(&mut self, user_id: i64) {
+        self.bound_dm_user_id = Some(user_id);
+        if let Some(ref env_path) = self.env_path {
+            if let Ok(values) = read_managed_env_metadata(env_path) {
+                let mut updated = values.clone();
+                updated.insert(
+                    TELEGRAM_BOUND_DM_USER_ID_KEY.to_string(),
+                    user_id.to_string(),
+                );
+                if let Some(ref username) = self.allowed_dm_username {
+                    updated.remove(TELEGRAM_ALLOWED_DM_USERNAME_KEY);
+                }
+                let _ = crate::service::managed_env::write_managed_env_values(env_path, &updated);
+            }
+        }
     }
 
     fn load_redacted_transcript(&self, chat_id: i64) -> Vec<Message> {
@@ -838,6 +919,9 @@ mod tests {
             RuntimeOptions::default(),
             workspace_root,
             topagent_core::SecretRegistry::new(),
+            None,
+            None,
+            None,
         )
     }
 
@@ -1494,6 +1578,9 @@ mod tests {
             RuntimeOptions::default().with_generated_tool_authoring(true),
             workspace.path().to_path_buf(),
             topagent_core::SecretRegistry::new(),
+            None,
+            None,
+            None,
         );
         let enabled_specs = enabled_manager.create_agent().tool_specs();
         assert!(enabled_specs.iter().any(|spec| spec.name == "create_tool"));

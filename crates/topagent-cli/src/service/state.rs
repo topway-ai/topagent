@@ -3,10 +3,10 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    resolve_runtime_model_selection, RuntimeModelSelection, TOPAGENT_WORKSPACE_KEY,
+    RuntimeModelSelection, TOPAGENT_WORKSPACE_KEY, resolve_runtime_model_selection,
 };
 use crate::managed_files::{is_topagent_managed_file, read_managed_env_metadata};
-use crate::operational_paths::{service_paths, ServicePaths};
+use crate::operational_paths::{ServicePaths, service_paths};
 
 use super::lifecycle::{ensure_systemd_user_available, load_service_status_snapshot};
 use super::managed_env::persisted_model_from_env_values;

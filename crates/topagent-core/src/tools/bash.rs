@@ -1,7 +1,7 @@
 use crate::checkpoint::{
     CheckpointCaptureMetadata, CheckpointCaptureSource, WorkspaceCheckpointStore,
 };
-use crate::command_exec::{CommandSandboxPolicy, run_command};
+use crate::command_exec::{run_command, CommandSandboxPolicy};
 use crate::context::ToolContext;
 use crate::file_util::format_command_output_with_limit;
 use crate::secrets;
@@ -937,13 +937,11 @@ mod tests {
         assert_eq!(status.captures.len(), 1);
         assert_eq!(status.captures[0].source, CheckpointCaptureSource::Bash);
         assert_eq!(status.captures[0].reason, "shell redirection write");
-        assert!(
-            status.captures[0]
-                .detail
-                .as_deref()
-                .unwrap_or_default()
-                .contains("notes.txt")
-        );
+        assert!(status.captures[0]
+            .detail
+            .as_deref()
+            .unwrap_or_default()
+            .contains("notes.txt"));
         assert_eq!(status.captured_paths, vec!["notes.txt"]);
     }
 

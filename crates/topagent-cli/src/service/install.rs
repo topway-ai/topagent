@@ -6,17 +6,19 @@ use std::path::PathBuf;
 use crate::config::*;
 use crate::managed_files::{assert_managed_or_absent, read_managed_env_metadata};
 use crate::openrouter_models::{
-    discover_install_openrouter_models, humanize_age, openrouter_model_cache_path,
-    OpenRouterCatalogSource,
+    OpenRouterCatalogSource, discover_install_openrouter_models, humanize_age,
+    openrouter_model_cache_path,
 };
 use crate::operational_paths::service_paths;
 
 use super::lifecycle::{
-    detect_install_root, ensure_systemd_user_available, install_service_with_config,
-    ServiceConfigApplyAction,
+    ServiceConfigApplyAction, detect_install_root, ensure_systemd_user_available,
+    install_service_with_config,
 };
-use super::managed_env::{trim_nonempty, OPENROUTER_API_KEY_KEY, TELEGRAM_BOT_TOKEN_KEY};
-use crate::config::OPENCODE_API_KEY_KEY;
+use super::managed_env::{OPENROUTER_API_KEY_KEY, TELEGRAM_BOT_TOKEN_KEY, trim_nonempty};
+use crate::config::{
+    OPENCODE_API_KEY_KEY, TELEGRAM_ALLOWED_DM_USERNAME_KEY, TOPAGENT_PROVIDER_KEY,
+};
 
 const CUSTOM_MODEL_OPTION_LABEL: &str = "Custom model ID (type manually)";
 
@@ -26,6 +28,7 @@ struct InstallModelPrompt {
     default_model: String,
     source: OpenRouterCatalogSource,
     live_error: Option<String>,
+    provider: SelectedProvider,
 }
 
 pub(crate) fn run_install(params: CliParams) -> Result<()> {
@@ -41,34 +44,60 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
     println!("This will configure and start your Telegram background service.");
     println!();
 
-    let api_key = prompt_for_install_value(
-        "OpenRouter API key",
-        params.api_key.as_deref().or_else(|| {
-            existing_values
-                .get(OPENROUTER_API_KEY_KEY)
-                .map(String::as_str)
-        }),
-        require_openrouter_api_key,
-    )?;
-    let opencode_api_key = prompt_for_install_value_optional(
-        "Opencode API key (optional, press Enter to skip)",
-        params.opencode_api_key.as_deref().or_else(|| {
-            existing_values
-                .get(OPENCODE_API_KEY_KEY)
-                .map(String::as_str)
-        }),
-    );
+    let selected_provider = prompt_for_install_provider(defaults.provider)?;
+
+    let (api_key, opencode_api_key) = match selected_provider {
+        SelectedProvider::OpenRouter => {
+            let key = prompt_for_install_value(
+                "OpenRouter API key",
+                params.api_key.as_deref().or_else(|| {
+                    existing_values
+                        .get(OPENROUTER_API_KEY_KEY)
+                        .map(String::as_str)
+                }),
+                require_openrouter_api_key,
+            )?;
+            let opencode_key = prompt_for_install_value_optional(
+                "Opencode API key (optional, press Enter to skip)",
+                params.opencode_api_key.as_deref().or_else(|| {
+                    existing_values
+                        .get(OPENCODE_API_KEY_KEY)
+                        .map(String::as_str)
+                }),
+            );
+            (Some(key), opencode_key)
+        }
+        SelectedProvider::Opencode => {
+            let key = prompt_for_install_value(
+                "Opencode API key",
+                params.opencode_api_key.as_deref().or_else(|| {
+                    existing_values
+                        .get(OPENCODE_API_KEY_KEY)
+                        .map(String::as_str)
+                }),
+                require_opencode_api_key,
+            )?;
+            (None, Some(key))
+        }
+    };
+
     let explicit_model = trim_nonempty(params.model.clone());
     let selected_model = if explicit_model.is_some() {
         let resolved = resolve_model_choice(params.model.clone(), None, defaults.model.clone());
-        println!("OpenRouter model: {} (--model)", resolved.model_id);
+        println!(
+            "{} model: {} (--model)",
+            selected_provider.label(),
+            resolved.model_id
+        );
         None
     } else {
         Some(prompt_for_install_model(
-            Some(api_key.as_str()),
+            selected_provider,
+            api_key.as_deref().or_else(|| opencode_api_key.as_deref()),
             defaults.model.clone(),
         )?)
     };
+
     let token = prompt_for_install_value(
         "Telegram bot token",
         existing_values
@@ -77,10 +106,12 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
         require_telegram_token,
     )?;
 
+    let allowed_username = prompt_for_install_username(defaults.allowed_dm_username.as_deref())?;
+
     let resolved_model = resolve_model_choice(params.model, selected_model, defaults.model.clone());
     let config = TelegramModeConfig {
         token,
-        openrouter_api_key: Some(api_key),
+        openrouter_api_key: api_key,
         opencode_api_key,
         route: build_route_from_resolved(&resolved_model),
         workspace,
@@ -93,6 +124,19 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
         ),
     };
     let service_action = install_service_with_config(&config, &paths)?;
+
+    let mut updated_values = existing_values.clone();
+    updated_values.insert(
+        TOPAGENT_PROVIDER_KEY.to_string(),
+        selected_provider.label().to_string(),
+    );
+    if let Some(ref username) = allowed_username {
+        updated_values.insert(
+            TELEGRAM_ALLOWED_DM_USERNAME_KEY.to_string(),
+            username.clone(),
+        );
+    }
+    super::managed_env::write_managed_env_values(&paths.env_path, &updated_values)?;
 
     println!();
     print_service_installed(
@@ -227,10 +271,11 @@ fn prompt_for_install_value_optional(label: &str, existing_value: Option<&str>) 
 }
 
 pub(super) fn prompt_for_install_model(
+    provider: SelectedProvider,
     api_key: Option<&str>,
     existing_model: Option<String>,
 ) -> Result<String> {
-    let prompt = build_install_model_prompt(api_key, existing_model)?;
+    let prompt = build_install_model_prompt(provider, api_key, existing_model)?;
     let stdin = io::stdin();
     let mut input = stdin.lock();
     let mut output = io::stdout();
@@ -238,18 +283,43 @@ pub(super) fn prompt_for_install_model(
 }
 
 fn build_install_model_prompt(
+    provider: SelectedProvider,
     api_key: Option<&str>,
     existing_model: Option<String>,
 ) -> Result<InstallModelPrompt> {
-    let cache_path = openrouter_model_cache_path()?;
-    let discovered = discover_install_openrouter_models(&cache_path, api_key)?;
-    let default_model = current_configured_model(existing_model).model_id;
-    Ok(InstallModelPrompt {
-        models: discovered.models,
-        default_model,
-        source: discovered.source,
-        live_error: discovered.live_error,
-    })
+    let default_model = current_configured_model(existing_model.clone()).model_id;
+
+    match provider {
+        SelectedProvider::OpenRouter => {
+            let cache_path = openrouter_model_cache_path()?;
+            let discovered = discover_install_openrouter_models(&cache_path, api_key)?;
+            Ok(InstallModelPrompt {
+                models: discovered.models,
+                default_model,
+                source: discovered.source,
+                live_error: discovered.live_error,
+                provider,
+            })
+        }
+        SelectedProvider::Opencode => Ok(InstallModelPrompt {
+            models: vec![
+                "glm-4".to_string(),
+                "glm-4-flash".to_string(),
+                "glm-3".to_string(),
+            ],
+            default_model: if existing_model
+                .map(|m| m.starts_with("glm-"))
+                .unwrap_or(false)
+            {
+                default_model
+            } else {
+                "glm-4".to_string()
+            },
+            source: OpenRouterCatalogSource::CuratedFallback,
+            live_error: None,
+            provider,
+        }),
+    }
 }
 
 fn prompt_for_install_model_with_io<R: BufRead, W: Write>(
@@ -257,8 +327,9 @@ fn prompt_for_install_model_with_io<R: BufRead, W: Write>(
     output: &mut W,
     prompt: &InstallModelPrompt,
 ) -> Result<String> {
+    let provider_label = prompt.provider.label();
     print_install_model_source(output, &prompt.source, prompt.live_error.as_deref())?;
-    writeln!(output, "OpenRouter model:").context("failed to write installer output")?;
+    writeln!(output, "{} model:", provider_label).context("failed to write installer output")?;
     for (index, model) in prompt.models.iter().enumerate() {
         let marker = if *model == prompt.default_model {
             " [default]"
@@ -279,8 +350,8 @@ fn prompt_for_install_model_with_io<R: BufRead, W: Write>(
     loop {
         write!(
             output,
-            "Select OpenRouter model [press Enter to keep {}]: ",
-            prompt.default_model
+            "Select {} model [press Enter to keep {}]: ",
+            provider_label, prompt.default_model
         )
         .context("failed to write installer output")?;
         output.flush().context("failed to flush stdout")?;
@@ -301,7 +372,7 @@ fn prompt_for_install_model_with_io<R: BufRead, W: Write>(
             return Ok(prompt.models[choice - 1].clone());
         }
         if choice == prompt.models.len() + 1 {
-            return prompt_for_custom_model_with_io(input, output);
+            return prompt_for_custom_model_with_io(input, output, provider_label);
         }
 
         writeln!(output, "Enter a number from the menu above.")
@@ -312,9 +383,10 @@ fn prompt_for_install_model_with_io<R: BufRead, W: Write>(
 fn prompt_for_custom_model_with_io<R: BufRead, W: Write>(
     input: &mut R,
     output: &mut W,
+    provider_label: &str,
 ) -> Result<String> {
     loop {
-        write!(output, "Custom OpenRouter model ID: ")
+        write!(output, "Custom {} model ID: ", provider_label)
             .context("failed to write installer output")?;
         output.flush().context("failed to flush stdout")?;
 
@@ -387,6 +459,84 @@ fn read_install_input_line<R: BufRead>(input: &mut R) -> Result<String> {
     Ok(line)
 }
 
+fn prompt_for_install_provider(
+    existing_provider: Option<SelectedProvider>,
+) -> Result<SelectedProvider> {
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+
+    loop {
+        if existing_provider.is_some() {
+            print!("Provider [OpenRouter/Opencode, press Enter to keep current]: ");
+        } else {
+            print!("Provider (OpenRouter/Opencode): ");
+        }
+        io::stdout().flush().context("failed to flush stdout")?;
+
+        let mut line = String::new();
+        let read = input
+            .read_line(&mut line)
+            .context("failed to read installer input")?;
+        if read == 0 {
+            return Err(anyhow::anyhow!(
+                "Installer input ended unexpectedly. Re-run `topagent install` in an interactive shell."
+            ));
+        }
+
+        let candidate = line.trim();
+        let value = if candidate.is_empty() {
+            existing_provider
+        } else {
+            SelectedProvider::from_str(candidate)
+        };
+
+        if let Some(provider) = value {
+            return Ok(provider);
+        }
+        println!("Enter 'OpenRouter' or 'Opencode'.");
+    }
+}
+
+fn prompt_for_install_username(existing_username: Option<&str>) -> Result<Option<String>> {
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+
+    loop {
+        if existing_username.is_some() {
+            print!("Allowed Telegram username (optional, press Enter to keep current): ");
+        } else {
+            print!(
+                "Allowed Telegram username for direct messages (optional, press Enter to skip): "
+            );
+        }
+        io::stdout().flush().context("failed to flush stdout")?;
+
+        let mut line = String::new();
+        let read = input
+            .read_line(&mut line)
+            .context("failed to read installer input")?;
+        if read == 0 {
+            return Ok(None);
+        }
+
+        let candidate = line.trim();
+        if candidate.is_empty() {
+            return Ok(existing_username.map(String::from));
+        }
+
+        if candidate.starts_with('@') {
+            return Ok(Some(candidate[1..].to_string()));
+        }
+
+        if candidate.contains(' ') {
+            println!("Username cannot contain spaces.");
+            continue;
+        }
+
+        return Ok(Some(candidate.to_string()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -402,6 +552,7 @@ mod tests {
             default_model: "minimax/minimax-m2.7".to_string(),
             source: OpenRouterCatalogSource::CuratedFallback,
             live_error: Some("timeout".to_string()),
+            provider: SelectedProvider::OpenRouter,
         };
         let mut input = Cursor::new("3\n\ncustom/model\n");
         let mut output = Vec::new();
@@ -422,6 +573,7 @@ mod tests {
             default_model: "persisted/model".to_string(),
             source: OpenRouterCatalogSource::Cache { age_secs: 75 },
             live_error: Some("network down".to_string()),
+            provider: SelectedProvider::OpenRouter,
         };
         let mut input = Cursor::new("\n");
         let mut output = Vec::new();

@@ -1,6 +1,6 @@
 mod install;
 mod lifecycle;
-mod managed_env;
+pub mod managed_env;
 mod model;
 mod state;
 
@@ -14,6 +14,7 @@ pub(crate) use lifecycle::{run_status, run_uninstall};
 pub(crate) fn run_service_command(
     command: crate::ServiceCommands,
     params: CliParams,
+    purge: bool,
 ) -> Result<()> {
     match command {
         crate::ServiceCommands::Install { token } => install::run_service_install(token, params),
@@ -21,7 +22,7 @@ pub(crate) fn run_service_command(
         crate::ServiceCommands::Start => lifecycle::run_service_start(),
         crate::ServiceCommands::Stop => lifecycle::run_service_stop(),
         crate::ServiceCommands::Restart => lifecycle::run_service_restart(),
-        crate::ServiceCommands::Uninstall => lifecycle::run_service_uninstall(),
+        crate::ServiceCommands::Uninstall { .. } => lifecycle::run_service_uninstall(purge),
     }
 }
 

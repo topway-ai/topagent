@@ -4,10 +4,10 @@ use std::process::{Command, Output};
 
 use crate::config::*;
 use crate::managed_files::*;
-use crate::operational_paths::{service_paths, ServicePaths};
+use crate::operational_paths::{ServicePaths, resolve_config_home, service_paths};
 
 use super::managed_env::render_service_env_file;
-use super::state::{load_control_plane_state, load_service_probe, ServiceStatusSnapshot};
+use super::state::{ServiceStatusSnapshot, load_control_plane_state, load_service_probe};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallRootKind {
@@ -132,8 +132,8 @@ pub(crate) fn run_status(params: CliParams) -> Result<()> {
     render_status(params)
 }
 
-pub(crate) fn run_uninstall() -> Result<()> {
-    uninstall_service_setup(true)
+pub(crate) fn run_uninstall(purge: bool) -> Result<()> {
+    uninstall_service_setup(true, purge)
 }
 
 pub(crate) fn run_service_status(params: CliParams) -> Result<()> {
@@ -167,8 +167,8 @@ pub(crate) fn run_service_restart() -> Result<()> {
     )
 }
 
-pub(crate) fn run_service_uninstall() -> Result<()> {
-    uninstall_service_setup(false)
+pub(crate) fn run_service_uninstall(purge: bool) -> Result<()> {
+    uninstall_service_setup(false, purge)
 }
 
 fn run_service_lifecycle(
@@ -287,7 +287,7 @@ fn render_status(params: CliParams) -> Result<()> {
     Ok(())
 }
 
-fn uninstall_service_setup(remove_binary: bool) -> Result<()> {
+fn uninstall_service_setup(remove_binary: bool, purge: bool) -> Result<()> {
     let paths = service_paths()?;
     let env_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
     let managed_unit = paths.unit_path.exists() && is_topagent_managed_file(&paths.unit_path)?;
@@ -342,8 +342,45 @@ fn uninstall_service_setup(remove_binary: bool) -> Result<()> {
         }
     }
 
-    if let Some(workspace) = env_values.get(TOPAGENT_WORKSPACE_KEY) {
-        preserved.push(format!("workspace directory preserved: {}", workspace));
+    let workspace_path = env_values.get(TOPAGENT_WORKSPACE_KEY);
+
+    if purge {
+        if let Some(workspace) = workspace_path {
+            let ws_path = PathBuf::from(workspace);
+            let topagent_dir = ws_path.join(".topagent");
+            if topagent_dir.exists() && topagent_dir.is_dir() {
+                if let Err(err) = std::fs::remove_dir_all(&topagent_dir) {
+                    preserved.push(format!(
+                        ".topagent/ left in place (could not remove {}: {})",
+                        topagent_dir.display(),
+                        err
+                    ));
+                } else {
+                    removed.push(format!("workspace .topagent/ {}", topagent_dir.display()));
+                }
+            }
+
+            let cache_dir = if let Ok(config_home) = resolve_config_home() {
+                config_home.join("topagent").join("cache")
+            } else {
+                ws_path.join(".topagent").join("cache")
+            };
+            if cache_dir.exists() && cache_dir.is_dir() {
+                if let Err(err) = std::fs::remove_dir_all(&cache_dir) {
+                    preserved.push(format!(
+                        "cache/ left in place (could not remove {}: {})",
+                        cache_dir.display(),
+                        err
+                    ));
+                } else {
+                    removed.push(format!("cache directory {}", cache_dir.display()));
+                }
+            }
+        }
+    } else {
+        if let Some(workspace) = workspace_path {
+            preserved.push(format!("workspace directory preserved: {}", workspace));
+        }
     }
 
     if remove_binary {
@@ -362,6 +399,11 @@ fn uninstall_service_setup(remove_binary: bool) -> Result<()> {
     println!("Stopped: {}", stopped);
     println!("Disabled: {}", disabled);
     println!("Daemon reload: {}", daemon_reload);
+    if purge {
+        println!("Mode: purge");
+    } else {
+        println!("Mode: standard");
+    }
     println!("Removed:");
     if removed.is_empty() {
         println!("  nothing");
@@ -647,11 +689,7 @@ fn is_enabled_state(state: Option<&str>) -> bool {
 }
 
 fn yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
+    if value { "yes" } else { "no" }
 }
 
 #[cfg(test)]
