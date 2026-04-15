@@ -44,12 +44,12 @@ Interactive setup that configures and starts the Telegram background service. `t
    - `--workspace` flag if provided
    - existing value from a previous install
    - otherwise creates `workspace/` next to the installed binary (or in the repo root if running from source)
-4. Prompts for OpenRouter API key (pre-fills from `--api-key`, env var, or previous install)
-5. Prompts for the OpenRouter model unless `--model` was provided:
-   - tries to fetch a short list of current top OpenRouter models
-   - falls back to the cached list under `~/.config/topagent/cache/openrouter-models.json`
-   - falls back again to a curated starter list when no live or cached list is available
-   - always offers `Custom model ID (type manually)`
+4. Prompts for API key (pre-fills from `--api-key`, `--opencode-api-key`, env vars, or previous install). Supports both OpenRouter and Opencode.
+5. Prompts for the model unless `--model` was provided:
+- tries to fetch a short list of current top models from the selected provider
+- falls back to the cached list under `~/.config/topagent/cache/openrouter-models.json`
+- falls back again to a curated starter list when no live or cached list is available
+- always offers `Custom model ID (type manually)`
 6. Prompts for Telegram bot token (pre-fills from previous install)
 7. Writes config file: `~/.config/topagent/services/topagent-telegram.env` (mode 0600)
 8. Writes systemd unit: `~/.config/systemd/user/topagent-telegram.service`

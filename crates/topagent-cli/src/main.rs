@@ -69,7 +69,7 @@ struct Cli {
     #[arg(
         long,
         global = true,
-        help = "OpenRouter API key (or OPENROUTER_API_KEY)"
+        help = "OpenRouter API key (or OPENROUTER_API_KEY); use --opencode-api-key for Opencode"
     )]
     api_key: Option<String>,
 
@@ -151,7 +151,7 @@ enum Commands {
         #[command(subcommand)]
         command: TrajectoryCommands,
     },
-    /// Inspect observation records used for progressive retrieval.
+    /// Inspect observation records emitted during promotion.
     Observation {
         #[command(subcommand)]
         command: ObservationCommands,

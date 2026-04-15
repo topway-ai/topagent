@@ -71,22 +71,24 @@ TopAgent also keeps a narrow trust boundary for external content:
 
 ### Bot commands
 
-| Command  | Action                             |
-|----------|------------------------------------|
-| `/start` | Show configuration and help        |
-| `/help`  | Same as /start                     |
-| `/stop`  | Cancel the currently running task  |
+### Bot commands
+
+| Command | Action |
+|---------|--------|
+| `/start` | Show configuration and help |
+| `/help` | Same as /start |
+| `/stop` | Cancel the currently running task |
 | `/reset` | Clear this chat's saved transcript |
 
 ### Service management
 
 ```bash
-topagent status              # show setup and service health
-topagent model status        # show the configured default and effective OpenRouter model
-topagent model set <id>      # change the configured OpenRouter model
-topagent model pick          # pick the configured OpenRouter model interactively
-topagent model list          # show cached starter models
-topagent model refresh       # refresh cached starter models
+topagent status # show setup and service health
+topagent model status # show the configured default and effective model
+topagent model set <id> # change the configured model
+topagent model pick # pick the configured model interactively
+topagent model list # show cached starter models
+topagent model refresh # refresh cached starter models
 topagent memory status       # show operator/workspace learning artifact status
 topagent procedure list      # list live procedures
 topagent procedure show <id> # show one procedure
@@ -112,15 +114,16 @@ See [docs/operations.md](docs/operations.md) for full operational details.
 
 ## Global flags
 
-| Flag                  | Default        | Description                        |
+| Flag | Default | Description |
 |-----------------------|----------------|------------------------------------|
-| `--api-key`           | `$OPENROUTER_API_KEY` | OpenRouter API key            |
-| `--model`             | `minimax/minimax-m2.7` | Model identifier (OpenRouter format) |
-| `--workspace`         | current directory (one-shot) or auto-created (install) | Workspace path |
-| `--max-steps`         | `50`           | Maximum agent loop iterations      |
-| `--max-retries`       | `3`            | Maximum provider retry attempts    |
-| `--timeout-secs`      | `120`          | Provider request timeout           |
-| `--tool-authoring`    | `off`          | Enable or disable generated-tool authoring tools |
+| `--api-key` | `$OPENROUTER_API_KEY` | OpenRouter API key (or use `--opencode-api-key` for Opencode) |
+| `--opencode-api-key` | `$OPENCODE_API_KEY` | Opencode API key |
+| `--model` | `minimax/minimax-m2.7` | Model identifier (auto-detects provider from model ID) |
+| `--workspace` | current directory (one-shot) or auto-created (install) | Workspace path |
+| `--max-steps` | `50` | Maximum agent loop iterations |
+| `--max-retries` | `3` | Maximum provider retry attempts |
+| `--timeout-secs` | `120` | Provider request timeout |
+| `--tool-authoring` | `off` | Enable or disable generated-tool authoring tools |
 
 ## Project instructions
 
@@ -151,7 +154,7 @@ Saved trajectories now include provenance labels from the run. A trajectory can 
 |---------|-----|
 | `topagent: command not found` | `source "$HOME/.cargo/env"` |
 | `A C compiler is required` | `sudo apt install -y build-essential` |
-| `OpenRouter API key required` | Set `--api-key` or `OPENROUTER_API_KEY` |
+| `API key required` | Set `--api-key` (OpenRouter) or `--opencode-api-key` (Opencode), or set `OPENROUTER_API_KEY` / `OPENCODE_API_KEY` |
 | `Workspace path does not exist` | Run from a repo, pass `--workspace`, or run `topagent setup` |
 | `Telegram bot token looks invalid` | Get a valid token from BotFather |
 | `Telegram webhook is configured` | Remove the webhook, then retry |
