@@ -1,8 +1,8 @@
 use crate::behavior::default_memory_policy;
 use crate::context::ToolContext;
 use crate::operator_profile::{
-    load_operator_profile, migrate_legacy_operator_preferences, save_operator_profile,
     OperatorPreferenceRecord, PreferenceCategory, USER_PROFILE_RELATIVE_PATH,
+    load_operator_profile, migrate_legacy_operator_preferences, save_operator_profile,
 };
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
@@ -457,10 +457,12 @@ mod tests {
 
         assert!(list_output.contains("concise_final_answers [response_style]"));
         assert!(temp.path().join(USER_PROFILE_RELATIVE_PATH).is_file());
-        assert!(!temp
-            .path()
-            .join(".topagent/topics/operator-preference-concise_final_answers.md")
-            .exists());
+        assert!(
+            !temp
+                .path()
+                .join(".topagent/topics/operator-preference-concise_final_answers.md")
+                .exists()
+        );
     }
 
     #[test]

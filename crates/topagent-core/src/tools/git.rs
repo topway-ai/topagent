@@ -176,6 +176,90 @@ impl crate::tools::Tool for GitBranchTool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitCloneArgs {
+    pub url: String,
+    pub directory: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct GitCloneTool;
+
+impl GitCloneTool {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for GitCloneTool {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl crate::tools::Tool for GitCloneTool {
+    fn spec(&self) -> ToolSpec {
+        ToolSpec {
+            name: "git_clone".to_string(),
+            description: "clone a git repository into the workspace (requires approval)"
+                .to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "git repository URL to clone"},
+                    "directory": {"type": "string", "description": "optional target directory name (defaults to repo name)"}
+                },
+                "required": ["url"]
+            }),
+        }
+    }
+
+    fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
+        let args: GitCloneArgs =
+            serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
+
+        let target_dir = if let Some(dir) = args.directory {
+            ctx.exec.workspace_root.join(dir)
+        } else {
+            let repo_name = args
+                .url
+                .trim_end_matches(".git")
+                .split('/')
+                .last()
+                .unwrap_or("repo");
+            ctx.exec.workspace_root.join(repo_name)
+        };
+
+        if target_dir.exists() {
+            return Err(Error::ToolFailed(format!(
+                "directory already exists: {}",
+                target_dir.display()
+            )));
+        }
+
+        let mut cmd = Command::new("git");
+        cmd.args(["clone", &args.url])
+            .arg(&target_dir)
+            .current_dir(&ctx.exec.workspace_root);
+
+        let output = cmd
+            .output()
+            .map_err(|e| Error::ToolFailed(format!("failed to execute git clone: {}", e)))?;
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        if !output.status.success() {
+            return Err(Error::ToolFailed(format!("git clone failed: {}", stderr)));
+        }
+
+        Ok(format!(
+            "cloned repository to {}",
+            target_dir.file_name().unwrap_or_default().to_string_lossy()
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitAddArgs {
     pub paths: Vec<String>,
 }

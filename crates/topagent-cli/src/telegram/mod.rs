@@ -1,27 +1,27 @@
 use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 use topagent_core::channel::telegram::TelegramInlineKeyboardMarkup;
 use topagent_core::{
-    context::ExecutionContext, model::ModelRoute, Agent, ApprovalEntry, ApprovalMailbox,
-    ApprovalMailboxMode, CancellationToken, Message, ProgressCallback, ProgressUpdate,
-    RuntimeOptions, TelegramAdapter, WorkspaceCheckpointStore, POLL_TIMEOUT_SECS,
+    Agent, ApprovalEntry, ApprovalMailbox, ApprovalMailboxMode, CancellationToken, Message,
+    POLL_TIMEOUT_SECS, ProgressCallback, ProgressUpdate, RuntimeOptions, TelegramAdapter,
+    WorkspaceCheckpointStore, context::ExecutionContext, model::ModelRoute,
 };
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::*;
-use crate::memory::{promote_verified_task, PromotionContext, WorkspaceMemory};
+use crate::memory::{PromotionContext, WorkspaceMemory, promote_verified_task};
 use crate::progress::LiveProgress;
 use crate::run_setup::{
-    build_agent, prepare_run_context, prepare_workspace_memory, PreparedRunContext,
+    PreparedRunContext, build_agent, prepare_run_context, prepare_workspace_memory,
 };
 use crate::telegram::approval::{
     approval_reply_markup, format_approval_resolution, parse_approval_callback_data,
 };
-use crate::telegram::history::{persist_visible_exchange_to_store, ChatHistoryStore};
+use crate::telegram::history::{ChatHistoryStore, persist_visible_exchange_to_store};
 
 mod approval;
 pub(crate) mod history;
@@ -104,6 +104,10 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
             Some(&["message", "callback_query"]),
         ) {
             Ok(updates) => {
+                debug!(
+                    "get_updates call succeeded, returned {} updates",
+                    updates.len()
+                );
                 if polling_retries > 0 {
                     info!(
                         "telegram polling recovered after {} retries",
@@ -159,7 +163,7 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                             Ok(entry) => {
                                 let reply = format_approval_resolution(&entry, approve);
                                 if let Err(err) =
-                                    adapter.answer_callback_query(&callback.id, Some(&reply), true)
+                                    adapter.answer_callback_query(&callback.id, Some(&reply), false)
                                 {
                                     warn!("failed to answer callback query: {}", err);
                                 }
@@ -215,6 +219,7 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                         continue;
                     }
 
+                    debug!("Processing message: chat_id={}, text={:?}", chat_id, text);
                     info!("received from chat {}: {}", chat_id, text);
 
                     if text == "/start" || text == "/help" {
@@ -816,7 +821,7 @@ fn current_model_label_for_help(
 mod tests {
     use super::history::persist_agent_history_to_store;
     use super::*;
-    use crate::memory::procedures::{save_procedure, ProcedureDraft};
+    use crate::memory::procedures::{ProcedureDraft, save_procedure};
     use crate::memory::{MEMORY_PROCEDURES_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR};
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
@@ -879,11 +884,13 @@ mod tests {
 
         assert!(manager.stop_chat(42));
         assert!(cancel_token.is_cancelled());
-        assert!(updates
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|update| update == &ProgressUpdate::stopping()));
+        assert!(
+            updates
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|update| update == &ProgressUpdate::stopping())
+        );
     }
 
     #[test]
@@ -1077,8 +1084,8 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_context_retrieves_targeted_transcript_snippet_instead_of_restoring_whole_history(
-    ) {
+    fn test_memory_context_retrieves_targeted_transcript_snippet_instead_of_restoring_whole_history()
+     {
         let workspace = TempDir::new().unwrap();
         let chat_id = 4242;
         let original_manager = test_manager(workspace.path().to_path_buf());
@@ -1106,12 +1113,14 @@ mod tests {
 
         assert!(memory_context.contains("maple comet"));
         assert!(!memory_context.contains("cedar echo"));
-        assert!(workspace
-            .path()
-            .join(".topagent")
-            .join("telegram-history")
-            .join("chat-4242.json")
-            .is_file());
+        assert!(
+            workspace
+                .path()
+                .join(".topagent")
+                .join("telegram-history")
+                .join("chat-4242.json")
+                .is_file()
+        );
 
         #[cfg(unix)]
         {

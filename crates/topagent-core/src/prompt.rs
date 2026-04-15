@@ -289,6 +289,9 @@ All file paths are relative to this workspace root.\n\n",
         prompt.push_str(
             "- Bash commands run in a sandbox with no outbound network; do not use curl, wget, or similar fetch commands.\n\n",
         );
+        prompt.push_str(
+            "- If the workspace is empty and you need files to work on, use `git clone <repo-url>` to clone the repository into the workspace. This is a mutation that requires operator approval.\n\n",
+        );
     }
 
     fn render_mutation_section(&self, prompt: &mut String) {
@@ -462,7 +465,7 @@ mod tests {
                 active_files: vec!["src/lib.rs".to_string()],
                 proof_of_work_anchors: vec!["verification: cargo test --lib (exit 0)".to_string()],
                 trust_notes: vec![
-                    "Low-trust content is active in this run: prior transcript.".to_string()
+                    "Low-trust content is active in this run: prior transcript.".to_string(),
                 ],
                 hook_notes: vec!["[fmt] run cargo fmt after editing Rust files".to_string()],
                 memory_context_loaded: true,
