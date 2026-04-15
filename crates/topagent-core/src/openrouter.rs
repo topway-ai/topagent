@@ -375,7 +375,7 @@ mod tests {
         let request = provider.build_request(&messages, "test-model");
 
         let tools = request.tools.unwrap();
-        assert_eq!(tools.len(), 9);
+        assert_eq!(tools.len(), 10);
         let names: Vec<_> = tools.iter().map(|t| t.function.name.as_str()).collect();
         assert_eq!(
             names,
@@ -388,7 +388,8 @@ mod tests {
                 "git_diff",
                 "git_branch",
                 "git_add",
-                "git_commit"
+                "git_commit",
+                "git_clone"
             ]
         );
     }
