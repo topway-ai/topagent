@@ -233,3 +233,100 @@ fn test_format_delivery_summary_inspect_only_returns_none() {
 
     assert!(result.format_delivery_summary().is_none());
 }
+
+#[test]
+fn test_task_result_verification_commands_accessible() {
+    let cmd = VerificationCommand {
+        command: "cargo test".to_string(),
+        output: "ok".to_string(),
+        exit_code: 0,
+        succeeded: true,
+    };
+    let result = TaskResult::new("Done".to_string()).with_verification_command(cmd);
+
+    let vcs = result.verification_commands();
+    assert_eq!(vcs.len(), 1);
+    assert_eq!(vcs[0].command, "cargo test");
+    assert!(result.final_verification_passed());
+}
+
+#[test]
+fn test_task_result_verification_skip_reason_accessible() {
+    let result = TaskResult::new("Done".to_string())
+        .with_verification_skip_reason("no obvious verification command available".to_string());
+
+    assert_eq!(
+        result.verification_skip_reason(),
+        Some("no obvious verification command available")
+    );
+}
+
+#[test]
+fn test_task_result_delivery_outcome_with_verification_passed() {
+    let cmd = VerificationCommand {
+        command: "cargo test".to_string(),
+        output: "ok".to_string(),
+        exit_code: 0,
+        succeeded: true,
+    };
+    let result = TaskResult::new("Done".to_string())
+        .with_files_changed(vec!["src/main.rs".to_string()])
+        .with_verification_command(cmd)
+        .with_delivery_outcome(DeliveryOutcome::CodeChangingVerified);
+
+    assert!(result.has_files_changed());
+    assert!(result.final_verification_passed());
+    assert_eq!(
+        result.delivery_outcome(),
+        DeliveryOutcome::CodeChangingVerified
+    );
+}
+
+#[test]
+fn test_task_result_delivery_outcome_with_verification_failed() {
+    let cmd = VerificationCommand {
+        command: "cargo test".to_string(),
+        output: "FAILED".to_string(),
+        exit_code: 1,
+        succeeded: false,
+    };
+    let result = TaskResult::new("Done".to_string())
+        .with_files_changed(vec!["src/main.rs".to_string()])
+        .with_verification_command(cmd)
+        .with_delivery_outcome(DeliveryOutcome::CodeChangingFailed);
+
+    assert!(result.has_files_changed());
+    assert!(!result.final_verification_passed());
+    assert_eq!(
+        result.delivery_outcome(),
+        DeliveryOutcome::CodeChangingFailed
+    );
+}
+
+#[test]
+fn test_task_result_delivery_outcome_no_files_no_verification() {
+    let result = TaskResult::new("Done".to_string()).with_delivery_outcome(DeliveryOutcome::NoOp);
+
+    assert!(!result.has_files_changed());
+    assert!(result.verification_commands().is_empty());
+    assert_eq!(result.delivery_outcome(), DeliveryOutcome::NoOp);
+}
+
+#[test]
+fn test_task_result_delivery_outcome_unverified_with_skip_reason() {
+    let result = TaskResult::new("Done".to_string())
+        .with_files_changed(vec!["src/main.rs".to_string()])
+        .with_delivery_outcome(DeliveryOutcome::CodeChangingUnverified)
+        .with_verification_skip_reason("no obvious verification command available".to_string());
+
+    assert!(result.has_files_changed());
+    assert!(result.verification_commands().is_empty());
+    assert_eq!(
+        result.verification_skip_reason(),
+        Some("no obvious verification command available")
+    );
+    assert_eq!(
+        result.delivery_outcome(),
+        DeliveryOutcome::CodeChangingUnverified
+    );
+}
