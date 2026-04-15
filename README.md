@@ -78,6 +78,9 @@ TopAgent also keeps a narrow trust boundary for external content:
 | `/start` | Show configuration and help |
 | `/help` | Same as /start |
 | `/stop` | Cancel the currently running task |
+| `/approvals` | List pending approvals for this chat |
+| `/approve <id>` | Approve a pending action |
+| `/deny <id>` | Deny a pending action |
 | `/reset` | Clear this chat's saved transcript |
 
 ### Service management
@@ -116,7 +119,7 @@ See [docs/operations.md](docs/operations.md) for full operational details.
 
 | Flag | Default | Description |
 |-----------------------|----------------|------------------------------------|
-| `--api-key` | `$OPENROUTER_API_KEY` | OpenRouter API key (or use `--opencode-api-key` for Opencode) |
+| `--api-key` | `$OPENROUTER_API_KEY` | API key for the selected provider (or use `--opencode-api-key` for Opencode) |
 | `--opencode-api-key` | `$OPENCODE_API_KEY` | Opencode API key |
 | `--model` | `minimax/minimax-m2.7` | Model identifier (auto-detects provider from model ID) |
 | `--workspace` | current directory (one-shot) or auto-created (install) | Workspace path |
