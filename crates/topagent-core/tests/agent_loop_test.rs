@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use tempfile::TempDir;
 use topagent_core::{
-    context::ExecutionContext,
-    tool_genesis::{ToolGenesis, VerificationSpec},
-    tools::{BashTool, EditTool, GitDiffTool, ReadTool, Tool, WriteTool},
     Agent, CancellationToken, Content, DeliveryOutcome, Error, ExecutionStage, Message, ModelRoute,
     ProgressKind, ProgressUpdate, Provider, ProviderResponse, Role, RuntimeOptions, TaskResult,
     ToolCallEntry, ToolSpec, WorkspaceCheckpointStore,
+    context::ExecutionContext,
+    tool_genesis::{ToolGenesis, VerificationSpec},
+    tools::{BashTool, EditTool, GitDiffTool, ReadTool, Tool, WriteTool},
 };
 
 fn make_test_context() -> (ExecutionContext, TempDir) {
@@ -337,9 +337,11 @@ fn test_risky_bash_emits_checkpoint_progress_update() {
         u.message
             .contains("Checkpointed workspace before risky shell command")
     }));
-    assert!(updates
-        .iter()
-        .any(|u| u.message.contains("echo hello > notes.txt")));
+    assert!(
+        updates
+            .iter()
+            .any(|u| u.message.contains("echo hello > notes.txt"))
+    );
 }
 
 #[test]
@@ -479,12 +481,16 @@ fn test_agent_surfaces_progress_for_tool_activity_and_completion() {
 
     let updates = updates.lock().unwrap();
     assert!(updates.iter().any(|u| u.kind == ProgressKind::Received));
-    assert!(updates
-        .iter()
-        .any(|u| u.message.contains("Waiting for model response")));
-    assert!(updates
-        .iter()
-        .any(|u| u.message.contains("Running tool: bash")));
+    assert!(
+        updates
+            .iter()
+            .any(|u| u.message.contains("Waiting for model response"))
+    );
+    assert!(
+        updates
+            .iter()
+            .any(|u| u.message.contains("Running tool: bash"))
+    );
     assert!(updates.iter().any(|u| u.kind == ProgressKind::Completed));
 }
 
@@ -508,12 +514,16 @@ fn test_agent_surfaces_changed_file_progress_after_write() {
     assert!(result.is_ok());
 
     let updates = updates.lock().unwrap();
-    assert!(updates
-        .iter()
-        .any(|u| u.message.contains("Editing file: note.txt")));
-    assert!(updates
-        .iter()
-        .any(|u| u.message.contains("Changed file: note.txt")));
+    assert!(
+        updates
+            .iter()
+            .any(|u| u.message.contains("Editing file: note.txt"))
+    );
+    assert!(
+        updates
+            .iter()
+            .any(|u| u.message.contains("Changed file: note.txt"))
+    );
 }
 
 #[test]
@@ -561,9 +571,11 @@ fn test_agent_surfaces_retry_progress() {
     assert!(result.is_ok());
 
     let updates = updates.lock().unwrap();
-    assert!(updates
-        .iter()
-        .any(|u| u.kind == ProgressKind::Retrying && u.message.contains("retrying (1/3)")));
+    assert!(
+        updates
+            .iter()
+            .any(|u| u.kind == ProgressKind::Retrying && u.message.contains("retrying (1/3)"))
+    );
     assert!(updates.iter().any(|u| u.kind == ProgressKind::Completed));
 }
 
@@ -592,12 +604,16 @@ fn test_agent_surfaces_blocked_progress_when_planning_is_required() {
     assert!(result.is_ok());
 
     let updates = updates.lock().unwrap();
-    assert!(updates
-        .iter()
-        .any(|u| u.kind == ProgressKind::Blocked && u.message.contains("planning required")));
-    assert!(updates
-        .iter()
-        .any(|u| u.message.contains("Planning next steps")));
+    assert!(
+        updates
+            .iter()
+            .any(|u| u.kind == ProgressKind::Blocked && u.message.contains("planning required"))
+    );
+    assert!(
+        updates
+            .iter()
+            .any(|u| u.message.contains("Planning next steps"))
+    );
 }
 
 #[test]
@@ -1035,10 +1051,12 @@ fn test_agent_external_tools_file_missing_sandbox_fails() {
     let result = agent.run(&ctx, "test");
 
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("missing field `sandbox`"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("missing field `sandbox`")
+    );
 }
 
 #[test]
@@ -1947,22 +1965,30 @@ fn test_non_trivial_task_can_plan_mutate_verify_and_complete() {
         "planning gate should be cleared after a real plan is created"
     );
     let updates = updates.lock().unwrap();
-    assert!(updates
-        .iter()
-        .any(|u| u.message.contains("Reading file: README.md")));
-    assert!(updates
-        .iter()
-        .any(|u| u.message.contains("Planning next steps")));
-    assert!(updates
-        .iter()
-        .any(|u| u.message.contains("Editing file: README.md")));
+    assert!(
+        updates
+            .iter()
+            .any(|u| u.message.contains("Reading file: README.md"))
+    );
+    assert!(
+        updates
+            .iter()
+            .any(|u| u.message.contains("Planning next steps"))
+    );
+    assert!(
+        updates
+            .iter()
+            .any(|u| u.message.contains("Editing file: README.md"))
+    );
     assert!(updates.iter().any(|u| {
         u.message
             .contains("Running verification: cargo test --help >/dev/null 2>&1")
     }));
-    assert!(updates
-        .iter()
-        .any(|u| u.message.contains("Changed file: README.md")));
+    assert!(
+        updates
+            .iter()
+            .any(|u| u.message.contains("Changed file: README.md"))
+    );
     assert!(updates.iter().any(|u| {
         u.message.contains("Verification")
             && u.message.contains("cargo test --help >/dev/null 2>&1")
@@ -2357,9 +2383,11 @@ fn test_blocked_then_plan_then_complete_has_single_final_completed_state() {
     assert!(result.is_ok());
     let updates = updates.lock().unwrap();
     assert!(updates.iter().any(|u| u.kind == ProgressKind::Blocked));
-    assert!(updates
-        .iter()
-        .any(|u| u.message.contains("Planning next steps")));
+    assert!(
+        updates
+            .iter()
+            .any(|u| u.message.contains("Planning next steps"))
+    );
     let terminal_updates: Vec<_> = updates.iter().filter(|u| u.is_terminal()).collect();
     assert_eq!(
         terminal_updates.len(),
@@ -3494,5 +3522,214 @@ fn test_llm_plan_generation_produces_concrete_plan() {
             .any(|d| d.contains("config") || d.contains("parser")),
         "plan should contain LLM-generated steps, not generic fallback: {:?}",
         items
+    );
+}
+
+#[test]
+fn test_final_output_contains_delivery_summary_for_verified_run() {
+    let (ctx, _temp) = make_test_context();
+    let src_dir = ctx.resolve_path("src").unwrap();
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(ctx.resolve_path("src/main.rs").unwrap(), "fn main() {}").unwrap();
+
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "src/main.rs", "content": "fn main() { println!(\"hello\"); }"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "2".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "rustc --version >/dev/null 2>&1"}),
+        },
+        ProviderResponse::Message(Message::assistant("Done".to_string())),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "add a hello world to main.rs and verify it compiles");
+    assert!(result.is_ok());
+    let output = result.unwrap();
+
+    assert!(
+        output.contains("Delivery Summary"),
+        "verified run should have delivery summary: {}",
+        output
+    );
+    assert!(
+        output.contains("Verification Status"),
+        "verified run should show verification status: {}",
+        output
+    );
+    assert!(
+        output.contains("src/main.rs"),
+        "verified run should list changed file: {}",
+        output
+    );
+}
+
+#[test]
+fn test_final_output_contains_unverified_status_with_reason() {
+    let (ctx, _temp) = make_test_context();
+    let src_dir = ctx.resolve_path("src").unwrap();
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(ctx.resolve_path("src/lib.rs").unwrap(), "pub fn foo() {}").unwrap();
+
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "src/lib.rs", "content": "pub fn bar() {}"}),
+        },
+        ProviderResponse::Message(Message::assistant("Done".to_string())),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "add function bar to lib.rs");
+    assert!(result.is_ok());
+    let output = result.unwrap();
+
+    assert!(
+        output.contains("Delivery Summary"),
+        "code-changing run should have delivery summary: {}",
+        output
+    );
+    assert!(
+        output.contains("Files Touched"),
+        "code-changing run should show files touched: {}",
+        output
+    );
+}
+
+#[test]
+fn test_final_output_contains_failed_verification_explicitly() {
+    let (ctx, _temp) = make_test_context();
+    let src_dir = ctx.resolve_path("src").unwrap();
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(ctx.resolve_path("src/main.rs").unwrap(), "fn main()").unwrap();
+
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "src/main.rs", "content": "syntax error here"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "2".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "rustc src/main.rs 2>&1 || true"}),
+        },
+        ProviderResponse::Message(Message::assistant("Done".to_string())),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "add code to main.rs and verify it");
+    assert!(result.is_ok());
+    let output = result.unwrap();
+
+    assert!(
+        output.contains("Delivery Summary"),
+        "failed verification run should have delivery summary: {}",
+        output
+    );
+    assert!(
+        output.contains("FAIL") || output.contains("❌"),
+        "failed verification should show failure: {}",
+        output
+    );
+}
+
+#[test]
+fn test_analysis_only_run_stays_lightweight_no_delivery_summary() {
+    let (ctx, _temp) = make_test_context();
+    std::fs::write(ctx.resolve_path("README.md").unwrap(), "# Project").unwrap();
+
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path": "README.md"}),
+        },
+        ProviderResponse::Message(Message::assistant(
+            "This is a README for a Rust project.".to_string(),
+        )),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "analyze the README");
+    assert!(result.is_ok());
+    let output = result.unwrap();
+
+    assert!(
+        !output.contains("Delivery Summary"),
+        "analysis-only run should not have delivery summary: {}",
+        output
+    );
+    assert!(
+        !output.contains("Files Touched"),
+        "analysis-only run should not show files touched: {}",
+        output
+    );
+}
+
+#[test]
+fn test_no_op_run_stays_lightweight_no_delivery_summary() {
+    let (ctx, _temp) = make_test_context();
+
+    let provider = topagent_core::ScriptedProvider::new(vec![ProviderResponse::Message(
+        Message::assistant("The codebase looks fine as is.".to_string()),
+    )]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "check if there's anything to do");
+    assert!(result.is_ok());
+    let output = result.unwrap();
+
+    assert!(
+        !output.contains("Delivery Summary"),
+        "no-op run should not have delivery summary: {}",
+        output
+    );
+    assert!(
+        !output.contains("Files Touched"),
+        "no-op run should not show files touched: {}",
+        output
+    );
+}
+
+#[test]
+fn test_verified_run_output_compact_no_full_log_dump() {
+    let (ctx, _temp) = make_test_context();
+    let src_dir = ctx.resolve_path("src").unwrap();
+    std::fs::create_dir_all(&src_dir).unwrap();
+    std::fs::write(ctx.resolve_path("src/lib.rs").unwrap(), "pub fn test() {}").unwrap();
+
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "src/lib.rs", "content": "pub fn updated() {}"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "2".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "echo 'test output'"}),
+        },
+        ProviderResponse::Message(Message::assistant("Done".to_string())),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "update lib.rs and verify");
+    assert!(result.is_ok());
+    let output = result.unwrap();
+
+    assert!(
+        output.contains("Delivery Summary"),
+        "verified run should have delivery summary"
+    );
+    assert!(
+        output.len() < 5000,
+        "output should be compact, not a log dump. Got {} chars",
+        output.len()
     );
 }

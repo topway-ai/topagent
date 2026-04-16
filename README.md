@@ -177,6 +177,17 @@ Saved trajectories now include provenance labels from the run. A trajectory can 
 - One workspace per process
 - Linux only (systemd required for background service)
 
+## Verified delivery
+
+Code-changing runs end with a structured delivery summary that explicitly surfaces verification status:
+
+- **Verified runs**: Summary shows files touched, verification commands run, and pass/fail status with exit codes
+- **Unverified runs**: Summary shows explicit "Not verified" status and reason (e.g., "no files changed" or "verification not attempted")
+- **Failed verification**: Summary shows explicit failure status with the failing command and exit code
+- **Analysis-only and no-op**: No delivery summary attached — output stays lightweight
+
+Verification may be attempted as a bounded best-effort follow-through when files changed but no verification was run. The operator sees verification status explicitly rather than behind optimistic success wording.
+
 ## Documentation
 
 - [Overview](docs/overview.md) -- what TopAgent is, design goals, capabilities, limitations

@@ -477,3 +477,18 @@ sudo apt install -y bubblewrap
 ```
 
 The agent works without bubblewrap, but sandboxing provides an additional safety layer.
+
+## Verified delivery
+
+Code-changing runs end with a structured delivery summary that explicitly surfaces verification status:
+
+| Outcome | What the operator sees |
+|---------|------------------------|
+| Verified | Files touched + verification commands with pass/fail status |
+| Unverified | Explicit "Not verified" status with reason |
+| Failed verification | Explicit failure status with command and exit code |
+| Analysis-only / No-op | No delivery summary attached |
+
+**Verification follow-through**: When files are changed but no verification command was run, TopAgent may attempt a bounded best-effort verification automatically. This gives operators a signal without requiring manual verification commands.
+
+**Why explicit status matters**: The delivery summary uses truthful wording rather than optimistic success claims. Failed verification is not hidden behind "task completed" — it's explicitly marked as failed so the operator knows to investigate before relying on the changes.

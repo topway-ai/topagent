@@ -90,8 +90,9 @@ CLI parses args
            - generated tools loaded from workspace inventory are revalidated on use instead of paying for deep health scans on every startup
         5. if a fetch-like shell command introduced low-trust external content, keep that influence in run state
         5. repeat until text response or max steps
-     -> append proof-of-work (changed files, diff summary, trust notes when low-trust content shaped the run)
-  -> if the task was strongly verified, run the workspace promotion policy:
+-> append proof-of-work (changed files, diff summary, trust notes when low-trust content shaped the run)
+      -> for PlanAndExecute mode with files changed: append structured delivery summary with explicit verification status
+   -> if the task was strongly verified, run the workspace promotion policy:
      - save nothing, or
      - save/update a lesson, or
      - save/update a reusable procedure, or
