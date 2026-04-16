@@ -302,11 +302,13 @@ impl TaskResult {
 
         if !self.evidence.verification_commands_run.is_empty() {
             summary.push_str("### Verification Status\n\n");
-            let last = self.evidence.verification_commands_run.last().unwrap();
-            if last.exit_code == 0 {
-                summary.push_str("- ✅ All checks passed\n");
-            } else {
-                summary.push_str("- ❌ Verification failed\n");
+            for vc in &self.evidence.verification_commands_run {
+                let status = if vc.exit_code == 0 {
+                    "✅ PASS"
+                } else {
+                    "❌ FAIL"
+                };
+                summary.push_str(&format!("- `{}` → {}\n", vc.command, status));
             }
             summary.push('\n');
         } else if !self.evidence.files_changed.is_empty() {

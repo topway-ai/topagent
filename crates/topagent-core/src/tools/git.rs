@@ -224,7 +224,7 @@ impl crate::tools::Tool for GitCloneTool {
                 .url
                 .trim_end_matches(".git")
                 .split('/')
-                .last()
+                .next_back()
                 .unwrap_or("repo");
             ctx.exec.workspace_root.join(repo_name)
         };
@@ -245,7 +245,7 @@ impl crate::tools::Tool for GitCloneTool {
             .output()
             .map_err(|e| Error::ToolFailed(format!("failed to execute git clone: {}", e)))?;
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let _stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
 
         if !output.status.success() {

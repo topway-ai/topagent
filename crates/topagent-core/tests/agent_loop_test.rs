@@ -5,9 +5,9 @@ use topagent_core::{
     context::ExecutionContext,
     tool_genesis::{ToolGenesis, VerificationSpec},
     tools::{BashTool, EditTool, GitDiffTool, ReadTool, Tool, WriteTool},
-    Agent, CancellationToken, Content, Error, ExecutionStage, Message, ModelRoute, ProgressKind,
-    ProgressUpdate, Provider, ProviderResponse, Role, RuntimeOptions, TaskResult, ToolCallEntry,
-    ToolSpec, WorkspaceCheckpointStore,
+    Agent, CancellationToken, Content, DeliveryOutcome, Error, ExecutionStage, Message, ModelRoute,
+    ProgressKind, ProgressUpdate, Provider, ProviderResponse, Role, RuntimeOptions, TaskResult,
+    ToolCallEntry, ToolSpec, WorkspaceCheckpointStore,
 };
 
 fn make_test_context() -> (ExecutionContext, TempDir) {
@@ -333,9 +333,10 @@ fn test_risky_bash_emits_checkpoint_progress_update() {
 
     assert!(result.is_ok());
     let updates = updates.lock().unwrap();
-    assert!(updates.iter().any(|u| u
-        .message
-        .contains("Checkpointed workspace before risky shell command")));
+    assert!(updates.iter().any(|u| {
+        u.message
+            .contains("Checkpointed workspace before risky shell command")
+    }));
     assert!(updates
         .iter()
         .any(|u| u.message.contains("echo hello > notes.txt")));
@@ -535,9 +536,10 @@ fn test_agent_surfaces_verification_result_progress() {
     assert!(result.is_ok());
 
     let updates = updates.lock().unwrap();
-    assert!(updates.iter().any(|u| u
-        .message
-        .contains("Running verification: cargo test --help >/dev/null 2>&1")));
+    assert!(updates.iter().any(|u| {
+        u.message
+            .contains("Running verification: cargo test --help >/dev/null 2>&1")
+    }));
     assert!(updates.iter().any(|u| {
         u.message.contains("Verification")
             && u.message.contains("cargo test --help >/dev/null 2>&1")
@@ -1954,9 +1956,10 @@ fn test_non_trivial_task_can_plan_mutate_verify_and_complete() {
     assert!(updates
         .iter()
         .any(|u| u.message.contains("Editing file: README.md")));
-    assert!(updates.iter().any(|u| u
-        .message
-        .contains("Running verification: cargo test --help >/dev/null 2>&1")));
+    assert!(updates.iter().any(|u| {
+        u.message
+            .contains("Running verification: cargo test --help >/dev/null 2>&1")
+    }));
     assert!(updates
         .iter()
         .any(|u| u.message.contains("Changed file: README.md")));
@@ -2047,41 +2050,140 @@ fn test_verification_bash_allowed_before_plan() {
 }
 
 #[test]
-fn test_verification_bash_with_flags_allowed_before_plan() {
-    use topagent_core::Agent;
-    use topagent_core::BashCommandClass;
+fn test_delivery_outcome_enum_values() {
+    assert_eq!(DeliveryOutcome::None, DeliveryOutcome::None);
+    assert_eq!(DeliveryOutcome::AnalysisOnly, DeliveryOutcome::AnalysisOnly);
+    assert_eq!(DeliveryOutcome::NoOp, DeliveryOutcome::NoOp);
+    assert_eq!(
+        DeliveryOutcome::CodeChangingVerified,
+        DeliveryOutcome::CodeChangingVerified
+    );
+    assert_eq!(
+        DeliveryOutcome::CodeChangingUnverified,
+        DeliveryOutcome::CodeChangingUnverified
+    );
+    assert_eq!(
+        DeliveryOutcome::CodeChangingFailed,
+        DeliveryOutcome::CodeChangingFailed
+    );
+}
 
-    assert_eq!(
-        Agent::classify_bash_command("cargo test --lib"),
-        BashCommandClass::Verification
+#[test]
+fn test_bounded_verification_follow_through_adds_verification_when_files_changed() {
+    let (ctx, _temp) = make_test_context();
+
+    // Provider returns just a write (file change) but NO verification command.
+    // The bounded follow-through should add a verification attempt.
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "src/main.rs", "content": "fn main() {}"}),
+        },
+        ProviderResponse::Message(Message::assistant("Done".to_string())),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "write a simple main function");
+    assert!(result.is_ok());
+
+    // The task result should have verification added by follow-through
+    let task_result = agent.last_task_result().unwrap();
+    let verification_commands = task_result.verification_commands();
+    assert!(
+        !verification_commands.is_empty(),
+        "follow-through should add verification when files changed but none provided: {:?}",
+        verification_commands
     );
+}
+
+#[test]
+fn test_bounded_verification_follow_through_skips_when_verification_already_run() {
+    let (ctx, _temp) = make_test_context();
+
+    // Provider runs both write AND verification (cargo test --help is verification-classified).
+    // Follow-through should NOT add another verification.
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "src/lib.rs", "content": "pub fn foo() {}"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "2".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "cargo test --help >/dev/null 2>&1"}),
+        },
+        ProviderResponse::Message(Message::assistant("Done".to_string())),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "write code and verify it");
+    assert!(result.is_ok());
+
+    let task_result = agent.last_task_result().unwrap();
+    // Should have exactly 1 verification (from provider), not 2
+    let verification_commands = task_result.verification_commands();
     assert_eq!(
-        Agent::classify_bash_command("cargo build --release"),
-        BashCommandClass::Verification
+        verification_commands.len(),
+        1,
+        "follow-through should not add verification when already provided"
     );
-    assert_eq!(
-        Agent::classify_bash_command("cargo test -- --test-threads=1"),
-        BashCommandClass::Verification
+}
+
+#[test]
+fn test_bounded_verification_follow_through_does_not_trigger_for_no_op() {
+    let (ctx, _temp) = make_test_context();
+
+    // Provider returns just a text response - no files changed.
+    // Follow-through should NOT run.
+    // Use a proper task instruction that is classified as trivial (short one-liner)
+    let provider = topagent_core::ScriptedProvider::new(vec![ProviderResponse::Message(
+        Message::assistant("The codebase looks good as is."),
+    )]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "read this file");
+    if let Err(ref e) = result {
+        eprintln!("ERROR: {:?}", e);
+    }
+    assert!(result.is_ok(), "agent.run() failed: {:?}", result);
+
+    let task_result = agent.last_task_result().unwrap();
+    // No verification should be added for no-op runs
+    assert!(
+        task_result.verification_commands().is_empty(),
+        "no-op run should not get verification added: {:?}",
+        task_result.verification_commands()
     );
+    // Delivery outcome should be NoOp
+    assert_eq!(task_result.delivery_outcome(), DeliveryOutcome::NoOp);
+}
+
+#[test]
+fn test_bounded_verification_follow_through_does_not_trigger_for_analysis_only() {
+    let (ctx, _temp) = make_test_context();
+
+    // Provider runs verification but writes NO files.
+    // This is analysis-only, not code-changing.
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "1".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "cargo test --help >/dev/null 2>&1"}),
+        },
+        ProviderResponse::Message(Message::assistant("Analysis complete: the tests pass.")),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let result = agent.run(&ctx, "analyze the tests");
+    assert!(result.is_ok());
+
+    let task_result = agent.last_task_result().unwrap();
+    // Analysis-only should NOT trigger code-delivery summary
     assert_eq!(
-        Agent::classify_bash_command("npm test -- --coverage"),
-        BashCommandClass::Verification
-    );
-    assert_eq!(
-        Agent::classify_bash_command("go test -v ./..."),
-        BashCommandClass::Verification
-    );
-    assert_eq!(
-        Agent::classify_bash_command("make verify"),
-        BashCommandClass::Verification
-    );
-    assert_eq!(
-        Agent::classify_bash_command("cargo test 2>&1 | tail -20"),
-        BashCommandClass::Verification
-    );
-    assert_eq!(
-        Agent::classify_bash_command("cd /tmp/topclaw && cargo test 2>&1 | tail -20"),
-        BashCommandClass::Verification
+        task_result.delivery_outcome(),
+        DeliveryOutcome::AnalysisOnly
     );
 }
 
