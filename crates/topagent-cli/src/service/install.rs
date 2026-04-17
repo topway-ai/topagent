@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use dialoguer::Select;
 use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
@@ -462,54 +463,49 @@ fn read_install_input_line<R: BufRead>(input: &mut R) -> Result<String> {
 fn prompt_for_install_provider(
     existing_provider: Option<SelectedProvider>,
 ) -> Result<SelectedProvider> {
-    let stdin = io::stdin();
-    let mut input = stdin.lock();
+    let providers = [SelectedProvider::OpenRouter, SelectedProvider::Opencode];
+    let labels: Vec<&str> = providers.iter().map(|p| p.label()).collect();
+    let default_index = existing_provider
+        .and_then(|ep| providers.iter().position(|p| *p == ep))
+        .unwrap_or(0);
 
-    loop {
-        if existing_provider.is_some() {
-            print!("Provider [OpenRouter/Opencode, press Enter to keep current]: ");
-        } else {
-            print!("Provider (OpenRouter/Opencode): ");
-        }
-        io::stdout().flush().context("failed to flush stdout")?;
+    let selection = Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
+        .with_prompt("Provider")
+        .items(&labels)
+        .default(default_index)
+        .interact()
+        .context("provider selection requires an interactive terminal; re-run `topagent install` in a terminal")?;
 
-        let mut line = String::new();
-        let read = input
-            .read_line(&mut line)
-            .context("failed to read installer input")?;
-        if read == 0 {
-            return Err(anyhow::anyhow!(
-                "Installer input ended unexpectedly. Re-run `topagent install` in an interactive shell."
-            ));
-        }
-
-        let candidate = line.trim();
-        let value = if candidate.is_empty() {
-            existing_provider
-        } else {
-            SelectedProvider::from_str(candidate)
-        };
-
-        if let Some(provider) = value {
-            return Ok(provider);
-        }
-        println!("Enter 'OpenRouter' or 'Opencode'.");
-    }
+    Ok(providers[selection])
 }
 
 fn prompt_for_install_username(existing_username: Option<&str>) -> Result<Option<String>> {
     let stdin = io::stdin();
     let mut input = stdin.lock();
+    let mut output = io::stdout();
+    prompt_for_install_username_with_io(&mut input, &mut output, existing_username)
+}
 
+fn prompt_for_install_username_with_io<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    existing_username: Option<&str>,
+) -> Result<Option<String>> {
     loop {
         if existing_username.is_some() {
-            print!("Allowed Telegram username (optional, press Enter to keep current): ");
+            write!(
+                output,
+                "Allowed Telegram username (optional, press Enter to keep current): "
+            )
+            .context("failed to write installer output")?;
         } else {
-            print!(
+            write!(
+                output,
                 "Allowed Telegram username for direct messages (optional, press Enter to skip): "
-            );
+            )
+            .context("failed to write installer output")?;
         }
-        io::stdout().flush().context("failed to flush stdout")?;
+        output.flush().context("failed to flush output")?;
 
         let mut line = String::new();
         let read = input
@@ -521,19 +517,25 @@ fn prompt_for_install_username(existing_username: Option<&str>) -> Result<Option
 
         let candidate = line.trim();
         if candidate.is_empty() {
-            return Ok(existing_username.map(String::from));
+            return Ok(existing_username.map(|s| s.trim_start_matches('@').to_lowercase()));
         }
 
-        if candidate.starts_with('@') {
-            return Ok(Some(candidate[1..].to_string()));
-        }
-
-        if candidate.contains(' ') {
-            println!("Username cannot contain spaces.");
+        // Strip all leading '@' characters and store lowercase; Telegram usernames
+        // are case-insensitive and users commonly prefix with '@'.
+        let normalized = candidate.trim_start_matches('@').to_lowercase();
+        if normalized.is_empty() {
+            writeln!(output, "Username cannot be empty.")
+                .context("failed to write installer output")?;
             continue;
         }
 
-        return Ok(Some(candidate.to_string()));
+        if normalized.contains(' ') {
+            writeln!(output, "Username cannot contain spaces.")
+                .context("failed to write installer output")?;
+            continue;
+        }
+
+        return Ok(Some(normalized));
     }
 }
 
@@ -541,6 +543,54 @@ fn prompt_for_install_username(existing_username: Option<&str>) -> Result<Option
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn test_prompt_for_install_username_strips_leading_at_and_lowercases() {
+        // With @ prefix
+        let mut input = Cursor::new("@MyUser\n");
+        let mut output = Vec::new();
+        let result =
+            prompt_for_install_username_with_io(&mut input, &mut output, None).unwrap();
+        assert_eq!(result, Some("myuser".to_string()));
+
+        // Without @ prefix
+        let mut input2 = Cursor::new("MyUser\n");
+        let mut output2 = Vec::new();
+        let result2 =
+            prompt_for_install_username_with_io(&mut input2, &mut output2, None).unwrap();
+        assert_eq!(result2, Some("myuser".to_string()));
+
+        // Multiple @ prefixes
+        let mut input3 = Cursor::new("@@MyUser\n");
+        let mut output3 = Vec::new();
+        let result3 =
+            prompt_for_install_username_with_io(&mut input3, &mut output3, None).unwrap();
+        assert_eq!(result3, Some("myuser".to_string()));
+    }
+
+    #[test]
+    fn test_prompt_for_install_username_rejects_only_at_sign() {
+        let mut input = Cursor::new("@\n");
+        let mut output = Vec::new();
+        let result =
+            prompt_for_install_username_with_io(&mut input, &mut output, None).unwrap();
+        // "@" alone normalizes to empty, loop should re-prompt; with only one line of
+        // input the function will hit EOF and return Ok(None)
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_prompt_for_install_username_keeps_existing_on_empty_input() {
+        let mut input = Cursor::new("\n");
+        let mut output = Vec::new();
+        let result = prompt_for_install_username_with_io(
+            &mut input,
+            &mut output,
+            Some("existinguser"),
+        )
+        .unwrap();
+        assert_eq!(result, Some("existinguser".to_string()));
+    }
 
     #[test]
     fn test_prompt_for_install_model_custom_entry_path_rejects_empty_input() {

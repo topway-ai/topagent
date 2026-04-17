@@ -487,7 +487,8 @@ impl ChatSessionManager {
             }
         } else if let Some(ref allowed_username) = self.allowed_dm_username {
             if let Some(sender_username) = sender_username {
-                if sender_username == allowed_username {
+                // Telegram usernames are case-insensitive
+                if sender_username.eq_ignore_ascii_case(allowed_username) {
                     DmAdmission::AllowedFirstBinding(sender_chat_id)
                 } else {
                     DmAdmission::Denied
@@ -509,7 +510,7 @@ impl ChatSessionManager {
                     TELEGRAM_BOUND_DM_USER_ID_KEY.to_string(),
                     user_id.to_string(),
                 );
-                if let Some(ref username) = self.allowed_dm_username {
+                if self.allowed_dm_username.is_some() {
                     updated.remove(TELEGRAM_ALLOWED_DM_USERNAME_KEY);
                 }
                 let _ = crate::service::managed_env::write_managed_env_values(env_path, &updated);
@@ -1613,6 +1614,42 @@ mod tests {
 
         assert!(!history_path.exists());
         assert!(!settings_path.exists());
+    }
+
+    #[test]
+    fn test_check_dm_admission_is_case_insensitive() {
+        let workspace = TempDir::new().unwrap();
+        let manager = ChatSessionManager::new(
+            ModelRoute::openrouter("test-model"),
+            "test-model".to_string(),
+            "test-key".to_string(),
+            RuntimeOptions::default(),
+            workspace.path().to_path_buf(),
+            topagent_core::SecretRegistry::new(),
+            Some("someuser".to_string()), // stored lowercase
+            None,
+            None,
+        );
+
+        // Exact match
+        assert!(matches!(
+            (manager.check_dm_admission(42, Some("someuser"))),
+            DmAdmission::AllowedFirstBinding(42)
+        ));
+        // Different case
+        assert!(matches!(
+            (manager.check_dm_admission(42, Some("SomeUser"))),
+            DmAdmission::AllowedFirstBinding(42)
+        ));
+        // All uppercase
+        assert!(matches!(
+            (manager.check_dm_admission(42, Some("SOMEUSER"))),
+            DmAdmission::AllowedFirstBinding(42)
+        ));
+        // Wrong username
+        assert!(matches!((manager.check_dm_admission(42, Some("other"))), DmAdmission::Denied));
+        // No username provided
+        assert!(matches!((manager.check_dm_admission(42, None)), DmAdmission::Denied));
     }
 
     #[test]
