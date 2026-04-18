@@ -377,10 +377,8 @@ fn uninstall_service_setup(remove_binary: bool, purge: bool) -> Result<()> {
                 }
             }
         }
-    } else {
-        if let Some(workspace) = workspace_path {
-            preserved.push(format!("workspace directory preserved: {}", workspace));
-        }
+    } else if let Some(workspace) = workspace_path {
+        preserved.push(format!("workspace directory preserved: {}", workspace));
     }
 
     if remove_binary {

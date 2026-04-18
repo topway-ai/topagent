@@ -54,7 +54,7 @@ Then it:
 - writes a managed config file under `~/.config/topagent/`
 - installs and starts a `topagent-telegram.service` systemd user service
 
-**Telegram access control**: If you enter an allowed username during setup, the bot will only accept direct messages from that user. The first direct message from the allowed username binds and persists the numeric Telegram user ID. After binding, enforcement switches to numeric user ID — so username changes won't break access.
+**Telegram access control**: If you enter an allowed username during setup, the bot will only accept direct messages from that user. The first direct message from the allowed username binds and persists the numeric Telegram user ID. After binding, enforcement switches to numeric user ID — so username changes won't break access. Non-private chats (groups, channels, supergroups) are rejected before any binding side effect, so an allowed username cannot accidentally bind to a group's chat ID.
 
 Then open a private chat with your bot and send a message.
 
@@ -119,7 +119,7 @@ topagent checkpoint restore  # restore the latest checkpoint and clear Telegram 
 topagent uninstall           # remove service, config, and installed binary
 ```
 
-`topagent setup` is the obvious full setup path. `topagent install` remains available as the same command. Re-running setup keeps the same managed config file and restarts the background service with updated values. After setup, use `topagent model set` or `topagent model pick` to change the configured default model without re-running full setup.
+`topagent setup` is the obvious full setup path. `topagent install` remains available as the same command. Re-running setup keeps the same managed config file and restarts the background service with updated values; operator-entered secrets (API keys, bot token, allowed username, bound user ID) are preserved when you accept the existing prompt defaults, and the env file is rewritten in a single atomic emit rather than overwritten twice. After setup, use `topagent model set` or `topagent model pick` to change the configured default model without re-running full setup.
 
 See [docs/operations.md](docs/operations.md) for full operational details.
 

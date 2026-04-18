@@ -59,6 +59,8 @@ Interactive setup that configures and starts the Telegram background service. `t
 - The first direct message from a matching username binds and persists the numeric Telegram user ID
 - After binding, enforcement switches to numeric user ID — so if the user changes their username later, access still works
 - Direct messages from other users are quietly rejected
+- Non-private chats (groups, supergroups, channels) are rejected by the inbound admission gate before any binding lookup runs, so a bot accidentally added to a group cannot bind the allowed username to the group's chat ID
+- The bound numeric user ID is preserved across re-running setup as long as the allowed username is unchanged; clearing the allowed username also clears the persisted binding
 
 Model precedence during install is:
 
@@ -67,7 +69,7 @@ Model precedence during install is:
 3. the previously persisted `TOPAGENT_MODEL`
 4. the built-in TopAgent default model
 
-**Re-running setup** still updates the managed config and explicitly restarts the service with that updated config, but you no longer need to use it just to switch models.
+**Re-running setup** still updates the managed config and explicitly restarts the service with that updated config, but you no longer need to use it just to switch models. The reconfigure path now writes the env file in a single atomic emit (rather than overwriting it twice) and preserves operator-entered secrets — API keys, the bot token, the allowed Telegram username, and the bound numeric user ID — when you accept the existing prompt defaults.
 
 ## Service lifecycle
 

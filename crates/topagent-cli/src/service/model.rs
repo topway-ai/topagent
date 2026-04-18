@@ -14,7 +14,6 @@ use super::install::prompt_for_install_model;
 use super::lifecycle::restart_service_if_installed;
 use super::managed_env::{
     persisted_model_from_env_values, trim_nonempty, write_managed_env_values,
-    OPENROUTER_API_KEY_KEY,
 };
 use super::state::load_control_plane_state;
 

@@ -2,12 +2,12 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use tempfile::TempDir;
 use topagent_core::{
-    Agent, CancellationToken, Content, DeliveryOutcome, Error, ExecutionStage, Message, ModelRoute,
-    ProgressKind, ProgressUpdate, Provider, ProviderResponse, Role, RuntimeOptions, TaskResult,
-    ToolCallEntry, ToolSpec, WorkspaceCheckpointStore,
     context::ExecutionContext,
     tool_genesis::{ToolGenesis, VerificationSpec},
     tools::{BashTool, EditTool, GitDiffTool, ReadTool, Tool, WriteTool},
+    Agent, CancellationToken, Content, DeliveryOutcome, Error, ExecutionStage, Message, ModelRoute,
+    ProgressKind, ProgressUpdate, Provider, ProviderResponse, Role, RuntimeOptions, TaskResult,
+    ToolCallEntry, ToolSpec, WorkspaceCheckpointStore,
 };
 
 fn make_test_context() -> (ExecutionContext, TempDir) {
@@ -337,11 +337,9 @@ fn test_risky_bash_emits_checkpoint_progress_update() {
         u.message
             .contains("Checkpointed workspace before risky shell command")
     }));
-    assert!(
-        updates
-            .iter()
-            .any(|u| u.message.contains("echo hello > notes.txt"))
-    );
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("echo hello > notes.txt")));
 }
 
 #[test]
@@ -481,16 +479,12 @@ fn test_agent_surfaces_progress_for_tool_activity_and_completion() {
 
     let updates = updates.lock().unwrap();
     assert!(updates.iter().any(|u| u.kind == ProgressKind::Received));
-    assert!(
-        updates
-            .iter()
-            .any(|u| u.message.contains("Waiting for model response"))
-    );
-    assert!(
-        updates
-            .iter()
-            .any(|u| u.message.contains("Running tool: bash"))
-    );
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Waiting for model response")));
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Running tool: bash")));
     assert!(updates.iter().any(|u| u.kind == ProgressKind::Completed));
 }
 
@@ -514,16 +508,12 @@ fn test_agent_surfaces_changed_file_progress_after_write() {
     assert!(result.is_ok());
 
     let updates = updates.lock().unwrap();
-    assert!(
-        updates
-            .iter()
-            .any(|u| u.message.contains("Editing file: note.txt"))
-    );
-    assert!(
-        updates
-            .iter()
-            .any(|u| u.message.contains("Changed file: note.txt"))
-    );
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Editing file: note.txt")));
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Changed file: note.txt")));
 }
 
 #[test]
@@ -571,11 +561,9 @@ fn test_agent_surfaces_retry_progress() {
     assert!(result.is_ok());
 
     let updates = updates.lock().unwrap();
-    assert!(
-        updates
-            .iter()
-            .any(|u| u.kind == ProgressKind::Retrying && u.message.contains("retrying (1/3)"))
-    );
+    assert!(updates
+        .iter()
+        .any(|u| u.kind == ProgressKind::Retrying && u.message.contains("retrying (1/3)")));
     assert!(updates.iter().any(|u| u.kind == ProgressKind::Completed));
 }
 
@@ -604,16 +592,12 @@ fn test_agent_surfaces_blocked_progress_when_planning_is_required() {
     assert!(result.is_ok());
 
     let updates = updates.lock().unwrap();
-    assert!(
-        updates
-            .iter()
-            .any(|u| u.kind == ProgressKind::Blocked && u.message.contains("planning required"))
-    );
-    assert!(
-        updates
-            .iter()
-            .any(|u| u.message.contains("Planning next steps"))
-    );
+    assert!(updates
+        .iter()
+        .any(|u| u.kind == ProgressKind::Blocked && u.message.contains("planning required")));
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Planning next steps")));
 }
 
 #[test]
@@ -1051,12 +1035,10 @@ fn test_agent_external_tools_file_missing_sandbox_fails() {
     let result = agent.run(&ctx, "test");
 
     assert!(result.is_err());
-    assert!(
-        result
-            .unwrap_err()
-            .to_string()
-            .contains("missing field `sandbox`")
-    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("missing field `sandbox`"));
 }
 
 #[test]
@@ -1965,30 +1947,22 @@ fn test_non_trivial_task_can_plan_mutate_verify_and_complete() {
         "planning gate should be cleared after a real plan is created"
     );
     let updates = updates.lock().unwrap();
-    assert!(
-        updates
-            .iter()
-            .any(|u| u.message.contains("Reading file: README.md"))
-    );
-    assert!(
-        updates
-            .iter()
-            .any(|u| u.message.contains("Planning next steps"))
-    );
-    assert!(
-        updates
-            .iter()
-            .any(|u| u.message.contains("Editing file: README.md"))
-    );
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Reading file: README.md")));
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Planning next steps")));
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Editing file: README.md")));
     assert!(updates.iter().any(|u| {
         u.message
             .contains("Running verification: cargo test --help >/dev/null 2>&1")
     }));
-    assert!(
-        updates
-            .iter()
-            .any(|u| u.message.contains("Changed file: README.md"))
-    );
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Changed file: README.md")));
     assert!(updates.iter().any(|u| {
         u.message.contains("Verification")
             && u.message.contains("cargo test --help >/dev/null 2>&1")
@@ -2383,11 +2357,9 @@ fn test_blocked_then_plan_then_complete_has_single_final_completed_state() {
     assert!(result.is_ok());
     let updates = updates.lock().unwrap();
     assert!(updates.iter().any(|u| u.kind == ProgressKind::Blocked));
-    assert!(
-        updates
-            .iter()
-            .any(|u| u.message.contains("Planning next steps"))
-    );
+    assert!(updates
+        .iter()
+        .any(|u| u.message.contains("Planning next steps")));
     let terminal_updates: Vec<_> = updates.iter().filter(|u| u.is_terminal()).collect();
     assert_eq!(
         terminal_updates.len(),

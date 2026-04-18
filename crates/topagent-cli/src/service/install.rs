@@ -16,10 +16,8 @@ use super::lifecycle::{
     detect_install_root, ensure_systemd_user_available, install_service_with_config,
     ServiceConfigApplyAction,
 };
-use super::managed_env::{trim_nonempty, OPENROUTER_API_KEY_KEY, TELEGRAM_BOT_TOKEN_KEY};
-use crate::config::{
-    OPENCODE_API_KEY_KEY, TELEGRAM_ALLOWED_DM_USERNAME_KEY, TOPAGENT_PROVIDER_KEY,
-};
+use super::managed_env::trim_nonempty;
+use crate::config::{OPENCODE_API_KEY_KEY, OPENROUTER_API_KEY_KEY, TELEGRAM_BOT_TOKEN_KEY};
 
 const CUSTOM_MODEL_OPTION_LABEL: &str = "Custom model ID (type manually)";
 
@@ -94,7 +92,7 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
     } else {
         Some(prompt_for_install_model(
             selected_provider,
-            api_key.as_deref().or_else(|| opencode_api_key.as_deref()),
+            api_key.as_deref().or(opencode_api_key.as_deref()),
             defaults.model.clone(),
         )?)
     };
@@ -110,6 +108,14 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
     let allowed_username = prompt_for_install_username(defaults.allowed_dm_username.as_deref())?;
 
     let resolved_model = resolve_model_choice(params.model, selected_model, defaults.model.clone());
+    // Preserve the bound DM user id when the operator kept the same allowed
+    // username; otherwise reset binding so Telegram rebinds against the new
+    // admission policy on the next matched message.
+    let preserved_bound_dm_user_id = if allowed_username == defaults.allowed_dm_username {
+        defaults.bound_dm_user_id
+    } else {
+        None
+    };
     let config = TelegramModeConfig {
         token,
         openrouter_api_key: api_key,
@@ -123,21 +129,11 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
             params.generated_tool_authoring,
             &defaults,
         ),
+        selected_provider,
+        allowed_dm_username: allowed_username,
+        bound_dm_user_id: preserved_bound_dm_user_id,
     };
     let service_action = install_service_with_config(&config, &paths)?;
-
-    let mut updated_values = existing_values.clone();
-    updated_values.insert(
-        TOPAGENT_PROVIDER_KEY.to_string(),
-        selected_provider.label().to_string(),
-    );
-    if let Some(ref username) = allowed_username {
-        updated_values.insert(
-            TELEGRAM_ALLOWED_DM_USERNAME_KEY.to_string(),
-            username.clone(),
-        );
-    }
-    super::managed_env::write_managed_env_values(&paths.env_path, &updated_values)?;
 
     println!();
     print_service_installed(
@@ -517,17 +513,14 @@ fn prompt_for_install_username_with_io<R: BufRead, W: Write>(
 
         let candidate = line.trim();
         if candidate.is_empty() {
-            return Ok(existing_username.map(|s| s.trim_start_matches('@').to_lowercase()));
+            return Ok(existing_username.and_then(canonicalize_allowed_username));
         }
 
-        // Strip all leading '@' characters and store lowercase; Telegram usernames
-        // are case-insensitive and users commonly prefix with '@'.
-        let normalized = candidate.trim_start_matches('@').to_lowercase();
-        if normalized.is_empty() {
+        let Some(normalized) = canonicalize_allowed_username(candidate) else {
             writeln!(output, "Username cannot be empty.")
                 .context("failed to write installer output")?;
             continue;
-        }
+        };
 
         if normalized.contains(' ') {
             writeln!(output, "Username cannot contain spaces.")
@@ -549,22 +542,19 @@ mod tests {
         // With @ prefix
         let mut input = Cursor::new("@MyUser\n");
         let mut output = Vec::new();
-        let result =
-            prompt_for_install_username_with_io(&mut input, &mut output, None).unwrap();
+        let result = prompt_for_install_username_with_io(&mut input, &mut output, None).unwrap();
         assert_eq!(result, Some("myuser".to_string()));
 
         // Without @ prefix
         let mut input2 = Cursor::new("MyUser\n");
         let mut output2 = Vec::new();
-        let result2 =
-            prompt_for_install_username_with_io(&mut input2, &mut output2, None).unwrap();
+        let result2 = prompt_for_install_username_with_io(&mut input2, &mut output2, None).unwrap();
         assert_eq!(result2, Some("myuser".to_string()));
 
         // Multiple @ prefixes
         let mut input3 = Cursor::new("@@MyUser\n");
         let mut output3 = Vec::new();
-        let result3 =
-            prompt_for_install_username_with_io(&mut input3, &mut output3, None).unwrap();
+        let result3 = prompt_for_install_username_with_io(&mut input3, &mut output3, None).unwrap();
         assert_eq!(result3, Some("myuser".to_string()));
     }
 
@@ -572,8 +562,7 @@ mod tests {
     fn test_prompt_for_install_username_rejects_only_at_sign() {
         let mut input = Cursor::new("@\n");
         let mut output = Vec::new();
-        let result =
-            prompt_for_install_username_with_io(&mut input, &mut output, None).unwrap();
+        let result = prompt_for_install_username_with_io(&mut input, &mut output, None).unwrap();
         // "@" alone normalizes to empty, loop should re-prompt; with only one line of
         // input the function will hit EOF and return Ok(None)
         assert_eq!(result, None);
@@ -583,12 +572,9 @@ mod tests {
     fn test_prompt_for_install_username_keeps_existing_on_empty_input() {
         let mut input = Cursor::new("\n");
         let mut output = Vec::new();
-        let result = prompt_for_install_username_with_io(
-            &mut input,
-            &mut output,
-            Some("existinguser"),
-        )
-        .unwrap();
+        let result =
+            prompt_for_install_username_with_io(&mut input, &mut output, Some("existinguser"))
+                .unwrap();
         assert_eq!(result, Some("existinguser".to_string()));
     }
 

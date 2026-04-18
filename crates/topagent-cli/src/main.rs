@@ -32,7 +32,8 @@ use tracing_subscriber::EnvFilter;
 use crate::checkpoint::run_checkpoint_command;
 use crate::config::{
     build_route_from_resolved, build_runtime_options, load_persisted_telegram_defaults,
-    require_openrouter_api_key, resolve_runtime_model_selection, resolve_workspace_path, CliParams,
+    require_opencode_api_key_with_default, require_openrouter_api_key_with_default,
+    resolve_runtime_model_selection, resolve_workspace_path, CliParams,
 };
 use crate::doctor::run_doctor;
 use crate::learning::{
@@ -363,14 +364,17 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
     let model_selection =
         resolve_runtime_model_selection(params.model, persisted_defaults.model.clone());
     let route = build_route_from_resolved(&model_selection.effective);
+    // One-shot and Telegram resolve API keys identically so a key entered at
+    // install time always satisfies a one-shot run.
     let api_key = match route.provider {
-        ProviderKind::OpenRouter => require_openrouter_api_key(params.api_key)?,
-        ProviderKind::Opencode => {
-            let defaults = load_persisted_telegram_defaults().unwrap_or_default();
-            crate::config::require_opencode_api_key(
-                params.opencode_api_key.or(defaults.opencode_api_key),
-            )?
-        }
+        ProviderKind::OpenRouter => require_openrouter_api_key_with_default(
+            params.api_key,
+            persisted_defaults.api_key.clone(),
+        )?,
+        ProviderKind::Opencode => require_opencode_api_key_with_default(
+            params.opencode_api_key,
+            persisted_defaults.opencode_api_key.clone(),
+        )?,
     };
     let workspace_memory = prepare_workspace_memory(ctx.workspace_root.clone());
     let prepared_run = prepare_run_context(&ctx, &workspace_memory, &instruction, None);

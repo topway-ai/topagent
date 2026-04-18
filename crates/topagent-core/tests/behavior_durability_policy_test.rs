@@ -189,7 +189,14 @@ fn test_format_delivery_summary_no_files() {
         });
 
     let summary = result.format_delivery_summary().unwrap();
-    assert!(summary.contains("Analysis/verification run"));
+    // Analysis-with-verification now emits the same structured shape as code
+    // changes (Files Touched: - (none), plus the verification block) instead
+    // of a one-line "Analysis/verification run" string. This keeps a single
+    // delivery-summary contract for every non-noop run.
+    assert!(summary.contains("Files Touched"));
+    assert!(summary.contains("(none)"));
+    assert!(summary.contains("Verification Status"));
+    assert!(summary.contains("cargo check"));
 }
 
 #[test]

@@ -19,6 +19,7 @@ pub(crate) const TOPAGENT_MAX_RETRIES_KEY: &str = "TOPAGENT_MAX_RETRIES";
 pub(crate) const TOPAGENT_TIMEOUT_SECS_KEY: &str = "TOPAGENT_TIMEOUT_SECS";
 pub(crate) const OPENROUTER_API_KEY_KEY: &str = "OPENROUTER_API_KEY";
 pub(crate) const OPENCODE_API_KEY_KEY: &str = "OPENCODE_API_KEY";
+pub(crate) const TELEGRAM_BOT_TOKEN_KEY: &str = "TELEGRAM_BOT_TOKEN";
 pub(crate) const TELEGRAM_ALLOWED_DM_USERNAME_KEY: &str = "TELEGRAM_ALLOWED_DM_USERNAME";
 pub(crate) const TELEGRAM_BOUND_DM_USER_ID_KEY: &str = "TELEGRAM_BOUND_DM_USER_ID";
 pub(crate) const TOPAGENT_PROVIDER_KEY: &str = "TOPAGENT_PROVIDER";
@@ -27,6 +28,21 @@ fn normalize_nonempty_string(value: Option<String>) -> Option<String> {
     value
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+/// Canonical form of an allowed Telegram DM username.
+///
+/// Telegram usernames are case-insensitive and operators commonly prefix them
+/// with `@`. Apply the same normalization at every read and write boundary so
+/// the install-time stored form always equals the runtime-compared form.
+pub(crate) fn canonicalize_allowed_username(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    let stripped = trimmed.trim_start_matches('@').to_lowercase();
+    if stripped.is_empty() {
+        None
+    } else {
+        Some(stripped)
+    }
 }
 
 /// Shared CLI parameters threaded through install, service, telegram, and one-shot paths.
@@ -50,6 +66,9 @@ pub(crate) struct TelegramModeConfig {
     pub route: ModelRoute,
     pub workspace: PathBuf,
     pub options: RuntimeOptions,
+    pub selected_provider: SelectedProvider,
+    pub allowed_dm_username: Option<String>,
+    pub bound_dm_user_id: Option<i64>,
 }
 
 impl TelegramModeConfig {
@@ -126,9 +145,9 @@ impl TelegramModeDefaults {
             provider: values
                 .get(TOPAGENT_PROVIDER_KEY)
                 .and_then(|v| SelectedProvider::from_str(v)),
-            allowed_dm_username: normalize_nonempty_string(
-                values.get(TELEGRAM_ALLOWED_DM_USERNAME_KEY).cloned(),
-            ),
+            allowed_dm_username: values
+                .get(TELEGRAM_ALLOWED_DM_USERNAME_KEY)
+                .and_then(|v| canonicalize_allowed_username(v)),
             bound_dm_user_id: values
                 .get(TELEGRAM_BOUND_DM_USER_ID_KEY)
                 .and_then(|v| v.parse().ok()),
@@ -315,6 +334,23 @@ pub(crate) fn require_opencode_api_key(api_key: Option<String>) -> Result<String
     )
 }
 
+/// One-shot and Telegram resolve API keys identically: CLI override beats
+/// persisted default beats environment variable. Use these helpers from
+/// every entry path so behavior cannot drift between runtimes.
+pub(crate) fn require_openrouter_api_key_with_default(
+    cli_override: Option<String>,
+    persisted_default: Option<String>,
+) -> Result<String> {
+    require_openrouter_api_key(cli_override.or(persisted_default))
+}
+
+pub(crate) fn require_opencode_api_key_with_default(
+    cli_override: Option<String>,
+    persisted_default: Option<String>,
+) -> Result<String> {
+    require_opencode_api_key(cli_override.or(persisted_default))
+}
+
 pub(crate) fn resolve_provider_for_model(model_id: &str) -> ProviderKind {
     let lower = model_id.to_lowercase();
     if lower.starts_with("glm-")
@@ -414,6 +450,10 @@ pub(crate) fn resolve_telegram_mode_config(
     let route = build_route_from_resolved(&model_selection.effective);
     let openrouter_api_key = resolve_openrouter_api_key(params.api_key, &defaults)?;
     let opencode_api_key = resolve_opencode_api_key(params.opencode_api_key, &defaults)?;
+    let selected_provider = defaults.provider.unwrap_or(match route.provider {
+        ProviderKind::Opencode => SelectedProvider::Opencode,
+        ProviderKind::OpenRouter => SelectedProvider::OpenRouter,
+    });
     Ok(TelegramModeConfig {
         token: require_telegram_token_with_default(token, defaults.token.clone())?,
         openrouter_api_key,
@@ -427,6 +467,9 @@ pub(crate) fn resolve_telegram_mode_config(
             params.generated_tool_authoring,
             &defaults,
         ),
+        selected_provider,
+        allowed_dm_username: defaults.allowed_dm_username.clone(),
+        bound_dm_user_id: defaults.bound_dm_user_id,
     })
 }
 
@@ -865,6 +908,85 @@ mod tests {
         assert_eq!(config.options.max_provider_retries, 6);
         assert_eq!(config.options.provider_timeout_secs, 100);
         assert!(config.options.enable_generated_tool_authoring);
+    }
+
+    #[test]
+    fn test_canonicalize_allowed_username_strips_at_lowercases_and_trims() {
+        assert_eq!(
+            canonicalize_allowed_username("@MyUser"),
+            Some("myuser".to_string())
+        );
+        assert_eq!(
+            canonicalize_allowed_username("MyUser"),
+            Some("myuser".to_string())
+        );
+        assert_eq!(
+            canonicalize_allowed_username("  @@MIXED  "),
+            Some("mixed".to_string())
+        );
+        assert_eq!(canonicalize_allowed_username("   "), None);
+        assert_eq!(canonicalize_allowed_username("@"), None);
+        assert_eq!(canonicalize_allowed_username(""), None);
+    }
+
+    #[test]
+    fn test_canonicalize_allowed_username_is_idempotent() {
+        let first = canonicalize_allowed_username("@SomeUser").unwrap();
+        let second = canonicalize_allowed_username(&first).unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_telegram_mode_defaults_canonicalize_allowed_username_on_read() {
+        // Stored as raw "@MixedCase" (e.g., from a hand-edited env file): the
+        // read boundary must canonicalize so admission comparisons line up.
+        let values = HashMap::from([(
+            TELEGRAM_ALLOWED_DM_USERNAME_KEY.to_string(),
+            "@MixedCase".to_string(),
+        )]);
+        let defaults = TelegramModeDefaults::from_metadata(&values);
+        assert_eq!(defaults.allowed_dm_username.as_deref(), Some("mixedcase"));
+    }
+
+    #[test]
+    fn test_require_openrouter_api_key_with_default_prefers_cli_then_persisted() {
+        // CLI override wins.
+        std::env::remove_var("OPENROUTER_API_KEY");
+        let key = require_openrouter_api_key_with_default(
+            Some("cli-key".to_string()),
+            Some("persisted-key".to_string()),
+        )
+        .unwrap();
+        assert_eq!(key, "cli-key");
+
+        // No CLI: persisted wins.
+        let key = require_openrouter_api_key_with_default(None, Some("persisted-key".to_string()))
+            .unwrap();
+        assert_eq!(key, "persisted-key");
+
+        // No CLI, no persisted, no env: error.
+        std::env::remove_var("OPENROUTER_API_KEY");
+        let err = require_openrouter_api_key_with_default(None, None).unwrap_err();
+        assert!(err.to_string().contains("OpenRouter API key required"));
+    }
+
+    #[test]
+    fn test_require_opencode_api_key_with_default_prefers_cli_then_persisted() {
+        std::env::remove_var("OPENCODE_API_KEY");
+        let key = require_opencode_api_key_with_default(
+            Some("cli-key".to_string()),
+            Some("persisted-key".to_string()),
+        )
+        .unwrap();
+        assert_eq!(key, "cli-key");
+
+        let key =
+            require_opencode_api_key_with_default(None, Some("persisted-key".to_string())).unwrap();
+        assert_eq!(key, "persisted-key");
+
+        std::env::remove_var("OPENCODE_API_KEY");
+        let err = require_opencode_api_key_with_default(None, None).unwrap_err();
+        assert!(err.to_string().contains("Opencode API key required"));
     }
 
     #[test]

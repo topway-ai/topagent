@@ -100,6 +100,31 @@ fn test_cli_telegram_invalid_workspace_fails_fast() {
 }
 
 #[test]
+fn test_cli_install_help_documents_operator_flags() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.args(["install", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("--api-key"))
+        .stdout(predicates::str::contains("--opencode-api-key"))
+        .stdout(predicates::str::contains("--workspace"))
+        .stdout(predicates::str::contains("--model"));
+}
+
+#[test]
+fn test_cli_telegram_help_documents_operator_flags() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.args(["telegram", "--help"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("--token"))
+        .stdout(predicates::str::contains("--api-key"))
+        .stdout(predicates::str::contains("--opencode-api-key"))
+        .stdout(predicates::str::contains("--workspace"))
+        .stdout(predicates::str::contains("--model"));
+}
+
+#[test]
 fn test_install_script_has_valid_syntax() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();

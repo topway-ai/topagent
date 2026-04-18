@@ -272,11 +272,12 @@ impl TaskResult {
             return None;
         }
 
-        if self.evidence.files_changed.is_empty() {
-            if self.evidence.verification_commands_run.is_empty() {
-                return None;
-            }
-            return Some("Analysis/verification run - no files changed".to_string());
+        // No-op runs (no files touched and no verification) carry no delivery
+        // signal worth a structured summary.
+        if self.evidence.files_changed.is_empty()
+            && self.evidence.verification_commands_run.is_empty()
+        {
+            return None;
         }
 
         let mut summary = String::new();
@@ -287,8 +288,12 @@ impl TaskResult {
         summary.push_str("\n\n");
 
         summary.push_str("### Files Touched\n\n");
-        for file in &self.evidence.files_changed {
-            summary.push_str(&format!("- {}\n", file));
+        if self.evidence.files_changed.is_empty() {
+            summary.push_str("- (none)\n");
+        } else {
+            for file in &self.evidence.files_changed {
+                summary.push_str(&format!("- {}\n", file));
+            }
         }
         summary.push('\n');
 
@@ -702,6 +707,47 @@ mod tests {
             "no verification should not claim passed, got: {}",
             proof
         );
+    }
+
+    #[test]
+    fn test_format_delivery_summary_emits_structured_shape_for_analysis_with_verification() {
+        // No files changed, but verification was attempted (e.g., a "run cargo
+        // test" task). The summary must still be the structured shape so the
+        // operator and downstream parsers see one consistent format, not a
+        // bare string for this branch.
+        let cmd = VerificationCommand {
+            command: "cargo test".to_string(),
+            output: "ok".to_string(),
+            exit_code: 0,
+            succeeded: true,
+        };
+        let result = TaskResult::new("Ran test suite".to_string())
+            .with_task_mode(crate::plan::TaskMode::PlanAndExecute)
+            .with_verification_command(cmd)
+            .with_delivery_outcome(DeliveryOutcome::AnalysisOnly);
+
+        let summary = result.format_delivery_summary().expect("summary expected");
+
+        assert!(summary.contains("## Delivery Summary"));
+        assert!(summary.contains("### What Changed"));
+        assert!(summary.contains("### Files Touched"));
+        assert!(summary.contains("(none)"));
+        assert!(summary.contains("### Verification Status"));
+        assert!(summary.contains("`cargo test`"));
+        assert!(summary.contains("PASS"));
+        assert!(summary.contains("Analysis complete, no code changes"));
+        assert!(
+            !summary.contains("Analysis/verification run - no files changed"),
+            "must not emit the legacy unstructured bare string"
+        );
+    }
+
+    #[test]
+    fn test_format_delivery_summary_returns_none_for_pure_noop_runs() {
+        let result = TaskResult::new("Nothing to do".to_string())
+            .with_task_mode(crate::plan::TaskMode::PlanAndExecute)
+            .with_delivery_outcome(DeliveryOutcome::NoOp);
+        assert!(result.format_delivery_summary().is_none());
     }
 
     #[test]
