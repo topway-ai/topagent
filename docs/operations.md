@@ -61,6 +61,7 @@ Interactive setup that configures and starts the Telegram background service. `t
 - Direct messages from other users are quietly rejected
 - Non-private chats (groups, supergroups, channels) are rejected by the inbound admission gate before any binding lookup runs, so a bot accidentally added to a group cannot bind the allowed username to the group's chat ID
 - The bound numeric user ID is preserved across re-running setup as long as the allowed username is unchanged; clearing the allowed username also clears the persisted binding
+- After binding, both `TELEGRAM_ALLOWED_DM_USERNAME` and `TELEGRAM_BOUND_DM_USER_ID` are retained in the env file; the bound ID takes admission precedence at runtime, but retaining the username ensures a re-install with the same username correctly restores the binding
 
 Model precedence during install is:
 
@@ -441,7 +442,7 @@ journalctl --user -u topagent-telegram.service -n 50
 ```
 
 Common causes:
-- Invalid or expired API key
+- Invalid or expired API key (the service now validates the required provider API key at startup and exits with a clear error if it is missing — check the journal for `API key required` messages)
 - Invalid bot token
 - Workspace path no longer exists
 - Another process using the same bot token (Telegram allows only one poller per token)

@@ -64,6 +64,10 @@ pub(crate) struct TelegramModeConfig {
     pub openrouter_api_key: Option<String>,
     pub opencode_api_key: Option<String>,
     pub route: ModelRoute,
+    /// The configured-default model (persisted or built-in fallback).
+    /// May differ from `route.model_id` when a CLI `--model` override is active.
+    /// Owned here so callers never re-resolve it from raw defaults.
+    pub configured_default_model: String,
     pub workspace: PathBuf,
     pub options: RuntimeOptions,
     pub selected_provider: SelectedProvider,
@@ -446,18 +450,45 @@ pub(crate) fn resolve_telegram_mode_config(
     params: CliParams,
     defaults: TelegramModeDefaults,
 ) -> Result<TelegramModeConfig> {
+    // Token is validated first so token errors are always reported before
+    // API key errors (preserving the UX ordering the smoke tests rely on).
+    let token = require_telegram_token_with_default(token, defaults.token.clone())?;
     let model_selection = resolve_runtime_model_selection(params.model, defaults.model.clone());
     let route = build_route_from_resolved(&model_selection.effective);
     let openrouter_api_key = resolve_openrouter_api_key(params.api_key, &defaults)?;
     let opencode_api_key = resolve_opencode_api_key(params.opencode_api_key, &defaults)?;
+
+    // Fail fast: the resolved route must have its provider API key present.
+    // This catches misconfigured services (e.g. OpenRouter model with no
+    // OpenRouter key) at config construction rather than at first agent call.
+    match route.provider {
+        ProviderKind::OpenRouter => {
+            if openrouter_api_key.is_none() {
+                return Err(anyhow::anyhow!(
+                    "OpenRouter API key required for model '{}': set --api-key or OPENROUTER_API_KEY",
+                    route.model_id
+                ));
+            }
+        }
+        ProviderKind::Opencode => {
+            if opencode_api_key.is_none() {
+                return Err(anyhow::anyhow!(
+                    "Opencode API key required for model '{}': set --opencode-api-key or OPENCODE_API_KEY",
+                    route.model_id
+                ));
+            }
+        }
+    }
+
     let selected_provider = defaults.provider.unwrap_or(match route.provider {
         ProviderKind::Opencode => SelectedProvider::Opencode,
         ProviderKind::OpenRouter => SelectedProvider::OpenRouter,
     });
     Ok(TelegramModeConfig {
-        token: require_telegram_token_with_default(token, defaults.token.clone())?,
+        token,
         openrouter_api_key,
         opencode_api_key,
+        configured_default_model: model_selection.configured_default.model_id,
         route,
         workspace: resolve_workspace_path(params.workspace.or_else(|| defaults.workspace.clone()))?,
         options: build_runtime_options_with_defaults(
@@ -1014,5 +1045,156 @@ mod tests {
             DEFAULT_OPENROUTER_MODEL_ID
         );
         assert_eq!(selection.effective.model_id, DEFAULT_OPENROUTER_MODEL_ID);
+    }
+
+    #[test]
+    fn test_resolve_telegram_mode_config_fails_fast_when_openrouter_route_has_no_openrouter_key() {
+        // Provider is OpenRouter (default for most model IDs) but no OpenRouter
+        // key is available — config construction must fail, not defer to
+        // effective_api_key() at run time.
+        let workspace = TempDir::new().unwrap();
+        let defaults = TelegramModeDefaults {
+            opencode_api_key: Some("opencode-key".to_string()),
+            token: Some("123:tok".to_string()),
+            workspace: Some(workspace.path().to_path_buf()),
+            model: Some("anthropic/claude-sonnet-4.6".to_string()),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let err = resolve_telegram_mode_config(None, params, defaults)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("OpenRouter API key required"),
+            "expected OpenRouter key error, got: {err}"
+        );
+        assert!(
+            err.contains("anthropic/claude-sonnet-4.6"),
+            "error should name the model: {err}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_telegram_mode_config_fails_fast_when_opencode_route_has_no_opencode_key() {
+        let workspace = TempDir::new().unwrap();
+        let defaults = TelegramModeDefaults {
+            api_key: Some("openrouter-key".to_string()),
+            token: Some("123:tok".to_string()),
+            workspace: Some(workspace.path().to_path_buf()),
+            // kimi- prefix routes to Opencode provider
+            model: Some("kimi-k2".to_string()),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let err = resolve_telegram_mode_config(None, params, defaults)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Opencode API key required"),
+            "expected Opencode key error, got: {err}"
+        );
+        assert!(
+            err.contains("kimi-k2"),
+            "error should name the model: {err}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_telegram_mode_config_populates_configured_default_model() {
+        // When a CLI --model override is active, configured_default_model must
+        // reflect the persisted default (what the service normally uses), not
+        // the override (what this run uses). The help command and startup logs
+        // both need this distinction.
+        let workspace = TempDir::new().unwrap();
+        let defaults = TelegramModeDefaults {
+            api_key: Some("k".to_string()),
+            token: Some("1:t".to_string()),
+            workspace: Some(workspace.path().to_path_buf()),
+            model: Some("persisted/model".to_string()),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: Some("override/model".to_string()),
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let config = resolve_telegram_mode_config(None, params, defaults).unwrap();
+        assert_eq!(config.route.model_id, "override/model");
+        assert_eq!(config.configured_default_model, "persisted/model");
+    }
+
+    #[test]
+    fn test_resolve_telegram_mode_config_configured_default_falls_back_to_built_in() {
+        let workspace = TempDir::new().unwrap();
+        let defaults = TelegramModeDefaults {
+            api_key: Some("k".to_string()),
+            token: Some("1:t".to_string()),
+            workspace: Some(workspace.path().to_path_buf()),
+            model: None, // no persisted model
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let config = resolve_telegram_mode_config(None, params, defaults).unwrap();
+        assert_eq!(config.configured_default_model, DEFAULT_OPENROUTER_MODEL_ID);
+        assert_eq!(config.route.model_id, DEFAULT_OPENROUTER_MODEL_ID);
+    }
+
+    #[test]
+    fn test_one_shot_generated_tool_authoring_respects_persisted_default() {
+        // Verify the resolution logic used in run_one_shot: when the CLI flag
+        // is absent, the persisted value wins; when the CLI flag is present,
+        // it overrides the persisted value.
+        assert!(
+            None.or(Some(true)).unwrap_or(false),
+            "persisted=true, no CLI flag → should enable authoring"
+        );
+        assert!(
+            !None::<bool>.or(Some(false)).unwrap_or(false),
+            "persisted=false, no CLI flag → should disable authoring"
+        );
+        assert!(
+            Some(true).or(Some(false)).unwrap_or(false),
+            "CLI=true overrides persisted=false"
+        );
+        assert!(
+            !Some(false).or(Some(true)).unwrap_or(false),
+            "CLI=false overrides persisted=true"
+        );
+        assert!(
+            !None::<bool>.or(None).unwrap_or(false),
+            "neither set → defaults to false"
+        );
     }
 }

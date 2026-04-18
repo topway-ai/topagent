@@ -100,6 +100,16 @@ fn test_cli_telegram_invalid_workspace_fails_fast() {
 }
 
 #[test]
+fn test_cli_telegram_fails_fast_when_openrouter_api_key_missing() {
+    let (_temp, mut cmd) = isolated_topagent_command();
+    cmd.env_remove("OPENROUTER_API_KEY")
+        .args(["telegram", "--token", "123456:abcdef"])
+        .assert()
+        .failure()
+        .stderr(predicates::str::contains("OpenRouter API key required"));
+}
+
+#[test]
 fn test_cli_install_help_documents_operator_flags() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
     cmd.args(["install", "--help"])

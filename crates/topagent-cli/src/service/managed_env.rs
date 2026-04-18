@@ -179,6 +179,7 @@ mod tests {
             token: "111:roundtrip-token".to_string(),
             openrouter_api_key: Some("sk-operator-entered".to_string()),
             opencode_api_key: Some("opencode-operator-entered".to_string()),
+            configured_default_model: "minimax/minimax-m2.7".to_string(),
             route: ModelRoute::new(ProviderKind::OpenRouter, "minimax/minimax-m2.7"),
             workspace: workspace.clone(),
             options: RuntimeOptions::new()
@@ -235,6 +236,7 @@ mod tests {
             token: "1:t".to_string(),
             openrouter_api_key: Some("sk".to_string()),
             opencode_api_key: None,
+            configured_default_model: "m".to_string(),
             route: ModelRoute::new(ProviderKind::OpenRouter, "m"),
             workspace: PathBuf::from("/tmp/ws"),
             options: RuntimeOptions::default(),

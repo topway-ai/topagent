@@ -116,10 +116,13 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
     } else {
         None
     };
+    let configured_default_model =
+        resolve_model_choice(None, None, defaults.model.clone()).model_id;
     let config = TelegramModeConfig {
         token,
         openrouter_api_key: api_key,
         opencode_api_key,
+        configured_default_model,
         route: build_route_from_resolved(&resolved_model),
         workspace,
         options: build_runtime_options_with_defaults(

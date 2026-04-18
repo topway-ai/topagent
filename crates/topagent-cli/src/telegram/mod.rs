@@ -32,11 +32,18 @@ pub(crate) use history::clear_workspace_telegram_history;
 
 pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<()> {
     let persisted_defaults = load_persisted_telegram_defaults().unwrap_or_default();
-    let config = resolve_telegram_mode_config(token, params.clone(), persisted_defaults.clone())?;
-    let model_selection = resolve_runtime_model_selection(params.model, persisted_defaults.model);
+    // resolve_telegram_mode_config is the single runtime-config owner: it
+    // resolves and validates all runtime facts (model, route, API key presence,
+    // token, workspace, admission policy) before returning.
+    let config = resolve_telegram_mode_config(token, params, persisted_defaults)?;
+    // api_key is already validated present for route.provider inside
+    // resolve_telegram_mode_config; this call is a defensive second check.
     let api_key = config.effective_api_key()?;
     let token = config.token;
     let workspace = config.workspace;
+    let configured_default_model = config.configured_default_model;
+    let allowed_dm_username = config.allowed_dm_username;
+    let bound_dm_user_id = config.bound_dm_user_id;
     let mut secrets = topagent_core::SecretRegistry::new();
     if let Some(ref openrouter_key) = config.openrouter_api_key {
         secrets.register(openrouter_key);
@@ -87,13 +94,13 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
 
     let mut session_manager = ChatSessionManager::new(
         route,
-        model_selection.configured_default.model_id,
+        configured_default_model,
         api_key,
         options,
         ctx.workspace_root.clone(),
         secrets.clone(),
-        persisted_defaults.allowed_dm_username.clone(),
-        persisted_defaults.bound_dm_user_id,
+        allowed_dm_username,
+        bound_dm_user_id,
         Some(managed_service_env_path().ok()).flatten(),
     );
     let mut offset = 0i64;
@@ -556,9 +563,13 @@ impl ChatSessionManager {
                     TELEGRAM_BOUND_DM_USER_ID_KEY.to_string(),
                     user_id.to_string(),
                 );
-                if self.allowed_dm_username.is_some() {
-                    updated.remove(TELEGRAM_ALLOWED_DM_USERNAME_KEY);
-                }
+                // Keep TELEGRAM_ALLOWED_DM_USERNAME in the env file after
+                // binding. Removing it caused a reinstall bug: on the next
+                // `topagent install` with the same username, defaults.allowed_dm_username
+                // would be None (key gone), so preserved_bound_dm_user_id would
+                // compute Some(x) != None → None, silently resetting the binding.
+                // With both keys present, the reinstall correctly preserves the
+                // binding, and the original policy remains human-readable.
                 let _ = crate::service::managed_env::write_managed_env_values(env_path, &updated);
             }
         }
@@ -1779,5 +1790,184 @@ mod tests {
 
         assert!(cleared);
         assert!(!history_dir.exists());
+    }
+
+    #[test]
+    fn test_bind_dm_user_id_preserves_allowed_username_key_in_env_file() {
+        // Regression: bind_dm_user_id previously removed TELEGRAM_ALLOWED_DM_USERNAME
+        // from the env file after first binding. On the next `topagent install`
+        // with the same username, defaults.allowed_dm_username would be None
+        // (key gone), so preserved_bound_dm_user_id would compute
+        // Some(x) != None → None, silently resetting the binding.
+        //
+        // After the fix: both TELEGRAM_BOUND_DM_USER_ID and
+        // TELEGRAM_ALLOWED_DM_USERNAME must be present in the env file after
+        // binding. The binding still takes precedence in check_dm_admission
+        // (bound_dm_user_id check runs first).
+        use crate::managed_files::read_managed_env_metadata;
+        use crate::service::managed_env::write_managed_env_values;
+        use std::collections::HashMap;
+        use tempfile::NamedTempFile;
+
+        let env_file = NamedTempFile::new().unwrap();
+        let env_path = env_file.path().to_path_buf();
+
+        // Seed the env file with an allowed username and no bound ID (the
+        // initial state after install before first contact).
+        let initial = HashMap::from([
+            (
+                TELEGRAM_ALLOWED_DM_USERNAME_KEY.to_string(),
+                "operator".to_string(),
+            ),
+            (TOPAGENT_SERVICE_MANAGED_KEY.to_string(), "1".to_string()),
+        ]);
+        write_managed_env_values(&env_path, &initial).unwrap();
+
+        let workspace = TempDir::new().unwrap();
+        let mut manager = ChatSessionManager::new(
+            ModelRoute::openrouter("test-model"),
+            "test-model".to_string(),
+            "test-key".to_string(),
+            RuntimeOptions::default(),
+            workspace.path().to_path_buf(),
+            topagent_core::SecretRegistry::new(),
+            Some("operator".to_string()),
+            None,
+            Some(env_path.clone()),
+        );
+
+        manager.bind_dm_user_id(424242);
+
+        // Both keys must be present after binding.
+        let values = read_managed_env_metadata(&env_path).unwrap();
+        assert_eq!(
+            values
+                .get(TELEGRAM_BOUND_DM_USER_ID_KEY)
+                .map(String::as_str),
+            Some("424242"),
+            "bound user ID must be written"
+        );
+        assert_eq!(
+            values
+                .get(TELEGRAM_ALLOWED_DM_USERNAME_KEY)
+                .map(String::as_str),
+            Some("operator"),
+            "allowed username must be preserved (not deleted) after binding"
+        );
+    }
+
+    #[test]
+    fn test_bind_dm_user_id_preserving_username_means_reinstall_preserves_binding() {
+        // Integration-style: after binding, re-reading the env file via
+        // TelegramModeDefaults::from_metadata must round-trip both the username
+        // and the bound ID so that `preserved_bound_dm_user_id` logic in
+        // install.rs correctly keeps the binding across reinstall.
+        use crate::managed_files::read_managed_env_metadata;
+        use crate::service::managed_env::write_managed_env_values;
+        use std::collections::HashMap;
+        use tempfile::NamedTempFile;
+
+        let env_file = NamedTempFile::new().unwrap();
+        let env_path = env_file.path().to_path_buf();
+
+        let initial = HashMap::from([
+            (
+                TELEGRAM_ALLOWED_DM_USERNAME_KEY.to_string(),
+                "operator".to_string(),
+            ),
+            (TOPAGENT_SERVICE_MANAGED_KEY.to_string(), "1".to_string()),
+        ]);
+        write_managed_env_values(&env_path, &initial).unwrap();
+
+        let workspace = TempDir::new().unwrap();
+        let mut manager = ChatSessionManager::new(
+            ModelRoute::openrouter("test-model"),
+            "test-model".to_string(),
+            "test-key".to_string(),
+            RuntimeOptions::default(),
+            workspace.path().to_path_buf(),
+            topagent_core::SecretRegistry::new(),
+            Some("operator".to_string()),
+            None,
+            Some(env_path.clone()),
+        );
+        manager.bind_dm_user_id(777);
+
+        // Simulate what `run_install` does: re-read the env file, parse defaults.
+        let values = read_managed_env_metadata(&env_path).unwrap();
+        let defaults = crate::config::TelegramModeDefaults::from_metadata(&values);
+
+        assert_eq!(
+            defaults.allowed_dm_username.as_deref(),
+            Some("operator"),
+            "username must round-trip so install.rs can compare it"
+        );
+        assert_eq!(
+            defaults.bound_dm_user_id,
+            Some(777),
+            "bound ID must round-trip"
+        );
+
+        // Simulate install.rs preserved_bound_dm_user_id logic with same username.
+        let reinstall_username = Some("operator".to_string());
+        let preserved = if reinstall_username == defaults.allowed_dm_username {
+            defaults.bound_dm_user_id
+        } else {
+            None
+        };
+        assert_eq!(
+            preserved,
+            Some(777),
+            "reinstall with same username must preserve the binding"
+        );
+    }
+
+    #[test]
+    fn test_run_telegram_uses_config_admission_fields_not_defaults() {
+        // Structural: run_telegram must consume allowed_dm_username and
+        // bound_dm_user_id from the resolved TelegramModeConfig, not from
+        // persisted_defaults. Verify by checking that after resolve_telegram_mode_config
+        // the config fields carry the correct admission policy.
+        use crate::config::{
+            TelegramModeDefaults, TELEGRAM_ALLOWED_DM_USERNAME_KEY, TELEGRAM_BOUND_DM_USER_ID_KEY,
+        };
+        use std::collections::HashMap;
+
+        let workspace = TempDir::new().unwrap();
+        let values = HashMap::from([
+            ("OPENROUTER_API_KEY".to_string(), "k".to_string()),
+            ("TELEGRAM_BOT_TOKEN".to_string(), "1:t".to_string()),
+            (
+                crate::config::TOPAGENT_WORKSPACE_KEY.to_string(),
+                workspace.path().display().to_string(),
+            ),
+            (
+                TELEGRAM_ALLOWED_DM_USERNAME_KEY.to_string(),
+                "@Operator".to_string(),
+            ),
+            (TELEGRAM_BOUND_DM_USER_ID_KEY.to_string(), "99".to_string()),
+        ]);
+        let defaults = TelegramModeDefaults::from_metadata(&values);
+        // canonicalize_allowed_username strips the @ and lowercases
+        assert_eq!(defaults.allowed_dm_username.as_deref(), Some("operator"));
+        assert_eq!(defaults.bound_dm_user_id, Some(99));
+
+        let params = crate::config::CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let config =
+            crate::config::resolve_telegram_mode_config(None, params, defaults.clone()).unwrap();
+
+        // The config carries the admission fields from defaults — run_telegram
+        // must use config.* rather than reaching back into defaults.
+        assert_eq!(config.allowed_dm_username, defaults.allowed_dm_username);
+        assert_eq!(config.bound_dm_user_id, defaults.bound_dm_user_id);
     }
 }

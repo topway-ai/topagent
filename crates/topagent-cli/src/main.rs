@@ -358,9 +358,17 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
         .with_cancel_token(cancel_token.clone())
         .with_approval_mailbox(approval_mailbox)
         .with_workspace_checkpoint_store(WorkspaceCheckpointStore::new(workspace));
-    let options = build_runtime_options(params.max_steps, params.max_retries, params.timeout_secs)
-        .with_generated_tool_authoring(params.generated_tool_authoring.unwrap_or(false));
     let persisted_defaults = load_persisted_telegram_defaults().unwrap_or_default();
+    // Respect the persisted generated_tool_authoring from the managed service
+    // config when the flag was not set on the CLI — mirrors the Telegram path
+    // which uses build_runtime_options_with_defaults for the same resolution.
+    let options = build_runtime_options(params.max_steps, params.max_retries, params.timeout_secs)
+        .with_generated_tool_authoring(
+            params
+                .generated_tool_authoring
+                .or(persisted_defaults.generated_tool_authoring)
+                .unwrap_or(false),
+        );
     let model_selection =
         resolve_runtime_model_selection(params.model, persisted_defaults.model.clone());
     let route = build_route_from_resolved(&model_selection.effective);
