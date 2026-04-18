@@ -116,6 +116,7 @@ topagent service restart     # restart the background service
 topagent checkpoint status   # show the latest workspace checkpoint
 topagent checkpoint diff     # preview what restore would change
 topagent checkpoint restore  # restore the latest checkpoint and clear Telegram transcripts
+topagent config inspect      # show resolved provider, model, key presence, workspace, and options
 topagent uninstall           # remove service, config, and installed binary
 ```
 

@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use predicates::prelude::*;
 use std::path::PathBuf;
 use tempfile::TempDir;
 
@@ -36,9 +37,10 @@ fn test_cli_bare_instruction_requires_api_key() {
         .args(["say hello"])
         .assert()
         .failure()
-        .stderr(predicates::str::contains(
-            "OpenRouter API key required: set --api-key or OPENROUTER_API_KEY",
-        ));
+        .stderr(
+            predicates::str::contains("OpenRouter API key required")
+                .and(predicates::str::contains("set --api-key or OPENROUTER_API_KEY")),
+        );
 }
 
 #[test]
@@ -107,6 +109,52 @@ fn test_cli_telegram_fails_fast_when_openrouter_api_key_missing() {
         .assert()
         .failure()
         .stderr(predicates::str::contains("OpenRouter API key required"));
+}
+
+#[test]
+fn test_cli_config_inspect_shows_expected_fields() {
+    let (_temp, mut cmd) = isolated_topagent_command();
+    cmd.args(["config", "inspect"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Provider:"))
+        .stdout(predicates::str::contains("Model:"))
+        .stdout(predicates::str::contains("OpenRouter:"))
+        .stdout(predicates::str::contains("Opencode:"))
+        .stdout(predicates::str::contains("Bot token:"))
+        .stdout(predicates::str::contains("DM access:"))
+        .stdout(predicates::str::contains("Tool authoring:"));
+}
+
+#[test]
+fn test_cli_config_inspect_does_not_reveal_api_key_value() {
+    let (_temp, mut cmd) = isolated_topagent_command();
+    cmd.env("OPENROUTER_API_KEY", "sk-super-secret-key-value")
+        .args(["config", "inspect"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("present"))
+        .stdout(predicates::str::contains("OpenRouter:"))
+        // The actual secret value must never appear in the output
+        .stdout(
+            predicates::str::is_match("sk-super-secret-key-value")
+                .unwrap()
+                .not(),
+        );
+}
+
+#[test]
+fn test_cli_config_inspect_graceful_without_setup() {
+    // In a clean isolated environment (no persisted service config), inspect
+    // should still succeed and show missing for keys and token.
+    let (_temp, mut cmd) = isolated_topagent_command();
+    cmd.env_remove("OPENROUTER_API_KEY")
+        .env_remove("OPENCODE_API_KEY")
+        .env_remove("TELEGRAM_BOT_TOKEN")
+        .args(["config", "inspect"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("missing"));
 }
 
 #[test]

@@ -102,6 +102,7 @@ topagent service restart     # restart the service (keeps current config)
 topagent checkpoint status   # show the latest workspace checkpoint
 topagent checkpoint diff     # preview the restore diff for the latest checkpoint
 topagent checkpoint restore  # restore the latest checkpoint and clear Telegram transcripts
+topagent config inspect      # show resolved provider, model, key presence, workspace, and options
 topagent service install     # install service without the full interactive flow
 topagent service uninstall   # remove service and config, keep binary
 topagent uninstall           # remove service, config, and installed binary
@@ -461,6 +462,23 @@ curl "https://api.telegram.org/bot<YOUR_TOKEN>/deleteWebhook"
 2. If stopped, check journal for errors
 3. `topagent service restart` -- restart the service
 4. Verify the bot token is correct by sending `/start`
+
+### Diagnosing config and key problems
+
+Run `topagent config inspect` for a compact, secret-safe view of the resolved runtime contract:
+
+```
+Provider:       OpenRouter
+Model:          minimax/minimax-m2.7 (persisted default)
+OpenRouter key: present
+Opencode key:   missing
+Bot token:      present
+DM access:      restricted to @myuser (bound)
+Workspace:      /home/frank/workspace
+Tool authoring: off
+```
+
+Key values are never shown — only `present` or `missing`. Use this command first when debugging API key or model problems before checking the journal.
 
 ### Agent produces poor results
 

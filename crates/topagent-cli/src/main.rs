@@ -24,16 +24,15 @@ use std::sync::{
 use std::time::Duration;
 use topagent_core::{
     context::ExecutionContext, ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest,
-    CancellationToken, ProgressCallback, ProgressUpdate, ProviderKind, WorkspaceCheckpointStore,
+    CancellationToken, ProgressCallback, ProgressUpdate, WorkspaceCheckpointStore,
 };
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
 use crate::checkpoint::run_checkpoint_command;
 use crate::config::{
-    build_route_from_resolved, build_runtime_options, load_persisted_telegram_defaults,
-    require_opencode_api_key_with_default, require_openrouter_api_key_with_default,
-    resolve_runtime_model_selection, resolve_workspace_path, CliParams,
+    load_persisted_telegram_defaults, resolve_contract_summary, resolve_one_shot_config, CliParams,
+    ResolvedContractSummary,
 };
 use crate::doctor::run_doctor;
 use crate::learning::{
@@ -162,6 +161,11 @@ enum Commands {
         #[command(subcommand)]
         command: CheckpointCommands,
     },
+    /// Inspect the resolved runtime contract (provider, model, keys, workspace, options).
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommands,
+    },
     /// Run health diagnostics on TopAgent setup, config, workspace, and tools.
     Doctor,
     /// Remove the installed TopAgent setup and, when applicable, the installed binary.
@@ -266,6 +270,14 @@ pub(crate) enum TrajectoryCommands {
 }
 
 #[derive(Subcommand)]
+pub(crate) enum ConfigCommands {
+    /// Show the fully resolved runtime contract: provider, model, API key presence,
+    /// workspace, Telegram admission state, and runtime options. Never prints
+    /// secret values — keys and tokens are shown as present/missing only.
+    Inspect,
+}
+
+#[derive(Subcommand)]
 pub(crate) enum ObservationCommands {
     /// List recent observation records.
     List {
@@ -302,6 +314,9 @@ fn main() -> Result<()> {
         Some(Commands::Install) => run_install(params),
         Some(Commands::Status) => run_status(params),
         Some(Commands::Doctor) => run_doctor(params),
+        Some(Commands::Config { command }) => match command {
+            ConfigCommands::Inspect => run_config_inspect(params),
+        },
         Some(Commands::Model { command }) => run_model_command(command, params),
         Some(Commands::Memory { command }) => run_memory_command(command, params.workspace),
         Some(Commands::Procedure { command }) => run_procedure_command(command, params.workspace),
@@ -349,8 +364,93 @@ fn install_ctrlc_handler(
     .context("Failed to install Ctrl-C handler")
 }
 
+fn run_config_inspect(params: CliParams) -> Result<()> {
+    let defaults = load_persisted_telegram_defaults().unwrap_or_default();
+    let summary = resolve_contract_summary(&params, &defaults);
+    print!("{}", render_contract_summary(&summary));
+    Ok(())
+}
+
+pub(crate) fn render_contract_summary(summary: &ResolvedContractSummary) -> String {
+    let mut out = String::from("TopAgent runtime contract\n\n");
+
+    out.push_str(&format!("Provider:           {}\n", summary.provider));
+    out.push_str(&format!(
+        "Model:              {}  [{}]\n",
+        summary.effective_model, summary.effective_model_source_label
+    ));
+    if let Some(ref default_model) = summary.configured_default_model {
+        out.push_str(&format!(
+            "Default model:      {}  [configured default]\n",
+            default_model
+        ));
+    }
+    match &summary.workspace {
+        Ok(path) => out.push_str(&format!("Workspace:          {}\n", path.display())),
+        Err(err) => out.push_str(&format!("Workspace:          error — {}\n", err)),
+    }
+
+    out.push_str("\nAPI keys:\n");
+    out.push_str(&format!(
+        "  OpenRouter:       {}\n",
+        if summary.openrouter_key_present {
+            "present"
+        } else {
+            "missing"
+        }
+    ));
+    out.push_str(&format!(
+        "  Opencode:         {}\n",
+        if summary.opencode_key_present {
+            "present"
+        } else {
+            "missing"
+        }
+    ));
+
+    out.push_str("\nTelegram:\n");
+    out.push_str(&format!(
+        "  Bot token:        {}\n",
+        if summary.token_present {
+            "present"
+        } else {
+            "missing"
+        }
+    ));
+    let dm_access = match (&summary.allowed_dm_username, summary.bound_dm_user_id) {
+        (None, _) => "open (no restriction)".to_string(),
+        (Some(username), None) => format!(
+            "restricted to @{} (unbound — first matching message will bind)",
+            username
+        ),
+        (Some(username), Some(_)) => format!("restricted to @{} (bound)", username),
+    };
+    out.push_str(&format!("  DM access:        {}\n", dm_access));
+
+    out.push_str("\nOptions:\n");
+    out.push_str(&format!(
+        "  Tool authoring:   {}\n",
+        if summary.tool_authoring { "on" } else { "off" }
+    ));
+    out.push_str(&format!("  Max steps:        {}\n", summary.max_steps));
+    out.push_str(&format!("  Max retries:      {}\n", summary.max_retries));
+    out.push_str(&format!("  Timeout:          {}s\n", summary.timeout_secs));
+
+    out
+}
+
 fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
-    let workspace = resolve_workspace_path(params.workspace)?;
+    // resolve_one_shot_config is the single validated runtime-contract owner for
+    // one-shot runs: workspace, model, API key, and options are all resolved and
+    // validated there so this function never re-derives them ad hoc.
+    let persisted_defaults = load_persisted_telegram_defaults().unwrap_or_default();
+    let config = resolve_one_shot_config(params, persisted_defaults)?;
+    let workspace = config.workspace;
+    let route = config.route;
+    let api_key = config.api_key;
+    let options = config.options;
+    let configured_default_model = config.configured_default_model;
+
     let cancel_token = CancellationToken::new();
     let interactive_approvals = io::stdin().is_terminal() && io::stderr().is_terminal();
     let approval_mailbox = build_cli_approval_mailbox(interactive_approvals);
@@ -358,37 +458,17 @@ fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
         .with_cancel_token(cancel_token.clone())
         .with_approval_mailbox(approval_mailbox)
         .with_workspace_checkpoint_store(WorkspaceCheckpointStore::new(workspace));
-    let persisted_defaults = load_persisted_telegram_defaults().unwrap_or_default();
-    // Respect the persisted generated_tool_authoring from the managed service
-    // config when the flag was not set on the CLI — mirrors the Telegram path
-    // which uses build_runtime_options_with_defaults for the same resolution.
-    let options = build_runtime_options(params.max_steps, params.max_retries, params.timeout_secs)
-        .with_generated_tool_authoring(
-            params
-                .generated_tool_authoring
-                .or(persisted_defaults.generated_tool_authoring)
-                .unwrap_or(false),
-        );
-    let model_selection =
-        resolve_runtime_model_selection(params.model, persisted_defaults.model.clone());
-    let route = build_route_from_resolved(&model_selection.effective);
-    // One-shot and Telegram resolve API keys identically so a key entered at
-    // install time always satisfies a one-shot run.
-    let api_key = match route.provider {
-        ProviderKind::OpenRouter => require_openrouter_api_key_with_default(
-            params.api_key,
-            persisted_defaults.api_key.clone(),
-        )?,
-        ProviderKind::Opencode => require_opencode_api_key_with_default(
-            params.opencode_api_key,
-            persisted_defaults.opencode_api_key.clone(),
-        )?,
-    };
     let workspace_memory = prepare_workspace_memory(ctx.workspace_root.clone());
     let prepared_run = prepare_run_context(&ctx, &workspace_memory, &instruction, None);
     let loaded_procedure_files = prepared_run.loaded_procedure_files.clone();
     ctx = prepared_run.run_ctx;
 
+    if configured_default_model != route.model_id {
+        info!(
+            "--model override active; configured default: {}",
+            configured_default_model
+        );
+    }
     info!(
         "starting one-shot run | model: {} | workspace: {}",
         route.model_id,
@@ -545,7 +625,10 @@ fn format_cli_approval_required(request: &ApprovalRequest, interactive: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{TelegramModeDefaults, TOPAGENT_WORKSPACE_KEY};
+    use std::collections::HashMap;
     use std::io::Cursor;
+    use tempfile::TempDir;
     use topagent_core::ApprovalTriggerKind;
 
     fn sample_request() -> ApprovalRequest {
@@ -560,6 +643,175 @@ mod tests {
             rollback_hint: Some("Use git revert or git reset if the commit was mistaken.".into()),
             created_at: std::time::SystemTime::now(),
         }
+    }
+
+    #[test]
+    fn test_render_contract_summary_shows_fields_without_secret_values() {
+        let workspace = TempDir::new().unwrap();
+        let values = HashMap::from([
+            (
+                "OPENROUTER_API_KEY".to_string(),
+                "sk-real-secret".to_string(),
+            ),
+            (
+                "TELEGRAM_BOT_TOKEN".to_string(),
+                "123456:token-secret".to_string(),
+            ),
+            (
+                TOPAGENT_WORKSPACE_KEY.to_string(),
+                workspace.path().display().to_string(),
+            ),
+            (
+                crate::config::TELEGRAM_ALLOWED_DM_USERNAME_KEY.to_string(),
+                "operator".to_string(),
+            ),
+        ]);
+        let defaults = TelegramModeDefaults::from_metadata(&values);
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let summary = resolve_contract_summary(&params, &defaults);
+        let output = render_contract_summary(&summary);
+
+        // Must show key structural fields
+        assert!(output.contains("Provider:"), "must show provider: {output}");
+        assert!(output.contains("Model:"), "must show model: {output}");
+        assert!(
+            output.contains("Workspace:"),
+            "must show workspace: {output}"
+        );
+        assert!(
+            output.contains("OpenRouter:"),
+            "must show OpenRouter key status: {output}"
+        );
+        assert!(
+            output.contains("Bot token:"),
+            "must show token status: {output}"
+        );
+        assert!(
+            output.contains("DM access:"),
+            "must show DM access: {output}"
+        );
+
+        // Must show present/missing, not actual values
+        assert!(
+            output.contains("present"),
+            "must indicate key present: {output}"
+        );
+        assert!(
+            !output.contains("sk-real-secret"),
+            "must not reveal OpenRouter key: {output}"
+        );
+        assert!(
+            !output.contains("token-secret"),
+            "must not reveal Telegram token: {output}"
+        );
+        assert!(
+            output.contains("operator"),
+            "username is safe to show: {output}"
+        );
+    }
+
+    #[test]
+    fn test_render_contract_summary_shows_override_and_default_when_different() {
+        let workspace = TempDir::new().unwrap();
+        let values = HashMap::from([
+            ("OPENROUTER_API_KEY".to_string(), "k".to_string()),
+            (
+                TOPAGENT_WORKSPACE_KEY.to_string(),
+                workspace.path().display().to_string(),
+            ),
+            (
+                crate::config::TOPAGENT_MODEL_KEY.to_string(),
+                "persisted/model".to_string(),
+            ),
+        ]);
+        let defaults = TelegramModeDefaults::from_metadata(&values);
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: Some("override/model".to_string()),
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let summary = resolve_contract_summary(&params, &defaults);
+        let output = render_contract_summary(&summary);
+
+        assert!(
+            output.contains("override/model"),
+            "must show effective (overridden) model: {output}"
+        );
+        assert!(
+            output.contains("persisted/model"),
+            "must show configured default model: {output}"
+        );
+        assert!(
+            output.contains("CLI override"),
+            "must label the source: {output}"
+        );
+    }
+
+    #[test]
+    fn test_render_contract_summary_dm_access_shows_admission_state() {
+        let workspace = TempDir::new().unwrap();
+
+        // Unbound: username set, no bound ID
+        let values_unbound = HashMap::from([
+            ("OPENROUTER_API_KEY".to_string(), "k".to_string()),
+            (
+                TOPAGENT_WORKSPACE_KEY.to_string(),
+                workspace.path().display().to_string(),
+            ),
+            (
+                crate::config::TELEGRAM_ALLOWED_DM_USERNAME_KEY.to_string(),
+                "alice".to_string(),
+            ),
+        ]);
+        let defaults_unbound = TelegramModeDefaults::from_metadata(&values_unbound);
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let output_unbound =
+            render_contract_summary(&resolve_contract_summary(&params, &defaults_unbound));
+        assert!(
+            output_unbound.contains("unbound"),
+            "must say unbound before first message: {output_unbound}"
+        );
+
+        // Bound: username + bound ID
+        let mut values_bound = values_unbound.clone();
+        values_bound.insert(
+            crate::config::TELEGRAM_BOUND_DM_USER_ID_KEY.to_string(),
+            "424242".to_string(),
+        );
+        let defaults_bound = TelegramModeDefaults::from_metadata(&values_bound);
+        let output_bound =
+            render_contract_summary(&resolve_contract_summary(&params, &defaults_bound));
+        assert!(
+            output_bound.contains("bound"),
+            "must say bound after first message: {output_bound}"
+        );
+        assert!(
+            !output_bound.contains("424242"),
+            "must not reveal numeric bound ID: {output_bound}"
+        );
     }
 
     #[test]

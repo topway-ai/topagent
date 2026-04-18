@@ -218,7 +218,7 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                         &msg.chat.chat_type,
                         sender_user_id,
                         sender_username,
-                        |username| session_manager.check_dm_admission(chat_id, username),
+                        |username| session_manager.check_dm_admission(sender_user_id, username),
                     ) {
                         InboundAdmission::Accept => {}
                         InboundAdmission::AcceptAndBind(user_id) => {
@@ -267,11 +267,13 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                             "off"
                         };
                         let model_label = session_manager.model_label_for_help();
+                        let dm_access = session_manager.dm_access_label();
                         let reply = format!(
                             "TopAgent\n\n\
                              Workspace: {}\n\
                              Model: {}\n\
                              Tool authoring: {}\n\
+                             DM access: {}\n\
                              Mode: private text chats only\n\n\
                              Commands:\n\
                              /help - show this message\n\
@@ -282,7 +284,7 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                              /reset - clear this chat's saved transcript\n\n\
                              Approval requests include Approve/Deny buttons; slash commands remain available.\n\n\
                              Send a plain text message to start a task.",
-                            workspace_label, model_label, tool_authoring
+                            workspace_label, model_label, tool_authoring, dm_access
                         );
                         send_telegram(&adapter, chat_id, vec![reply], None);
                         continue;
@@ -418,7 +420,12 @@ fn send_telegram_with_markup(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DmAdmission {
     Allowed,
-    AllowedFirstBinding(i64),
+    /// Username matched; the caller should bind the sender's numeric user ID
+    /// on the next message. The value is not carried here — `decide_inbound_admission`
+    /// uses `sender_user_id` from its own parameter for the actual bind, so
+    /// the two are always the same identity rather than relying on the
+    /// caller to pass it through correctly.
+    AllowedFirstBinding,
     Denied,
 }
 
@@ -450,7 +457,7 @@ where
     }
     match check_admission(sender_username) {
         DmAdmission::Allowed => InboundAdmission::Accept,
-        DmAdmission::AllowedFirstBinding(_) => match sender_user_id {
+        DmAdmission::AllowedFirstBinding => match sender_user_id {
             Some(id) => InboundAdmission::AcceptAndBind(id),
             None => InboundAdmission::RejectedMissingIdentity,
         },
@@ -527,13 +534,20 @@ impl ChatSessionManager {
         current_model_label_for_help(&self.route, &self.configured_default_model)
     }
 
+    /// Check whether a private-chat sender should be admitted.
+    ///
+    /// `sender_user_id` is `msg.from.id` (the Telegram user identity), not
+    /// `msg.chat.id` (which equals user ID in private chats but could diverge
+    /// if the logic ever changes). Using the user ID directly makes the
+    /// comparison semantically correct and consistent with what `bind_dm_user_id`
+    /// persists.
     pub fn check_dm_admission(
         &self,
-        sender_chat_id: i64,
+        sender_user_id: Option<i64>,
         sender_username: Option<&str>,
     ) -> DmAdmission {
         if let Some(bound_id) = self.bound_dm_user_id {
-            if sender_chat_id == bound_id {
+            if sender_user_id == Some(bound_id) {
                 DmAdmission::Allowed
             } else {
                 DmAdmission::Denied
@@ -542,7 +556,7 @@ impl ChatSessionManager {
             if let Some(sender_username) = sender_username {
                 // Telegram usernames are case-insensitive
                 if sender_username.eq_ignore_ascii_case(allowed_username) {
-                    DmAdmission::AllowedFirstBinding(sender_chat_id)
+                    DmAdmission::AllowedFirstBinding
                 } else {
                     DmAdmission::Denied
                 }
@@ -551,6 +565,21 @@ impl ChatSessionManager {
             }
         } else {
             DmAdmission::Allowed
+        }
+    }
+
+    /// Human-readable summary of the current DM admission policy for the /start
+    /// help message. Safe to display — never reveals the bound numeric user ID.
+    fn dm_access_label(&self) -> String {
+        match (&self.allowed_dm_username, self.bound_dm_user_id) {
+            (None, _) => "open".to_string(),
+            (Some(username), None) => {
+                format!(
+                    "restricted to @{} (unbound — first match will bind)",
+                    username
+                )
+            }
+            (Some(username), Some(_)) => format!("restricted to @{} (bound)", username),
         }
     }
 
@@ -1690,27 +1719,27 @@ mod tests {
 
         // Exact match
         assert!(matches!(
-            manager.check_dm_admission(42, Some("someuser")),
-            DmAdmission::AllowedFirstBinding(42)
+            manager.check_dm_admission(Some(42), Some("someuser")),
+            DmAdmission::AllowedFirstBinding
         ));
         // Different case
         assert!(matches!(
-            manager.check_dm_admission(42, Some("SomeUser")),
-            DmAdmission::AllowedFirstBinding(42)
+            manager.check_dm_admission(Some(42), Some("SomeUser")),
+            DmAdmission::AllowedFirstBinding
         ));
         // All uppercase
         assert!(matches!(
-            manager.check_dm_admission(42, Some("SOMEUSER")),
-            DmAdmission::AllowedFirstBinding(42)
+            manager.check_dm_admission(Some(42), Some("SOMEUSER")),
+            DmAdmission::AllowedFirstBinding
         ));
         // Wrong username
         assert!(matches!(
-            manager.check_dm_admission(42, Some("other")),
+            manager.check_dm_admission(Some(42), Some("other")),
             DmAdmission::Denied
         ));
         // No username provided
         assert!(matches!(
-            manager.check_dm_admission(42, None),
+            manager.check_dm_admission(Some(42), None),
             DmAdmission::Denied
         ));
     }
@@ -1725,7 +1754,7 @@ mod tests {
         let outcome =
             decide_inbound_admission("supergroup", Some(7777), Some("operator"), |_username| {
                 admission_called = true;
-                DmAdmission::AllowedFirstBinding(-1001234)
+                DmAdmission::AllowedFirstBinding
             });
         assert!(matches!(outcome, InboundAdmission::RejectedNonPrivate));
         assert!(
@@ -1741,7 +1770,7 @@ mod tests {
         // identity invariant; this test pins that expectation.
         let outcome =
             decide_inbound_admission("private", Some(424242), Some("operator"), |_username| {
-                DmAdmission::AllowedFirstBinding(424242)
+                DmAdmission::AllowedFirstBinding
             });
         assert!(matches!(outcome, InboundAdmission::AcceptAndBind(424242)));
     }
@@ -1749,7 +1778,7 @@ mod tests {
     #[test]
     fn test_decide_inbound_admission_rejects_first_binding_without_identity() {
         let outcome = decide_inbound_admission("private", None, Some("operator"), |_username| {
-            DmAdmission::AllowedFirstBinding(0)
+            DmAdmission::AllowedFirstBinding
         });
         assert!(matches!(outcome, InboundAdmission::RejectedMissingIdentity));
     }
@@ -1919,6 +1948,119 @@ mod tests {
             preserved,
             Some(777),
             "reinstall with same username must preserve the binding"
+        );
+    }
+
+    #[test]
+    fn test_check_dm_admission_uses_user_id_not_chat_id_for_bound_check() {
+        // After binding, check_dm_admission must compare sender_user_id (from.id)
+        // against the stored bound_dm_user_id, not some other field. Passing a
+        // different value should produce Denied; the matching value should produce
+        // Allowed.
+        let workspace = TempDir::new().unwrap();
+        let manager = ChatSessionManager::new(
+            ModelRoute::openrouter("test-model"),
+            "test-model".to_string(),
+            "test-key".to_string(),
+            RuntimeOptions::default(),
+            workspace.path().to_path_buf(),
+            topagent_core::SecretRegistry::new(),
+            Some("operator".to_string()),
+            Some(424242), // bound user ID
+            None,
+        );
+
+        assert!(matches!(
+            manager.check_dm_admission(Some(424242), Some("operator")),
+            DmAdmission::Allowed
+        ));
+        assert!(matches!(
+            manager.check_dm_admission(Some(999999), Some("operator")),
+            DmAdmission::Denied,
+        ));
+        // None sender_user_id is denied when bound
+        assert!(matches!(
+            manager.check_dm_admission(None, Some("operator")),
+            DmAdmission::Denied,
+        ));
+    }
+
+    #[test]
+    fn test_dm_access_label_describes_admission_state() {
+        let workspace = TempDir::new().unwrap();
+
+        // Open: no restriction
+        let open_manager = ChatSessionManager::new(
+            ModelRoute::openrouter("m"),
+            "m".to_string(),
+            "k".to_string(),
+            RuntimeOptions::default(),
+            workspace.path().to_path_buf(),
+            topagent_core::SecretRegistry::new(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(open_manager.dm_access_label(), "open");
+
+        // Restricted, unbound
+        let unbound_manager = ChatSessionManager::new(
+            ModelRoute::openrouter("m"),
+            "m".to_string(),
+            "k".to_string(),
+            RuntimeOptions::default(),
+            workspace.path().to_path_buf(),
+            topagent_core::SecretRegistry::new(),
+            Some("alice".to_string()),
+            None,
+            None,
+        );
+        let label = unbound_manager.dm_access_label();
+        assert!(
+            label.contains("alice") && label.contains("unbound"),
+            "expected unbound label, got: {label}"
+        );
+
+        // Restricted, bound — must NOT reveal numeric ID
+        let bound_manager = ChatSessionManager::new(
+            ModelRoute::openrouter("m"),
+            "m".to_string(),
+            "k".to_string(),
+            RuntimeOptions::default(),
+            workspace.path().to_path_buf(),
+            topagent_core::SecretRegistry::new(),
+            Some("alice".to_string()),
+            Some(424242),
+            None,
+        );
+        let bound_label = bound_manager.dm_access_label();
+        assert!(
+            bound_label.contains("alice") && bound_label.contains("bound"),
+            "expected bound label, got: {bound_label}"
+        );
+        assert!(
+            !bound_label.contains("424242"),
+            "label must not reveal numeric user ID: {bound_label}"
+        );
+    }
+
+    #[test]
+    fn test_current_model_label_for_help_shows_override_and_default() {
+        use topagent_core::ModelRoute;
+
+        // No override: just the model ID
+        let label =
+            current_model_label_for_help(&ModelRoute::openrouter("minimax/m2"), "minimax/m2");
+        assert_eq!(label, "minimax/m2");
+
+        // Override active: show both
+        let label = current_model_label_for_help(
+            &ModelRoute::openrouter("override/model"),
+            "persisted/model",
+        );
+        assert!(
+            label.contains("override/model") && label.contains("persisted/model"),
+            "label must show both: {label}"
         );
     }
 

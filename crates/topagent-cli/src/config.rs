@@ -338,23 +338,6 @@ pub(crate) fn require_opencode_api_key(api_key: Option<String>) -> Result<String
     )
 }
 
-/// One-shot and Telegram resolve API keys identically: CLI override beats
-/// persisted default beats environment variable. Use these helpers from
-/// every entry path so behavior cannot drift between runtimes.
-pub(crate) fn require_openrouter_api_key_with_default(
-    cli_override: Option<String>,
-    persisted_default: Option<String>,
-) -> Result<String> {
-    require_openrouter_api_key(cli_override.or(persisted_default))
-}
-
-pub(crate) fn require_opencode_api_key_with_default(
-    cli_override: Option<String>,
-    persisted_default: Option<String>,
-) -> Result<String> {
-    require_opencode_api_key(cli_override.or(persisted_default))
-}
-
 pub(crate) fn resolve_provider_for_model(model_id: &str) -> ProviderKind {
     let lower = model_id.to_lowercase();
     if lower.starts_with("glm-")
@@ -455,8 +438,8 @@ pub(crate) fn resolve_telegram_mode_config(
     let token = require_telegram_token_with_default(token, defaults.token.clone())?;
     let model_selection = resolve_runtime_model_selection(params.model, defaults.model.clone());
     let route = build_route_from_resolved(&model_selection.effective);
-    let openrouter_api_key = resolve_openrouter_api_key(params.api_key, &defaults)?;
-    let opencode_api_key = resolve_opencode_api_key(params.opencode_api_key, &defaults)?;
+    let openrouter_api_key = resolve_openrouter_api_key(params.api_key, &defaults);
+    let opencode_api_key = resolve_opencode_api_key(params.opencode_api_key, &defaults);
 
     // Fail fast: the resolved route must have its provider API key present.
     // This catches misconfigured services (e.g. OpenRouter model with no
@@ -504,20 +487,170 @@ pub(crate) fn resolve_telegram_mode_config(
     })
 }
 
+/// Resolved and validated runtime contract for one-shot CLI runs.
+///
+/// Workspace defaults to the current working directory (not the persisted
+/// service workspace) so `topagent "task"` always runs against the directory
+/// the user is in. The api_key is a concrete `String` (not `Option`) because
+/// one-shot fails immediately when the required key is absent — there is no
+/// deferred admission path like Telegram has.
+#[derive(Debug, Clone)]
+pub(crate) struct OneShotConfig {
+    pub workspace: PathBuf,
+    pub route: ModelRoute,
+    /// The single API key required by `route.provider`, already validated present.
+    pub api_key: String,
+    pub options: RuntimeOptions,
+    /// The configured-default model (persisted or built-in fallback).
+    /// May differ from `route.model_id` when a `--model` override is active.
+    pub configured_default_model: String,
+}
+
+/// Build the validated one-shot runtime contract from raw CLI params and
+/// persisted defaults. Fails fast with an operator-usable error if the
+/// workspace is missing or the required API key is absent for the resolved
+/// provider. Token and admission fields are not part of one-shot; use
+/// `resolve_telegram_mode_config` for Telegram runs.
+pub(crate) fn resolve_one_shot_config(
+    params: CliParams,
+    defaults: TelegramModeDefaults,
+) -> Result<OneShotConfig> {
+    let workspace = resolve_workspace_path(params.workspace)?;
+    let model_selection = resolve_runtime_model_selection(params.model, defaults.model.clone());
+    let route = build_route_from_resolved(&model_selection.effective);
+
+    // Fail fast: require the provider API key at config construction, including
+    // the model name in the error message so the operator knows which key to add.
+    let api_key = match route.provider {
+        ProviderKind::OpenRouter => {
+            resolve_openrouter_api_key(params.api_key, &defaults).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "OpenRouter API key required for model '{}': set --api-key or OPENROUTER_API_KEY",
+                    route.model_id
+                )
+            })?
+        }
+        ProviderKind::Opencode => {
+            resolve_opencode_api_key(params.opencode_api_key, &defaults).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Opencode API key required for model '{}': set --opencode-api-key or OPENCODE_API_KEY",
+                    route.model_id
+                )
+            })?
+        }
+    };
+
+    // One-shot respects CLI flags for step/retry/timeout but not the persisted
+    // service defaults — a direct `topagent "task"` run uses the built-in
+    // defaults (50 steps, 10 retries, 120 s) unless the operator passes flags.
+    // generated_tool_authoring is the intentional exception: it is shared with
+    // the persisted service config so authoring mode stays consistent whether
+    // the user runs `topagent telegram` or `topagent "task"`.
+    let options = build_runtime_options(params.max_steps, params.max_retries, params.timeout_secs)
+        .with_generated_tool_authoring(resolve_generated_tool_authoring(
+            params.generated_tool_authoring,
+            defaults.generated_tool_authoring,
+        ));
+
+    Ok(OneShotConfig {
+        workspace,
+        route,
+        api_key,
+        configured_default_model: model_selection.configured_default.model_id,
+        options,
+    })
+}
+
+/// Secret-free summary of the resolved runtime contract, suitable for
+/// operator-facing display. API key and token values are never stored here —
+/// only present/missing booleans. Constructed by `resolve_contract_summary`.
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedContractSummary {
+    pub provider: String,
+    pub effective_model: String,
+    /// Label describing how the effective model was resolved (e.g. "built-in default").
+    pub effective_model_source_label: String,
+    /// Set when the effective model differs from the configured default (CLI override active).
+    pub configured_default_model: Option<String>,
+    pub workspace: std::result::Result<PathBuf, String>,
+    pub openrouter_key_present: bool,
+    pub opencode_key_present: bool,
+    pub token_present: bool,
+    pub allowed_dm_username: Option<String>,
+    pub bound_dm_user_id: Option<i64>,
+    pub tool_authoring: bool,
+    pub max_steps: usize,
+    pub max_retries: usize,
+    pub timeout_secs: u64,
+}
+
+/// Resolve the runtime contract into a safe, secret-free summary for display.
+/// Never fails — workspace errors are captured in the `workspace` field so the
+/// operator sees what is wrong rather than getting an opaque exit.
+pub(crate) fn resolve_contract_summary(
+    params: &CliParams,
+    defaults: &TelegramModeDefaults,
+) -> ResolvedContractSummary {
+    let model_selection =
+        resolve_runtime_model_selection(params.model.clone(), defaults.model.clone());
+    let route = build_route_from_resolved(&model_selection.effective);
+
+    let configured_default_model =
+        if model_selection.configured_default.model_id != model_selection.effective.model_id {
+            Some(model_selection.configured_default.model_id)
+        } else {
+            None
+        };
+
+    let workspace = resolve_workspace_path(
+        params
+            .workspace
+            .clone()
+            .or_else(|| defaults.workspace.clone()),
+    )
+    .map_err(|e| e.to_string());
+
+    let options = build_runtime_options(params.max_steps, params.max_retries, params.timeout_secs)
+        .with_generated_tool_authoring(resolve_generated_tool_authoring(
+            params.generated_tool_authoring,
+            defaults.generated_tool_authoring,
+        ));
+
+    ResolvedContractSummary {
+        provider: match route.provider {
+            ProviderKind::OpenRouter => "OpenRouter".to_string(),
+            ProviderKind::Opencode => "Opencode".to_string(),
+        },
+        effective_model: model_selection.effective.model_id,
+        effective_model_source_label: model_selection.effective.source.label().to_string(),
+        configured_default_model,
+        workspace,
+        openrouter_key_present: resolve_openrouter_api_key(params.api_key.clone(), defaults)
+            .is_some(),
+        opencode_key_present: resolve_opencode_api_key(params.opencode_api_key.clone(), defaults)
+            .is_some(),
+        token_present: defaults.token.is_some(),
+        allowed_dm_username: defaults.allowed_dm_username.clone(),
+        bound_dm_user_id: defaults.bound_dm_user_id,
+        tool_authoring: options.enable_generated_tool_authoring,
+        max_steps: options.max_steps,
+        max_retries: options.max_provider_retries,
+        timeout_secs: options.provider_timeout_secs,
+    }
+}
+
 fn resolve_openrouter_api_key(
     cli_key: Option<String>,
     defaults: &TelegramModeDefaults,
-) -> Result<Option<String>> {
-    let key = require_openrouter_api_key(cli_key.or_else(|| defaults.api_key.clone())).ok();
-    Ok(key)
+) -> Option<String> {
+    require_openrouter_api_key(cli_key.or_else(|| defaults.api_key.clone())).ok()
 }
 
 fn resolve_opencode_api_key(
     cli_key: Option<String>,
     defaults: &TelegramModeDefaults,
-) -> Result<Option<String>> {
-    let key = require_opencode_api_key(cli_key.or_else(|| defaults.opencode_api_key.clone())).ok();
-    Ok(key)
+) -> Option<String> {
+    require_opencode_api_key(cli_key.or_else(|| defaults.opencode_api_key.clone())).ok()
 }
 
 #[cfg(test)]
@@ -980,44 +1113,51 @@ mod tests {
     }
 
     #[test]
-    fn test_require_openrouter_api_key_with_default_prefers_cli_then_persisted() {
-        // CLI override wins.
+    fn test_resolve_one_shot_config_cli_api_key_beats_persisted() {
+        // CLI --api-key wins over persisted default (OpenRouter provider).
+        let workspace = TempDir::new().unwrap();
         std::env::remove_var("OPENROUTER_API_KEY");
-        let key = require_openrouter_api_key_with_default(
-            Some("cli-key".to_string()),
-            Some("persisted-key".to_string()),
-        )
-        .unwrap();
-        assert_eq!(key, "cli-key");
-
-        // No CLI: persisted wins.
-        let key = require_openrouter_api_key_with_default(None, Some("persisted-key".to_string()))
-            .unwrap();
-        assert_eq!(key, "persisted-key");
-
-        // No CLI, no persisted, no env: error.
-        std::env::remove_var("OPENROUTER_API_KEY");
-        let err = require_openrouter_api_key_with_default(None, None).unwrap_err();
-        assert!(err.to_string().contains("OpenRouter API key required"));
+        let defaults = TelegramModeDefaults {
+            api_key: Some("persisted-key".to_string()),
+            model: Some("some/model".to_string()),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: Some("cli-key".to_string()),
+            opencode_api_key: None,
+            model: None,
+            workspace: Some(workspace.path().to_path_buf()),
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let config = resolve_one_shot_config(params, defaults).unwrap();
+        assert_eq!(config.api_key, "cli-key");
     }
 
     #[test]
-    fn test_require_opencode_api_key_with_default_prefers_cli_then_persisted() {
+    fn test_resolve_one_shot_config_cli_opencode_key_beats_persisted() {
+        // CLI --opencode-api-key wins over persisted default (Opencode provider via glm- prefix).
+        let workspace = TempDir::new().unwrap();
         std::env::remove_var("OPENCODE_API_KEY");
-        let key = require_opencode_api_key_with_default(
-            Some("cli-key".to_string()),
-            Some("persisted-key".to_string()),
-        )
-        .unwrap();
-        assert_eq!(key, "cli-key");
-
-        let key =
-            require_opencode_api_key_with_default(None, Some("persisted-key".to_string())).unwrap();
-        assert_eq!(key, "persisted-key");
-
-        std::env::remove_var("OPENCODE_API_KEY");
-        let err = require_opencode_api_key_with_default(None, None).unwrap_err();
-        assert!(err.to_string().contains("Opencode API key required"));
+        let defaults = TelegramModeDefaults {
+            opencode_api_key: Some("persisted-key".to_string()),
+            model: Some("glm-4".to_string()),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: Some("cli-key".to_string()),
+            model: None,
+            workspace: Some(workspace.path().to_path_buf()),
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let config = resolve_one_shot_config(params, defaults).unwrap();
+        assert_eq!(config.api_key, "cli-key");
     }
 
     #[test]
@@ -1169,6 +1309,205 @@ mod tests {
         let config = resolve_telegram_mode_config(None, params, defaults).unwrap();
         assert_eq!(config.configured_default_model, DEFAULT_OPENROUTER_MODEL_ID);
         assert_eq!(config.route.model_id, DEFAULT_OPENROUTER_MODEL_ID);
+    }
+
+    #[test]
+    fn test_resolve_one_shot_config_resolves_workspace_and_api_key() {
+        let workspace = TempDir::new().unwrap();
+        let defaults = TelegramModeDefaults {
+            api_key: Some("openrouter-key".to_string()),
+            model: Some("persisted/model".to_string()),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: Some(workspace.path().to_path_buf()),
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let config = resolve_one_shot_config(params, defaults).unwrap();
+        assert_eq!(config.workspace, workspace.path().canonicalize().unwrap());
+        assert_eq!(config.api_key, "openrouter-key");
+        assert_eq!(config.route.model_id, "persisted/model");
+        assert_eq!(config.configured_default_model, "persisted/model");
+    }
+
+    #[test]
+    fn test_resolve_one_shot_config_fails_fast_when_openrouter_key_missing() {
+        let workspace = TempDir::new().unwrap();
+        let defaults = TelegramModeDefaults {
+            // no OpenRouter key
+            model: Some("some/openrouter-model".to_string()),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: Some(workspace.path().to_path_buf()),
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let err = resolve_one_shot_config(params, defaults)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("OpenRouter API key required"),
+            "error must name the problem: {err}"
+        );
+        assert!(
+            err.contains("some/openrouter-model"),
+            "error must name the model: {err}"
+        );
+    }
+
+    #[test]
+    fn test_resolve_one_shot_config_fails_fast_when_opencode_key_missing() {
+        let workspace = TempDir::new().unwrap();
+        let defaults = TelegramModeDefaults {
+            // no Opencode key; glm- prefix routes to Opencode
+            model: Some("glm-4".to_string()),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: Some(workspace.path().to_path_buf()),
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let err = resolve_one_shot_config(params, defaults)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Opencode API key required"),
+            "error must name the problem: {err}"
+        );
+        assert!(err.contains("glm-4"), "error must name the model: {err}");
+    }
+
+    #[test]
+    fn test_resolve_one_shot_config_cli_override_beats_persisted_model() {
+        let workspace = TempDir::new().unwrap();
+        let defaults = TelegramModeDefaults {
+            api_key: Some("k".to_string()),
+            model: Some("persisted/model".to_string()),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: Some("override/model".to_string()),
+            workspace: Some(workspace.path().to_path_buf()),
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let config = resolve_one_shot_config(params, defaults).unwrap();
+        assert_eq!(config.route.model_id, "override/model");
+        assert_eq!(config.configured_default_model, "persisted/model");
+    }
+
+    #[test]
+    fn test_resolve_one_shot_config_uses_built_in_defaults_for_steps_retries_timeout() {
+        // One-shot intentionally does NOT fall back to persisted service
+        // max_steps / max_retries / timeout_secs (only Telegram does). Verify
+        // that the built-in defaults are used when no CLI flags are passed.
+        let workspace = TempDir::new().unwrap();
+        let defaults = TelegramModeDefaults {
+            api_key: Some("k".to_string()),
+            max_steps: Some(99),
+            max_retries: Some(8),
+            timeout_secs: Some(200),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: Some(workspace.path().to_path_buf()),
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let config = resolve_one_shot_config(params, defaults).unwrap();
+        // Must use built-in defaults, not the persisted 99/8/200
+        assert_eq!(config.options.max_steps, 50);
+        assert_eq!(config.options.max_provider_retries, 10);
+        assert_eq!(config.options.provider_timeout_secs, 120);
+    }
+
+    #[test]
+    fn test_resolve_contract_summary_shows_key_presence_without_values() {
+        let workspace = TempDir::new().unwrap();
+        let defaults = TelegramModeDefaults {
+            api_key: Some("sk-real-secret".to_string()),
+            token: Some("123:token-secret".to_string()),
+            workspace: Some(workspace.path().to_path_buf()),
+            allowed_dm_username: Some("operator".to_string()),
+            bound_dm_user_id: Some(424242),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let summary = resolve_contract_summary(&params, &defaults);
+
+        assert!(summary.openrouter_key_present);
+        assert!(!summary.opencode_key_present);
+        assert!(summary.token_present);
+        assert_eq!(summary.allowed_dm_username.as_deref(), Some("operator"));
+        assert_eq!(summary.bound_dm_user_id, Some(424242));
+        // configured_default_model is None when effective == default (no override)
+        assert!(summary.configured_default_model.is_none());
+    }
+
+    #[test]
+    fn test_resolve_contract_summary_separates_override_from_configured_default() {
+        let workspace = TempDir::new().unwrap();
+        let defaults = TelegramModeDefaults {
+            api_key: Some("k".to_string()),
+            model: Some("persisted/model".to_string()),
+            workspace: Some(workspace.path().to_path_buf()),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: Some("override/model".to_string()),
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let summary = resolve_contract_summary(&params, &defaults);
+        assert_eq!(summary.effective_model, "override/model");
+        assert_eq!(
+            summary.configured_default_model.as_deref(),
+            Some("persisted/model")
+        );
+        assert!(summary
+            .effective_model_source_label
+            .contains("CLI override"));
     }
 
     #[test]
