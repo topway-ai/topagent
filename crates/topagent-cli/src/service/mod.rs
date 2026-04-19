@@ -3,6 +3,7 @@ mod lifecycle;
 pub mod managed_env;
 mod model;
 mod state;
+mod upgrade;
 
 use anyhow::Result;
 
@@ -10,6 +11,7 @@ use crate::config::CliParams;
 
 pub(crate) use install::run_install;
 pub(crate) use lifecycle::{run_status, run_uninstall};
+pub(crate) use upgrade::run_upgrade;
 
 pub(crate) fn run_service_command(
     command: crate::ServiceCommands,

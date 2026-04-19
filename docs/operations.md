@@ -105,6 +105,8 @@ topagent checkpoint restore  # restore the latest checkpoint and clear Telegram 
 topagent run status          # show execution-session state: checkpoint, transcripts, service state, recovery guidance
 topagent config inspect      # show resolved provider, model, key presence, workspace, and options
 topagent service install     # install service without the full interactive flow
+topagent upgrade             # download and install the latest GitHub release binary; stops/restarts service
+topagent upgrade --use-cargo # build and install from source via cargo instead of a release binary
 topagent service uninstall   # remove service and config, keep binary
 topagent uninstall           # remove service, config, and installed binary
 ```

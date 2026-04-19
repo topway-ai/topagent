@@ -42,7 +42,7 @@ use crate::memory::{promote_verified_task, PromotionContext};
 use crate::progress::LiveProgress;
 use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
 use crate::service::{
-    run_install, run_model_command, run_service_command, run_status, run_uninstall,
+    run_install, run_model_command, run_service_command, run_status, run_uninstall, run_upgrade,
 };
 use crate::telegram::run_telegram;
 
@@ -172,6 +172,12 @@ enum Commands {
     Run {
         #[command(subcommand)]
         command: RunCommands,
+    },
+    /// Upgrade the TopAgent binary to the latest GitHub release and restart the service.
+    Upgrade {
+        /// Build from source via `cargo install --git` instead of downloading a release binary.
+        #[arg(long)]
+        use_cargo: bool,
     },
     /// Remove the installed TopAgent setup and, when applicable, the installed binary.
     Uninstall {
@@ -338,6 +344,7 @@ fn main() -> Result<()> {
         Some(Commands::Run { command }) => match command {
             RunCommands::Status => run_session_status(params.workspace),
         },
+        Some(Commands::Upgrade { use_cargo }) => run_upgrade(use_cargo),
         Some(Commands::Uninstall { purge }) => run_uninstall(purge),
         Some(Commands::Service { command }) => {
             let purge = matches!(command, crate::ServiceCommands::Uninstall { purge: true });
