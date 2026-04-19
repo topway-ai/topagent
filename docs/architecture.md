@@ -25,7 +25,7 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 | `behavior` | Typed behavior contract and policy root; internal task/action/approval/durability/compaction modules keep runtime policy seams narrow |
 | `approval` | Approval mailbox, request/state transitions, runtime approval enforcement objects |
 | `compaction` | Layered transcript compaction and prompt rebuild support |
-| `run_state` | In-run objective, changed/active file tracking, bash verification history, compact tool trace capture, baseline attribution, proof-of-work assembly |
+| `run_state` | In-run objective, changed/active file tracking, bash verification history, compact tool trace capture, baseline attribution, proof-of-work assembly; finalizes into `TaskResult` with `ExecutionSessionOutcome` on all terminal paths (completed, stopped, max-steps, failed) |
 | `session` | Conversation history management, truncation |
 | `message` | Message types (user, assistant, system, tool_request, tool_result) |
 | `provider` | Provider trait, response types |

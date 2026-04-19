@@ -1,6 +1,52 @@
 use crate::provenance::{RunTrustContext, SourceLabel};
 use serde::{Deserialize, Serialize};
 
+/// High-level terminal state of an execution session.
+///
+/// Orthogonal to `DeliveryOutcome` (which describes verification quality):
+/// - `ExecutionSessionOutcome` answers "how did the session end?"
+/// - `DeliveryOutcome` answers "what quality of work was delivered?"
+///
+/// On any non-Ok exit from `agent.run()`, the agent stores a partial
+/// `TaskResult` with this outcome set so callers can inspect files changed,
+/// bash history, and session state even after an interruption.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionSessionOutcome {
+    /// Session has not yet produced a result (initial state before a run
+    /// completes or is assigned a terminal outcome).
+    #[default]
+    Unknown,
+    /// The agent loop ran to completion and emitted a final text response.
+    Completed,
+    /// The run was cancelled via the cancellation token (e.g., Ctrl-C or
+    /// /stop). Files may have been changed before the stop.
+    Stopped,
+    /// The step limit was reached before the agent produced a final response.
+    MaxStepsReached,
+    /// The run failed with a provider or runtime error.
+    Failed,
+}
+
+impl ExecutionSessionOutcome {
+    /// Short label safe to show in operator-facing status output.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Completed => "completed",
+            Self::Stopped => "stopped",
+            Self::MaxStepsReached => "interrupted (max steps)",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// True when the session ended in a way that may have left workspace
+    /// changes without a delivery summary (stop or max-steps).
+    pub fn may_have_partial_changes(self) -> bool {
+        matches!(self, Self::Stopped | Self::MaxStepsReached | Self::Failed)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub enum DeliveryOutcome {
     #[default]
@@ -48,6 +94,8 @@ pub struct ToolTraceStep {
 pub struct TaskResult {
     pub outcome_summary: String,
     pub evidence: TaskEvidence,
+    #[serde(default)]
+    pub session_outcome: ExecutionSessionOutcome,
 }
 
 impl TaskResult {
@@ -55,6 +103,7 @@ impl TaskResult {
         Self {
             outcome_summary,
             evidence: TaskEvidence::default(),
+            session_outcome: ExecutionSessionOutcome::default(),
         }
     }
 
@@ -175,6 +224,15 @@ impl TaskResult {
 
     pub fn has_low_trust_action_influence(&self) -> bool {
         self.trust_context().has_low_trust_action_influence()
+    }
+
+    pub fn session_outcome(&self) -> ExecutionSessionOutcome {
+        self.session_outcome
+    }
+
+    pub fn with_session_outcome(mut self, outcome: ExecutionSessionOutcome) -> Self {
+        self.session_outcome = outcome;
+        self
     }
 
     pub fn format_proof_of_work(&self) -> String {
@@ -762,5 +820,70 @@ mod tests {
         let proof = result.format_proof_of_work();
         assert!(proof.contains("Trust Notes"));
         assert!(proof.contains("fetched web content"));
+    }
+
+    // ── ExecutionSessionOutcome contract ──
+
+    #[test]
+    fn test_session_outcome_defaults_to_unknown() {
+        let result = TaskResult::new("Done".to_string());
+        assert_eq!(result.session_outcome(), ExecutionSessionOutcome::Unknown);
+    }
+
+    #[test]
+    fn test_with_session_outcome_sets_and_reads_back() {
+        for outcome in [
+            ExecutionSessionOutcome::Completed,
+            ExecutionSessionOutcome::Stopped,
+            ExecutionSessionOutcome::MaxStepsReached,
+            ExecutionSessionOutcome::Failed,
+        ] {
+            let result = TaskResult::new("Done".to_string()).with_session_outcome(outcome);
+            assert_eq!(
+                result.session_outcome(),
+                outcome,
+                "outcome {outcome:?} must round-trip through with_session_outcome"
+            );
+        }
+    }
+
+    #[test]
+    fn test_may_have_partial_changes_is_true_for_interrupted_outcomes() {
+        assert!(ExecutionSessionOutcome::Stopped.may_have_partial_changes());
+        assert!(ExecutionSessionOutcome::MaxStepsReached.may_have_partial_changes());
+        assert!(ExecutionSessionOutcome::Failed.may_have_partial_changes());
+        assert!(!ExecutionSessionOutcome::Completed.may_have_partial_changes());
+        assert!(!ExecutionSessionOutcome::Unknown.may_have_partial_changes());
+    }
+
+    #[test]
+    fn test_session_outcome_label_is_human_readable() {
+        assert_eq!(ExecutionSessionOutcome::Completed.label(), "completed");
+        assert_eq!(ExecutionSessionOutcome::Stopped.label(), "stopped");
+        assert_eq!(
+            ExecutionSessionOutcome::MaxStepsReached.label(),
+            "interrupted (max steps)"
+        );
+        assert_eq!(ExecutionSessionOutcome::Failed.label(), "failed");
+        assert_eq!(ExecutionSessionOutcome::Unknown.label(), "unknown");
+    }
+
+    #[test]
+    fn test_session_outcome_is_orthogonal_to_delivery_outcome() {
+        // A run can be Completed with AnalysisOnly delivery (no files changed).
+        let result = TaskResult::new("Analysis done".to_string())
+            .with_session_outcome(ExecutionSessionOutcome::Completed)
+            .with_delivery_outcome(DeliveryOutcome::AnalysisOnly);
+        assert_eq!(result.session_outcome(), ExecutionSessionOutcome::Completed);
+        assert_eq!(result.delivery_outcome(), DeliveryOutcome::AnalysisOnly);
+
+        // A run can be Stopped with CodeChangingUnverified (files changed before stop).
+        let result = TaskResult::new("".to_string())
+            .with_files_changed(vec!["src/lib.rs".to_string()])
+            .with_session_outcome(ExecutionSessionOutcome::Stopped)
+            .with_delivery_outcome(DeliveryOutcome::CodeChangingUnverified);
+        assert_eq!(result.session_outcome(), ExecutionSessionOutcome::Stopped);
+        assert!(result.has_files_changed());
+        assert!(result.session_outcome().may_have_partial_changes());
     }
 }

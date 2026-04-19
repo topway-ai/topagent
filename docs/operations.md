@@ -102,6 +102,7 @@ topagent service restart     # restart the service (keeps current config)
 topagent checkpoint status   # show the latest workspace checkpoint
 topagent checkpoint diff     # preview the restore diff for the latest checkpoint
 topagent checkpoint restore  # restore the latest checkpoint and clear Telegram transcripts
+topagent run status          # show execution-session state: checkpoint, transcripts, service state, recovery guidance
 topagent config inspect      # show resolved provider, model, key presence, workspace, and options
 topagent service install     # install service without the full interactive flow
 topagent service uninstall   # remove service and config, keep binary

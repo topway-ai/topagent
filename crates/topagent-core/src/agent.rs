@@ -171,6 +171,16 @@ impl Agent {
         self.last_task_result.as_ref()
     }
 
+    /// Terminal outcome of the most recent run, or `Unknown` if no run has
+    /// completed yet. Set on ALL exit paths including stop/cancel/error so
+    /// callers can inspect session state without matching against `Error` variants.
+    pub fn session_outcome(&self) -> crate::task_result::ExecutionSessionOutcome {
+        self.last_task_result
+            .as_ref()
+            .map(|r| r.session_outcome())
+            .unwrap_or_default()
+    }
+
     pub fn task_mode(&self) -> plan::TaskMode {
         self.planning.task_mode()
     }

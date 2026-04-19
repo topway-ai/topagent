@@ -79,6 +79,7 @@ pub use runtime::RuntimeOptions;
 pub use secrets::SecretRegistry;
 pub use session::Session;
 pub use task_result::{
-    DeliveryOutcome, TaskEvidence, TaskResult, ToolTraceStep, VerificationCommand,
+    DeliveryOutcome, ExecutionSessionOutcome, TaskEvidence, TaskResult, ToolTraceStep,
+    VerificationCommand,
 };
 pub use tool_spec::ToolSpec;

@@ -38,8 +38,9 @@ fn test_cli_bare_instruction_requires_api_key() {
         .assert()
         .failure()
         .stderr(
-            predicates::str::contains("OpenRouter API key required")
-                .and(predicates::str::contains("set --api-key or OPENROUTER_API_KEY")),
+            predicates::str::contains("OpenRouter API key required").and(
+                predicates::str::contains("set --api-key or OPENROUTER_API_KEY"),
+            ),
         );
 }
 

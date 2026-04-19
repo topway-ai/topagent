@@ -1,7 +1,7 @@
 use super::Agent;
 use crate::context::ExecutionContext;
 use crate::hooks::{dispatch_hooks, HookEvent, HookInput};
-use crate::task_result::VerificationCommand;
+use crate::task_result::{ExecutionSessionOutcome, VerificationCommand};
 use crate::{Error, Message, ProviderResponse, Result};
 use std::process::Command;
 
@@ -18,6 +18,30 @@ impl Agent {
         self.emit_progress(crate::progress::ProgressUpdate::received());
 
         let result = self.run_inner(ctx, instruction);
+
+        // On any non-Ok exit, capture a partial TaskResult so callers can
+        // inspect files changed, bash history, and session outcome even after
+        // an interruption. finalize_text_response already sets last_task_result
+        // on the Ok path, so we only fill it here when it is still None.
+        if result.is_err() && self.last_task_result.is_none() {
+            let outcome = match &result {
+                Err(Error::Stopped(_)) => ExecutionSessionOutcome::Stopped,
+                Err(Error::MaxStepsReached(_)) => ExecutionSessionOutcome::MaxStepsReached,
+                _ => ExecutionSessionOutcome::Failed,
+            };
+            let partial = self
+                .run_state
+                .build_task_result(
+                    "",
+                    ctx,
+                    &ctx.workspace_root,
+                    &self.behavior,
+                    &self.generated_tool_warnings,
+                )
+                .with_session_outcome(outcome);
+            self.last_task_result = Some(partial);
+        }
+
         match &result {
             Ok(_) => self.emit_progress(crate::progress::ProgressUpdate::completed()),
             Err(Error::Stopped(_)) => {
@@ -215,7 +239,8 @@ impl Agent {
         } else {
             text
         };
-        self.last_task_result = Some(task_result);
+        self.last_task_result =
+            Some(task_result.with_session_outcome(ExecutionSessionOutcome::Completed));
         final_response
     }
 
