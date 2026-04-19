@@ -54,3 +54,39 @@ pub(super) fn format_approval_resolution(entry: &ApprovalEntry, approve: bool) -
         if approve { "approved" } else { "denied" }
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_approval_callback_data_recognizes_buttons() {
+        assert_eq!(
+            parse_approval_callback_data("approval:approve:apr-7"),
+            Some((true, "apr-7"))
+        );
+        assert_eq!(
+            parse_approval_callback_data("approval:deny:apr-9"),
+            Some((false, "apr-9"))
+        );
+        assert_eq!(parse_approval_callback_data("approval:approve:"), None);
+        assert_eq!(parse_approval_callback_data("unknown:approve:apr-1"), None);
+    }
+
+    #[test]
+    fn test_approval_reply_markup_contains_approve_and_deny_buttons() {
+        let markup = approval_reply_markup("apr-5");
+        assert_eq!(markup.inline_keyboard.len(), 1);
+        assert_eq!(markup.inline_keyboard[0].len(), 2);
+        assert_eq!(markup.inline_keyboard[0][0].text, "Approve");
+        assert_eq!(
+            markup.inline_keyboard[0][0].callback_data,
+            "approval:approve:apr-5"
+        );
+        assert_eq!(markup.inline_keyboard[0][1].text, "Deny");
+        assert_eq!(
+            markup.inline_keyboard[0][1].callback_data,
+            "approval:deny:apr-5"
+        );
+    }
+}
