@@ -81,8 +81,10 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
     };
 
     let explicit_model = trim_nonempty(params.model.clone());
+    let provider_kind = selected_provider.to_provider_kind();
     let selected_model = if explicit_model.is_some() {
-        let resolved = resolve_model_choice(params.model.clone(), None, defaults.model.clone());
+        let resolved =
+            resolve_model_choice(provider_kind, params.model.clone(), None, defaults.model.clone());
         println!(
             "{} model: {} (--model)",
             selected_provider.label(),
@@ -107,7 +109,8 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
 
     let allowed_username = prompt_for_install_username(defaults.allowed_dm_username.as_deref())?;
 
-    let resolved_model = resolve_model_choice(params.model, selected_model, defaults.model.clone());
+    let resolved_model =
+        resolve_model_choice(provider_kind, params.model, selected_model, defaults.model.clone());
     // Preserve the bound DM user id when the operator kept the same allowed
     // username; otherwise reset binding so Telegram rebinds against the new
     // admission policy on the next matched message.
@@ -117,7 +120,7 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
         None
     };
     let configured_default_model =
-        resolve_model_choice(None, None, defaults.model.clone()).model_id;
+        resolve_model_choice(provider_kind, None, None, defaults.model.clone()).model_id;
     let config = TelegramModeConfig {
         token,
         openrouter_api_key: api_key,
@@ -287,7 +290,8 @@ fn build_install_model_prompt(
     api_key: Option<&str>,
     existing_model: Option<String>,
 ) -> Result<InstallModelPrompt> {
-    let default_model = current_configured_model(existing_model.clone()).model_id;
+    let default_model =
+        current_configured_model(provider.to_provider_kind(), existing_model.clone()).model_id;
 
     match provider {
         SelectedProvider::OpenRouter => {
@@ -306,9 +310,21 @@ fn build_install_model_prompt(
                 "glm-4".to_string(),
                 "glm-4-flash".to_string(),
                 "glm-3".to_string(),
+                "kimi-k2".to_string(),
+                "qwen/qwen3.6-plus".to_string(),
             ],
             default_model: if existing_model
-                .map(|m| m.starts_with("glm-"))
+                .as_ref()
+                .map(|m| {
+                    // Keep the existing model as picker default if it looks like an
+                    // Opencode model (cosmetic UI heuristic only — not used for routing).
+                    let l = m.to_lowercase();
+                    l.starts_with("glm-")
+                        || l.starts_with("kimi-")
+                        || l.starts_with("mimo-")
+                        || l.starts_with("qwen/")
+                        || l == "opencode"
+                })
                 .unwrap_or(false)
             {
                 default_model

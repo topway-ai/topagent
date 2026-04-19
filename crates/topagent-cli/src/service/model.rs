@@ -8,7 +8,6 @@ use crate::openrouter_models::{
     openrouter_model_cache_path, save_cached_openrouter_models,
 };
 use crate::operational_paths::{service_paths, ServicePaths};
-use topagent_core::ProviderKind;
 
 use super::install::prompt_for_install_model;
 use super::lifecycle::restart_service_if_installed;
@@ -40,19 +39,18 @@ fn run_model_status(params: CliParams) -> Result<()> {
     let state = load_control_plane_state(params.model)?;
     let cache_path = openrouter_model_cache_path()?;
     let cached = load_cached_openrouter_models(&cache_path)?;
-    let default_provider = resolve_provider_for_model(&state.model_selection.effective.model_id);
 
     println!("TopAgent model status");
     println!(
         "Configured default model: {} [{}] ({})",
         state.model_selection.configured_default.model_id,
-        resolve_provider_for_model(&state.model_selection.configured_default.model_id),
+        state.model_selection.configured_default.provider,
         state.model_selection.configured_default.source.label()
     );
     println!(
         "Effective model: {} [{}] ({})",
         state.model_selection.effective.model_id,
-        default_provider,
+        state.model_selection.effective.provider,
         state.model_selection.effective.source.label()
     );
     println!(
@@ -89,8 +87,13 @@ fn run_model_set(model_id: String) -> Result<()> {
         return Err(anyhow::anyhow!("Model ID cannot be empty."));
     }
 
-    let provider = resolve_provider_for_model(&model_id);
     let paths = service_paths()?;
+    // Read persisted provider for display — model set does not change the provider.
+    let env_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
+    let persisted_provider = env_values
+        .get(TOPAGENT_PROVIDER_KEY)
+        .and_then(|v| SelectedProvider::from_str(v));
+    let provider = provider_or_default(persisted_provider);
     let report = update_configured_model(&paths, model_id, None)?;
 
     println!("TopAgent model updated.");
@@ -132,36 +135,27 @@ fn run_model_pick(params: CliParams) -> Result<()> {
         });
 
     let explicit_model = trim_nonempty(params.model.clone());
-    let resolved_for_check = resolve_model_choice(
-        explicit_model.clone(),
-        None,
-        persisted_model_from_env_values(&values),
-    );
-    let provider = match resolve_provider_for_model(&resolved_for_check.model_id) {
-        ProviderKind::OpenRouter => SelectedProvider::OpenRouter,
-        ProviderKind::Opencode => SelectedProvider::Opencode,
-    };
+    let persisted_model = persisted_model_from_env_values(&values);
+    let persisted_provider = values
+        .get(TOPAGENT_PROVIDER_KEY)
+        .and_then(|v| SelectedProvider::from_str(v));
+    let provider_kind = provider_or_default(persisted_provider);
+    let provider = SelectedProvider::from_provider_kind(provider_kind);
+
     let selected_model = if explicit_model.is_some() {
-        let resolved = resolve_model_choice(
-            params.model.clone(),
-            None,
-            persisted_model_from_env_values(&values),
-        );
+        let resolved =
+            resolve_model_choice(provider_kind, params.model.clone(), None, persisted_model.clone());
         println!("Model: {} (--model)", resolved.model_id);
         None
     } else {
         Some(prompt_for_install_model(
             provider,
             api_key.as_deref(),
-            persisted_model_from_env_values(&values),
+            persisted_model.clone(),
         )?)
     };
 
-    let resolved_model = resolve_model_choice(
-        params.model,
-        selected_model,
-        persisted_model_from_env_values(&values),
-    );
+    let resolved_model = resolve_model_choice(provider_kind, params.model, selected_model, persisted_model);
     let report = update_configured_model(
         &paths,
         resolved_model.model_id.clone(),
@@ -199,9 +193,15 @@ fn run_model_list() -> Result<()> {
     let paths = service_paths()?;
     let env_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
     let cache_path = openrouter_model_cache_path()?;
-    let current_model =
-        current_configured_model(persisted_model_from_env_values(&env_values)).model_id;
-    let current_provider = resolve_provider_for_model(&current_model);
+    let persisted_provider = env_values
+        .get(TOPAGENT_PROVIDER_KEY)
+        .and_then(|v| SelectedProvider::from_str(v));
+    let current_resolved = current_configured_model(
+        provider_or_default(persisted_provider),
+        persisted_model_from_env_values(&env_values),
+    );
+    let current_model = current_resolved.model_id;
+    let current_provider = current_resolved.provider;
     let Some(cached) = load_cached_openrouter_models(&cache_path)? else {
         println!("TopAgent model list");
         println!("Current model: {} [{}]", current_model, current_provider);
@@ -284,8 +284,14 @@ fn update_configured_model(
     assert_managed_or_absent(&paths.env_path, "service env file")?;
 
     let mut values = read_managed_env_metadata(&paths.env_path)?;
-    let previous_model =
-        current_configured_model(persisted_model_from_env_values(&values)).model_id;
+    let persisted_provider = values
+        .get(TOPAGENT_PROVIDER_KEY)
+        .and_then(|v| SelectedProvider::from_str(v));
+    let previous_model = current_configured_model(
+        provider_or_default(persisted_provider),
+        persisted_model_from_env_values(&values),
+    )
+    .model_id;
     values.insert(TOPAGENT_MODEL_KEY.to_string(), model_id.clone());
     write_managed_env_values(&paths.env_path, &values)?;
 

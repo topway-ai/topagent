@@ -3,8 +3,8 @@ use std::path::Path;
 use topagent_core::tool_genesis::ToolGenesis;
 
 use crate::config::{
-    resolve_runtime_model_selection, resolve_workspace_path, CliParams, TOPAGENT_MODEL_KEY,
-    TOPAGENT_SERVICE_MANAGED_KEY,
+    provider_or_default, resolve_runtime_model_selection, resolve_workspace_path, CliParams,
+    SelectedProvider, TOPAGENT_MODEL_KEY, TOPAGENT_PROVIDER_KEY, TOPAGENT_SERVICE_MANAGED_KEY,
 };
 use crate::managed_files::{is_topagent_managed_file, read_managed_env_metadata};
 use crate::memory::{
@@ -624,7 +624,14 @@ fn check_model_config(
         .filter(|v| !v.trim().is_empty())
         .map(String::from);
 
-    let selection = resolve_runtime_model_selection(params.model.clone(), persisted_model);
+    let persisted_provider = env_values
+        .get(TOPAGENT_PROVIDER_KEY)
+        .and_then(|v| SelectedProvider::from_str(v));
+    let selection = resolve_runtime_model_selection(
+        provider_or_default(persisted_provider),
+        params.model.clone(),
+        persisted_model,
+    );
 
     if selection.effective.source == crate::config::ModelResolutionSource::BuiltInFallback {
         checks.push(CheckResult {

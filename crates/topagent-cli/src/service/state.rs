@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use crate::config::{
-    resolve_runtime_model_selection, RuntimeModelSelection, TOPAGENT_WORKSPACE_KEY,
+    provider_or_default, resolve_runtime_model_selection, RuntimeModelSelection, SelectedProvider,
+    TOPAGENT_PROVIDER_KEY, TOPAGENT_WORKSPACE_KEY,
 };
 use crate::managed_files::{is_topagent_managed_file, read_managed_env_metadata};
 use crate::operational_paths::{service_paths, ServicePaths};
@@ -66,7 +67,11 @@ pub(super) fn load_control_plane_state(
     let service_probe = load_service_probe(&paths);
     let service_installed = service_probe.service_installed;
     let setup_installed = config_installed || service_installed;
+    let persisted_provider = env_values
+        .get(TOPAGENT_PROVIDER_KEY)
+        .and_then(|v| SelectedProvider::from_str(v));
     let model_selection = resolve_runtime_model_selection(
+        provider_or_default(persisted_provider),
         explicit_model,
         persisted_model_from_env_values(&env_values),
     );

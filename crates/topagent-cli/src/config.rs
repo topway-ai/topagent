@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use topagent_core::{
-    model::{ModelRoute, DEFAULT_OPENROUTER_MODEL_ID},
+    model::ModelRoute,
     ProviderKind, RuntimeOptions,
 };
 
@@ -110,6 +110,20 @@ impl SelectedProvider {
             _ => None,
         }
     }
+
+    pub fn to_provider_kind(self) -> ProviderKind {
+        match self {
+            Self::OpenRouter => ProviderKind::OpenRouter,
+            Self::Opencode => ProviderKind::Opencode,
+        }
+    }
+
+    pub fn from_provider_kind(kind: ProviderKind) -> Self {
+        match kind {
+            ProviderKind::OpenRouter => Self::OpenRouter,
+            ProviderKind::Opencode => Self::Opencode,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -180,6 +194,7 @@ impl ModelResolutionSource {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedModel {
+    pub provider: ProviderKind,
     pub model_id: String,
     pub source: ModelResolutionSource,
 }
@@ -338,18 +353,15 @@ pub(crate) fn require_opencode_api_key(api_key: Option<String>) -> Result<String
     )
 }
 
-pub(crate) fn resolve_provider_for_model(model_id: &str) -> ProviderKind {
-    let lower = model_id.to_lowercase();
-    if lower.starts_with("glm-")
-        || lower.starts_with("mimo-")
-        || lower.starts_with("minimax-m")
-        || lower.starts_with("kimi-")
-        || lower == "opencode"
-    {
-        ProviderKind::Opencode
-    } else {
-        ProviderKind::OpenRouter
-    }
+/// Resolve the effective provider from an optional explicit config.
+/// Falls back to `ProviderKind::OpenRouter` when no provider is persisted.
+/// All configs written since PR1 include an explicit TOPAGENT_PROVIDER, so
+/// the fallback is only reachable on configs that predate the install migration
+/// and were not covered by the PR2 one-time migration before it was removed.
+pub(crate) fn provider_or_default(explicit: Option<SelectedProvider>) -> ProviderKind {
+    explicit
+        .map(|p| p.to_provider_kind())
+        .unwrap_or(ProviderKind::OpenRouter)
 }
 
 pub(crate) fn require_telegram_token(token: Option<String>) -> Result<String> {
@@ -376,12 +388,14 @@ pub(crate) fn require_telegram_token_with_default(
 }
 
 pub(crate) fn resolve_model_choice(
+    provider: ProviderKind,
     explicit_model: Option<String>,
     interactive_selection: Option<String>,
     persisted_model: Option<String>,
 ) -> ResolvedModel {
     if let Some(model_id) = normalize_nonempty_string(explicit_model) {
         return ResolvedModel {
+            provider,
             model_id,
             source: ModelResolutionSource::CliOverride,
         };
@@ -389,6 +403,7 @@ pub(crate) fn resolve_model_choice(
 
     if let Some(model_id) = normalize_nonempty_string(interactive_selection) {
         return ResolvedModel {
+            provider,
             model_id,
             source: ModelResolutionSource::InteractiveSelection,
         };
@@ -396,23 +411,26 @@ pub(crate) fn resolve_model_choice(
 
     if let Some(model_id) = normalize_nonempty_string(persisted_model) {
         return ResolvedModel {
+            provider,
             model_id,
             source: ModelResolutionSource::PersistedDefault,
         };
     }
 
     ResolvedModel {
-        model_id: DEFAULT_OPENROUTER_MODEL_ID.to_string(),
+        provider,
+        model_id: provider.default_model_id().to_string(),
         source: ModelResolutionSource::BuiltInFallback,
     }
 }
 
 pub(crate) fn resolve_runtime_model_selection(
+    provider: ProviderKind,
     explicit_model: Option<String>,
     persisted_model: Option<String>,
 ) -> RuntimeModelSelection {
-    let configured_default = resolve_model_choice(None, None, persisted_model.clone());
-    let effective = resolve_model_choice(explicit_model, None, persisted_model);
+    let configured_default = resolve_model_choice(provider, None, None, persisted_model.clone());
+    let effective = resolve_model_choice(provider, explicit_model, None, persisted_model);
     RuntimeModelSelection {
         configured_default,
         effective,
@@ -420,12 +438,15 @@ pub(crate) fn resolve_runtime_model_selection(
 }
 
 pub(crate) fn build_route_from_resolved(model: &ResolvedModel) -> ModelRoute {
-    let provider = resolve_provider_for_model(&model.model_id);
-    ModelRoute::new(provider, &model.model_id)
+    // Provider is explicit in the resolved model — no string-prefix inference.
+    ModelRoute::new(model.provider, &model.model_id)
 }
 
-pub(crate) fn current_configured_model(persisted_model: Option<String>) -> ResolvedModel {
-    resolve_model_choice(None, None, persisted_model)
+pub(crate) fn current_configured_model(
+    provider: ProviderKind,
+    persisted_model: Option<String>,
+) -> ResolvedModel {
+    resolve_model_choice(provider, None, None, persisted_model)
 }
 
 pub(crate) fn resolve_telegram_mode_config(
@@ -436,7 +457,11 @@ pub(crate) fn resolve_telegram_mode_config(
     // Token is validated first so token errors are always reported before
     // API key errors (preserving the UX ordering the smoke tests rely on).
     let token = require_telegram_token_with_default(token, defaults.token.clone())?;
-    let model_selection = resolve_runtime_model_selection(params.model, defaults.model.clone());
+    let model_selection = resolve_runtime_model_selection(
+        provider_or_default(defaults.provider),
+        params.model,
+        defaults.model.clone(),
+    );
     let route = build_route_from_resolved(&model_selection.effective);
     let openrouter_api_key = resolve_openrouter_api_key(params.api_key, &defaults);
     let opencode_api_key = resolve_opencode_api_key(params.opencode_api_key, &defaults);
@@ -463,10 +488,8 @@ pub(crate) fn resolve_telegram_mode_config(
         }
     }
 
-    let selected_provider = defaults.provider.unwrap_or(match route.provider {
-        ProviderKind::Opencode => SelectedProvider::Opencode,
-        ProviderKind::OpenRouter => SelectedProvider::OpenRouter,
-    });
+    // route.provider already reflects the explicit provider decision (or legacy fallback).
+    let selected_provider = SelectedProvider::from_provider_kind(route.provider);
     Ok(TelegramModeConfig {
         token,
         openrouter_api_key,
@@ -516,7 +539,11 @@ pub(crate) fn resolve_one_shot_config(
     defaults: TelegramModeDefaults,
 ) -> Result<OneShotConfig> {
     let workspace = resolve_workspace_path(params.workspace)?;
-    let model_selection = resolve_runtime_model_selection(params.model, defaults.model.clone());
+    let model_selection = resolve_runtime_model_selection(
+        provider_or_default(defaults.provider),
+        params.model,
+        defaults.model.clone(),
+    );
     let route = build_route_from_resolved(&model_selection.effective);
 
     // Fail fast: require the provider API key at config construction, including
@@ -591,8 +618,11 @@ pub(crate) fn resolve_contract_summary(
     params: &CliParams,
     defaults: &TelegramModeDefaults,
 ) -> ResolvedContractSummary {
-    let model_selection =
-        resolve_runtime_model_selection(params.model.clone(), defaults.model.clone());
+    let model_selection = resolve_runtime_model_selection(
+        provider_or_default(defaults.provider),
+        params.model.clone(),
+        defaults.model.clone(),
+    );
     let route = build_route_from_resolved(&model_selection.effective);
 
     let configured_default_model =
@@ -657,6 +687,7 @@ fn resolve_opencode_api_key(
 mod tests {
     use super::*;
     use tempfile::TempDir;
+    use topagent_core::model::DEFAULT_OPENROUTER_MODEL_ID;
 
     #[test]
     fn test_workspace_defaults_to_current_directory_for_one_shot_and_telegram() {
@@ -733,15 +764,20 @@ mod tests {
 
     #[test]
     fn test_resolve_model_choice_prefers_explicit_then_selected_then_persisted() {
+        use topagent_core::ProviderKind;
+
         let resolved = resolve_model_choice(
+            ProviderKind::OpenRouter,
             Some(" explicit/model ".to_string()),
             Some("selected/model".to_string()),
             Some("persisted/model".to_string()),
         );
         assert_eq!(resolved.model_id, "explicit/model");
+        assert_eq!(resolved.provider, ProviderKind::OpenRouter);
         assert_eq!(resolved.source, ModelResolutionSource::CliOverride);
 
         let resolved = resolve_model_choice(
+            ProviderKind::OpenRouter,
             Some("   ".to_string()),
             Some(" selected/model ".to_string()),
             Some("persisted/model".to_string()),
@@ -749,18 +785,26 @@ mod tests {
         assert_eq!(resolved.model_id, "selected/model");
         assert_eq!(resolved.source, ModelResolutionSource::InteractiveSelection);
 
-        let resolved = resolve_model_choice(None, None, Some(" persisted/model ".to_string()));
+        let resolved = resolve_model_choice(
+            ProviderKind::OpenRouter,
+            None,
+            None,
+            Some(" persisted/model ".to_string()),
+        );
         assert_eq!(resolved.model_id, "persisted/model");
         assert_eq!(resolved.source, ModelResolutionSource::PersistedDefault);
 
-        let resolved = resolve_model_choice(None, None, None);
+        let resolved = resolve_model_choice(ProviderKind::OpenRouter, None, None, None);
         assert_eq!(resolved.model_id, DEFAULT_OPENROUTER_MODEL_ID);
         assert_eq!(resolved.source, ModelResolutionSource::BuiltInFallback);
     }
 
     #[test]
     fn test_resolve_runtime_model_selection_tracks_configured_and_effective_models() {
+        use topagent_core::ProviderKind;
+
         let resolved = resolve_runtime_model_selection(
+            ProviderKind::OpenRouter,
             Some(" explicit/model ".to_string()),
             Some("persisted/model".to_string()),
         );
@@ -775,7 +819,7 @@ mod tests {
             ModelResolutionSource::CliOverride
         );
 
-        let resolved = resolve_runtime_model_selection(None, None);
+        let resolved = resolve_runtime_model_selection(ProviderKind::OpenRouter, None, None);
         assert_eq!(
             resolved.configured_default.model_id,
             DEFAULT_OPENROUTER_MODEL_ID
@@ -896,24 +940,28 @@ mod tests {
 
     #[test]
     fn test_build_route_from_resolved_uses_resolved_model_id() {
+        use topagent_core::ProviderKind;
+
         let resolved = ResolvedModel {
+            provider: ProviderKind::OpenRouter,
             model_id: "custom/model".to_string(),
             source: ModelResolutionSource::CliOverride,
         };
-
-        assert_eq!(
-            build_route_from_resolved(&resolved).model_id,
-            "custom/model"
-        );
+        let route = build_route_from_resolved(&resolved);
+        assert_eq!(route.model_id, "custom/model");
+        assert_eq!(route.provider, ProviderKind::OpenRouter);
     }
 
     #[test]
     fn test_current_configured_model_uses_persisted_then_built_in_fallback() {
-        let configured = current_configured_model(Some("persisted/model".to_string()));
+        use topagent_core::ProviderKind;
+
+        let configured =
+            current_configured_model(ProviderKind::OpenRouter, Some("persisted/model".to_string()));
         assert_eq!(configured.model_id, "persisted/model");
         assert_eq!(configured.source, ModelResolutionSource::PersistedDefault);
 
-        let fallback = current_configured_model(None);
+        let fallback = current_configured_model(ProviderKind::OpenRouter, None);
         assert_eq!(fallback.model_id, DEFAULT_OPENROUTER_MODEL_ID);
         assert_eq!(fallback.source, ModelResolutionSource::BuiltInFallback);
     }
@@ -972,7 +1020,11 @@ mod tests {
         assert_eq!(config.options.provider_timeout_secs, 90);
         assert!(config.options.enable_generated_tool_authoring);
 
-        let selection = resolve_runtime_model_selection(None, defaults.model.clone());
+        let selection = resolve_runtime_model_selection(
+            provider_or_default(defaults.provider),
+            None,
+            defaults.model.clone(),
+        );
         assert_eq!(selection.configured_default.model_id, "shared/model");
         assert_eq!(selection.effective.model_id, "shared/model");
     }
@@ -1138,12 +1190,12 @@ mod tests {
 
     #[test]
     fn test_resolve_one_shot_config_cli_opencode_key_beats_persisted() {
-        // CLI --opencode-api-key wins over persisted default (Opencode provider via glm- prefix).
         let workspace = TempDir::new().unwrap();
         std::env::remove_var("OPENCODE_API_KEY");
         let defaults = TelegramModeDefaults {
             opencode_api_key: Some("persisted-key".to_string()),
             model: Some("glm-4".to_string()),
+            provider: Some(SelectedProvider::Opencode),
             ..Default::default()
         };
         let params = CliParams {
@@ -1162,6 +1214,7 @@ mod tests {
 
     #[test]
     fn test_empty_persisted_model_falls_back_to_built_in_default() {
+        use topagent_core::ProviderKind;
         let workspace = TempDir::new().unwrap();
         let values = HashMap::from([
             ("OPENROUTER_API_KEY".to_string(), "some-key".to_string()),
@@ -1179,7 +1232,8 @@ mod tests {
             "whitespace-only model should parse as None"
         );
 
-        let selection = resolve_runtime_model_selection(None, defaults.model);
+        let selection =
+            resolve_runtime_model_selection(ProviderKind::OpenRouter, None, defaults.model);
         assert_eq!(
             selection.configured_default.model_id,
             DEFAULT_OPENROUTER_MODEL_ID
@@ -1230,8 +1284,8 @@ mod tests {
             api_key: Some("openrouter-key".to_string()),
             token: Some("123:tok".to_string()),
             workspace: Some(workspace.path().to_path_buf()),
-            // kimi- prefix routes to Opencode provider
             model: Some("kimi-k2".to_string()),
+            provider: Some(SelectedProvider::Opencode),
             ..Default::default()
         };
         let params = CliParams {
@@ -1371,8 +1425,8 @@ mod tests {
     fn test_resolve_one_shot_config_fails_fast_when_opencode_key_missing() {
         let workspace = TempDir::new().unwrap();
         let defaults = TelegramModeDefaults {
-            // no Opencode key; glm- prefix routes to Opencode
             model: Some("glm-4".to_string()),
+            provider: Some(SelectedProvider::Opencode),
             ..Default::default()
         };
         let params = CliParams {
@@ -1509,6 +1563,131 @@ mod tests {
             .effective_model_source_label
             .contains("CLI override"));
     }
+
+    // --- Regression tests: explicit provider is canonical ---
+
+    #[test]
+    fn test_explicit_opencode_provider_routes_qwen_correctly() {
+        // qwen/qwen3.6-plus with explicit Opencode provider must resolve to Opencode,
+        // not OpenRouter (which would be the default for an unknown model prefix).
+        use topagent_core::ProviderKind;
+        let selection = resolve_runtime_model_selection(
+            ProviderKind::Opencode,
+            None,
+            Some("qwen/qwen3.6-plus".to_string()),
+        );
+        assert_eq!(selection.effective.provider, ProviderKind::Opencode);
+        assert_eq!(selection.effective.model_id, "qwen/qwen3.6-plus");
+        let route = build_route_from_resolved(&selection.effective);
+        assert_eq!(route.provider, ProviderKind::Opencode);
+        assert_eq!(route.model_id, "qwen/qwen3.6-plus");
+    }
+
+    #[test]
+    fn test_explicit_openrouter_provider_routes_glm4_correctly() {
+        // glm-4 with explicit OpenRouter routes to OpenRouter, not Opencode.
+        use topagent_core::ProviderKind;
+        let selection = resolve_runtime_model_selection(
+            ProviderKind::OpenRouter,
+            None,
+            Some("glm-4".to_string()),
+        );
+        assert_eq!(selection.effective.provider, ProviderKind::OpenRouter);
+        let route = build_route_from_resolved(&selection.effective);
+        assert_eq!(route.provider, ProviderKind::OpenRouter);
+    }
+
+    #[test]
+    fn test_explicit_opencode_provider_requires_opencode_key_not_openrouter() {
+        // With explicit Opencode provider, config construction requires Opencode
+        // key even when the model string would not have triggered legacy inference.
+        let workspace = TempDir::new().unwrap();
+        let defaults = TelegramModeDefaults {
+            api_key: Some("openrouter-key".to_string()),
+            // No Opencode key
+            token: Some("123:tok".to_string()),
+            workspace: Some(workspace.path().to_path_buf()),
+            model: Some("qwen/qwen3.6-plus".to_string()),
+            provider: Some(SelectedProvider::Opencode),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let err = resolve_telegram_mode_config(None, params, defaults)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Opencode API key required"),
+            "expected Opencode key error: {err}"
+        );
+        assert!(
+            err.contains("qwen/qwen3.6-plus"),
+            "error should name the model: {err}"
+        );
+    }
+
+    #[test]
+    fn test_contract_summary_reflects_explicit_provider_not_model_heuristic() {
+        // qwen/qwen3.6-plus would heuristically route to OpenRouter, but
+        // the summary must show the explicit Opencode provider.
+        let workspace = TempDir::new().unwrap();
+        let defaults = TelegramModeDefaults {
+            opencode_api_key: Some("oc-key".to_string()),
+            model: Some("qwen/qwen3.6-plus".to_string()),
+            provider: Some(SelectedProvider::Opencode),
+            workspace: Some(workspace.path().to_path_buf()),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let summary = resolve_contract_summary(&params, &defaults);
+        assert_eq!(summary.provider, "Opencode");
+    }
+
+    #[test]
+    fn test_one_shot_config_explicit_opencode_provider_routes_correctly() {
+        let workspace = TempDir::new().unwrap();
+        std::env::remove_var("OPENCODE_API_KEY");
+        let defaults = TelegramModeDefaults {
+            opencode_api_key: Some("oc-key".to_string()),
+            model: Some("qwen/qwen3.6-plus".to_string()),
+            provider: Some(SelectedProvider::Opencode),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: Some(workspace.path().to_path_buf()),
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+            generated_tool_authoring: None,
+        };
+        let config = resolve_one_shot_config(params, defaults).unwrap();
+        use topagent_core::ProviderKind;
+        assert_eq!(config.route.provider, ProviderKind::Opencode);
+        assert_eq!(config.route.model_id, "qwen/qwen3.6-plus");
+        assert_eq!(config.api_key, "oc-key");
+    }
+
+    // --- End regression tests ---
 
     #[test]
     fn test_one_shot_generated_tool_authoring_respects_persisted_default() {
