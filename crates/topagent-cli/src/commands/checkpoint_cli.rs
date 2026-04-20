@@ -1,22 +1,23 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use std::path::{Path, PathBuf};
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use topagent_core::{WorkspaceCheckpointRestoreReport, WorkspaceCheckpointStore};
 
+use super::types::CheckpointCommands;
 use crate::config::workspace::resolve_workspace_path;
 use crate::telegram::clear_workspace_telegram_history;
 
 pub(crate) fn run_checkpoint_command(
-    command: crate::CheckpointCommands,
+    command: CheckpointCommands,
     workspace: Option<PathBuf>,
 ) -> Result<()> {
     let workspace = resolve_workspace_path(workspace)?;
     let store = WorkspaceCheckpointStore::new(workspace.clone());
 
     match command {
-        crate::CheckpointCommands::Status => render_checkpoint_status(&workspace, &store),
-        crate::CheckpointCommands::Diff => render_checkpoint_diff(&workspace, &store),
-        crate::CheckpointCommands::Restore => restore_checkpoint(&workspace, &store),
+        CheckpointCommands::Status => render_checkpoint_status(&workspace, &store),
+        CheckpointCommands::Diff => render_checkpoint_diff(&workspace, &store),
+        CheckpointCommands::Restore => restore_checkpoint(&workspace, &store),
     }
 }
 
@@ -158,13 +159,10 @@ mod tests {
         let workspace = temp.path();
         let topagent_dir = workspace.join(".topagent");
 
-        // Create durable learning artifacts before checkpoint
         let lessons_dir = topagent_dir.join("lessons");
         let procedures_dir = topagent_dir.join("procedures");
-        let observations_dir = topagent_dir.join("observations");
         std::fs::create_dir_all(&lessons_dir).unwrap();
         std::fs::create_dir_all(&procedures_dir).unwrap();
-        std::fs::create_dir_all(&observations_dir).unwrap();
         std::fs::write(
             lessons_dir.join("lesson-1.md"),
             "# Lesson 1\nImportant fact",
@@ -175,11 +173,6 @@ mod tests {
             "# Procedure 1\nStep-by-step",
         )
         .unwrap();
-        std::fs::write(
-            observations_dir.join("obs-1.json"),
-            r#"{"task_hash":"abc"}"#,
-        )
-        .unwrap();
         std::fs::write(topagent_dir.join("MEMORY.md"), "- lesson-1: important fact").unwrap();
         std::fs::write(
             topagent_dir.join("USER.md"),
@@ -187,7 +180,6 @@ mod tests {
         )
         .unwrap();
 
-        // Capture only a workspace file, not learning artifacts
         std::fs::write(workspace.join("src.rs"), "fn main() {}").unwrap();
         let store = WorkspaceCheckpointStore::new(workspace.to_path_buf());
         store
@@ -197,28 +189,23 @@ mod tests {
             )
             .unwrap();
 
-        // Modify the captured file
         std::fs::write(workspace.join("src.rs"), "fn main() { broken() }").unwrap();
 
-        // Add a transcript (should be cleared)
         let history_dir = topagent_dir.join("telegram-history");
         std::fs::create_dir_all(&history_dir).unwrap();
         std::fs::write(history_dir.join("chat-42.json"), "[{\"text\":\"hello\"}]").unwrap();
 
-        // Restore
         let (report, cleared_transcripts) =
             restore_checkpoint_and_clear_transcripts(workspace, &store).unwrap();
 
         assert_eq!(report.restored_files, vec!["src.rs"]);
         assert!(cleared_transcripts);
 
-        // Captured file is restored
         assert_eq!(
             std::fs::read_to_string(workspace.join("src.rs")).unwrap(),
             "fn main() {}"
         );
 
-        // Durable learning artifacts survive
         assert_eq!(
             std::fs::read_to_string(lessons_dir.join("lesson-1.md")).unwrap(),
             "# Lesson 1\nImportant fact"
@@ -226,10 +213,6 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(procedures_dir.join("proc-1.md")).unwrap(),
             "# Procedure 1\nStep-by-step"
-        );
-        assert_eq!(
-            std::fs::read_to_string(observations_dir.join("obs-1.json")).unwrap(),
-            r#"{"task_hash":"abc"}"#
         );
         assert_eq!(
             std::fs::read_to_string(topagent_dir.join("MEMORY.md")).unwrap(),
@@ -240,7 +223,6 @@ mod tests {
             "Operator prefers concise replies"
         );
 
-        // Transcripts are cleared
         assert!(!history_dir.exists());
     }
 

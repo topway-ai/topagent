@@ -477,7 +477,7 @@ impl ToolTrace {
                     ),
                 }
             }
-            "save_plan" | "save_lesson" | "manage_operator_preference" => Self {
+            "save_lesson" | "manage_operator_preference" => Self {
                 dedupe_key: name.to_string(),
                 line: format!("{name} -> durable memory write completed"),
             },

@@ -6,7 +6,7 @@ Supports two LLM providers through one shared OpenAI-compatible transport seam:
 - **OpenRouter** (default) — default model: `minimax/minimax-m2.7`
 - **Opencode** — default model: `glm-5.1`
 
-Provider is selected automatically from the model ID, or explicitly via `--model`.
+Provider is selected explicitly during setup or via `--model`.
 
 ## Install
 
@@ -62,12 +62,10 @@ TopAgent keeps Telegram memory in three layers:
 
 - a small operator model at `workspace/.topagent/USER.md` for stable collaboration preferences, loaded separately and capped tightly
 - a tiny always-loaded workspace index at `workspace/.topagent/MEMORY.md`
-- compact durable notes under `workspace/.topagent/topics/`, plus archived lessons, reusable procedures, and saved plans under `workspace/.topagent/lessons/`, `workspace/.topagent/procedures/`, and `workspace/.topagent/plans/`, loaded only when relevant
+- compact durable notes under `workspace/.topagent/topics/`, plus archived lessons and reusable procedures under `workspace/.topagent/lessons/` and `workspace/.topagent/procedures/`, loaded only when relevant
 - a per-chat raw transcript under `workspace/.topagent/telegram-history/`, used as searchable evidence rather than replayed wholesale
 
 For strong verified runs, TopAgent can also emit compact trajectory artifacts under `workspace/.topagent/trajectories/`. These are structured export records for later eval or training work, not prompt memory, and they stay local until reviewed and exported explicitly.
-
-Alongside promotion, TopAgent emits lightweight observation records under `workspace/.topagent/observations/`. These are CLI-inspectable records that link back to promoted artifacts — they are no longer used for hot-path retrieval or briefing score boosting.
 
 TopAgent also keeps a narrow trust boundary for external content:
 
@@ -76,8 +74,6 @@ TopAgent also keeps a narrow trust boundary for external content:
 - prior transcripts, pasted external text, and fetched web content are treated as low-trust inputs
 - low-trust content can still be analyzed as data, but risky actions and durable memory writes get stricter gating when that content materially influences the run
 - TopAgent does not claim to solve prompt injection; it only keeps provenance explicit enough to avoid silent promotion or silent risky-action drift
-
-### Bot commands
 
 ### Bot commands
 
@@ -108,8 +104,7 @@ topagent trajectory list     # list saved trajectories
 topagent trajectory show <id> # show one trajectory
 topagent trajectory review <id> # mark a trajectory ready for export
 topagent trajectory export <id> # export a reviewed trajectory
-topagent observation list    # list recent observation records
-topagent observation show <id> # show one observation record in detail
+topagent telegram              # run the Telegram bot in the foreground
 topagent service start       # start the background service
 topagent service stop        # stop the background service
 topagent service restart     # restart the background service
@@ -117,6 +112,9 @@ topagent checkpoint status   # show the latest workspace checkpoint
 topagent checkpoint diff     # preview what restore would change
 topagent checkpoint restore  # restore the latest checkpoint and clear Telegram transcripts
 topagent config inspect      # show resolved provider, model, key presence, workspace, and options
+topagent run status          # show execution-session state and recovery readiness
+topagent doctor              # run health diagnostics on setup, config, workspace, and tools
+topagent upgrade             # download and install the latest GitHub release binary
 topagent uninstall           # remove service, config, and installed binary
 ```
 
@@ -130,10 +128,10 @@ See [docs/operations.md](docs/operations.md) for full operational details.
 |-----------------------|----------------|------------------------------------|
 | `--api-key` | `$OPENROUTER_API_KEY` | API key for the selected provider (or use `--opencode-api-key` for Opencode) |
 | `--opencode-api-key` | `$OPENCODE_API_KEY` | Opencode API key |
-| `--model` | `minimax/minimax-m2.7` | Model identifier (auto-detects provider from model ID) |
+| `--model` | `minimax/minimax-m2.7` | Model identifier (provider is determined by model selection) |
 | `--workspace` | current directory (one-shot) or auto-created (install) | Workspace path |
 | `--max-steps` | `50` | Maximum agent loop iterations |
-| `--max-retries` | `3` | Maximum provider retry attempts |
+| `--max-retries` | `10` | Maximum provider retry attempts |
 | `--timeout-secs` | `120` | Provider request timeout |
 | `--tool-authoring` | `off` | Enable or disable generated-tool authoring tools |
 
@@ -151,7 +149,6 @@ Workspace memory is separate from `TOPAGENT.md`:
 - `.topagent/procedures/` holds reusable workspace-local playbooks distilled from strong verified runs, revised through proven reuse, and loaded lazily in small batches
 - `.topagent/plans/` holds manual saved plans; auto-promotion no longer uses plans as the reusable workflow artifact
 - `.topagent/trajectories/` holds compact structured execution traces from high-quality verified runs; they are reviewable export artifacts, not hot-path prompt memory
-- `.topagent/observations/` holds lightweight observation records emitted during promotion, inspectable via CLI
 - `.topagent/exports/trajectories/` holds reviewed trajectory export packages
 - `.topagent/telegram-history/` stores searchable per-chat transcript evidence
 - `.topagent/checkpoints/` stores the most recent automatic workspace checkpoints for restore

@@ -1,20 +1,20 @@
 use anyhow::{Context, Result};
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use std::time::Duration;
 use topagent_core::{
-    context::ExecutionContext, ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest,
-    CancellationToken, ProgressCallback, ProgressUpdate, WorkspaceCheckpointStore,
+    ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest, CancellationToken, ProgressCallback,
+    ProgressUpdate, WorkspaceCheckpointStore, context::ExecutionContext,
 };
 use tracing::{error, info, warn};
 
 use crate::config::defaults::CliParams;
 use crate::config::defaults::load_persisted_telegram_defaults;
 use crate::config::runtime::resolve_one_shot_config;
-use crate::memory::{promote_verified_task, PromotionContext};
+use crate::memory::{PromotionContext, promote_verified_task};
 use crate::progress::LiveProgress;
 use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
 
@@ -242,13 +242,14 @@ mod tests {
         let mut reader = Cursor::new(b"yes\n".to_vec());
         let mut output = Vec::new();
 
-        let approved =
-            prompt_for_cli_approval_with_io(&request, &mut reader, &mut output).unwrap();
+        let approved = prompt_for_cli_approval_with_io(&request, &mut reader, &mut output).unwrap();
 
         assert!(approved);
-        assert!(String::from_utf8(output)
-            .unwrap()
-            .contains("Approve this action?"));
+        assert!(
+            String::from_utf8(output)
+                .unwrap()
+                .contains("Approve this action?")
+        );
     }
 
     #[test]
@@ -257,8 +258,7 @@ mod tests {
         let mut reader = Cursor::new(b"\n".to_vec());
         let mut output = Vec::new();
 
-        let approved =
-            prompt_for_cli_approval_with_io(&request, &mut reader, &mut output).unwrap();
+        let approved = prompt_for_cli_approval_with_io(&request, &mut reader, &mut output).unwrap();
 
         assert!(!approved);
     }

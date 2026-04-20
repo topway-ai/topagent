@@ -1,13 +1,13 @@
 use topagent_core::channel::telegram::{
     TelegramCallbackQuery, TelegramInlineKeyboardMarkup, TelegramMessage,
 };
-use topagent_core::{context::ExecutionContext, SecretRegistry, TelegramAdapter};
+use topagent_core::{SecretRegistry, TelegramAdapter, context::ExecutionContext};
 use tracing::{info, warn};
 
-use crate::telegram::admission::{decide_inbound_admission, InboundAdmission};
+use crate::telegram::admission::{InboundAdmission, decide_inbound_admission};
 use crate::telegram::approval::{format_approval_resolution, parse_approval_callback_data};
 use crate::telegram::commands::{
-    handle_approve, handle_approvals, handle_deny, handle_help, handle_reset, handle_stop,
+    handle_approvals, handle_approve, handle_deny, handle_help, handle_reset, handle_stop,
 };
 use crate::telegram::delivery::send_telegram;
 use crate::telegram::session::ChatSessionManager;
@@ -112,11 +112,24 @@ pub(super) fn route_message(
             return;
         }
         InboundAdmission::RejectedMissingIdentity => {
-            send_telegram(&adapter, chat_id, vec!["Access denied. Cannot bind admission without a sender identity.".into()], None);
+            send_telegram(
+                &adapter,
+                chat_id,
+                vec!["Access denied. Cannot bind admission without a sender identity.".into()],
+                None,
+            );
             return;
         }
         InboundAdmission::Denied => {
-            send_telegram(&adapter, chat_id, vec!["Access denied. This bot is not authorized to accept messages from this chat.".into()], None);
+            send_telegram(
+                &adapter,
+                chat_id,
+                vec![
+                    "Access denied. This bot is not authorized to accept messages from this chat."
+                        .into(),
+                ],
+                None,
+            );
             return;
         }
     }

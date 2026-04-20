@@ -106,7 +106,6 @@ pub struct MemoryPolicy {
     pub max_transcript_snippets: usize,
     pub max_transcript_message_bytes: usize,
     pub max_curated_lessons: usize,
-    pub max_curated_plans: usize,
     pub max_curated_procedures: usize,
     pub max_procedures_to_load: usize,
     pub max_operator_preferences_to_load: usize,

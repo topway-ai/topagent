@@ -1,25 +1,25 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc};
+use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 use topagent_core::{
-    context::ExecutionContext, model::ModelRoute, Agent, ApprovalEntry, ApprovalMailbox,
-    ApprovalMailboxMode, CancellationToken, Message, ProgressCallback, ProgressUpdate,
-    RuntimeOptions, TelegramAdapter, WorkspaceCheckpointStore,
+    Agent, ApprovalEntry, ApprovalMailbox, ApprovalMailboxMode, CancellationToken, Message,
+    ProgressCallback, ProgressUpdate, RuntimeOptions, TelegramAdapter, WorkspaceCheckpointStore,
+    context::ExecutionContext, model::ModelRoute,
 };
 use tracing::{error, info, warn};
 
 use crate::config::defaults::TELEGRAM_BOUND_DM_USER_ID_KEY;
 use crate::managed_files::read_managed_env_metadata;
-use crate::memory::{promote_verified_task, PromotionContext, WorkspaceMemory};
+use crate::memory::{PromotionContext, WorkspaceMemory, promote_verified_task};
 use crate::progress::LiveProgress;
 use crate::run_setup::{
-    build_agent, prepare_run_context, prepare_workspace_memory, PreparedRunContext,
+    PreparedRunContext, build_agent, prepare_run_context, prepare_workspace_memory,
 };
 use crate::telegram::approval::{approval_reply_markup, format_approval_resolution};
 use crate::telegram::delivery::{send_telegram, send_telegram_with_markup};
-use crate::telegram::history::{persist_visible_exchange_to_store, ChatHistoryStore};
+use crate::telegram::history::{ChatHistoryStore, persist_visible_exchange_to_store};
 
 use super::admission::DmAdmission;
 
@@ -586,9 +586,9 @@ pub(crate) fn current_model_label_for_help(
 mod tests {
     use super::*;
     use crate::config::defaults::{TELEGRAM_ALLOWED_DM_USERNAME_KEY, TOPAGENT_SERVICE_MANAGED_KEY};
-    use crate::memory::procedures::{save_procedure, ProcedureDraft};
+    use crate::memory::procedures::{ProcedureDraft, save_procedure};
     use crate::memory::{MEMORY_PROCEDURES_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR};
-    use crate::telegram::history::{persist_agent_history_to_store, ChatHistoryStore};
+    use crate::telegram::history::{ChatHistoryStore, persist_agent_history_to_store};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
@@ -656,11 +656,13 @@ mod tests {
 
         assert!(manager.stop_chat(42));
         assert!(cancel_token.is_cancelled());
-        assert!(updates
-            .lock()
-            .unwrap()
-            .iter()
-            .any(|update| update == &ProgressUpdate::stopping()));
+        assert!(
+            updates
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|update| update == &ProgressUpdate::stopping())
+        );
     }
 
     #[test]
@@ -833,8 +835,8 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_context_retrieves_targeted_transcript_snippet_instead_of_restoring_whole_history(
-    ) {
+    fn test_memory_context_retrieves_targeted_transcript_snippet_instead_of_restoring_whole_history()
+     {
         let workspace = TempDir::new().unwrap();
         let chat_id = 4242;
         let original_manager = test_manager(workspace.path().to_path_buf());
@@ -862,12 +864,14 @@ mod tests {
 
         assert!(memory_context.contains("maple comet"));
         assert!(!memory_context.contains("cedar echo"));
-        assert!(workspace
-            .path()
-            .join(".topagent")
-            .join("telegram-history")
-            .join("chat-4242.json")
-            .is_file());
+        assert!(
+            workspace
+                .path()
+                .join(".topagent")
+                .join("telegram-history")
+                .join("chat-4242.json")
+                .is_file()
+        );
 
         #[cfg(unix)]
         {
@@ -1335,7 +1339,8 @@ mod tests {
         let history_dir = workspace.path().join(".topagent").join("telegram-history");
         assert!(history_dir.is_dir());
 
-        let cleared = crate::telegram::history::clear_workspace_telegram_history(workspace.path()).unwrap();
+        let cleared =
+            crate::telegram::history::clear_workspace_telegram_history(workspace.path()).unwrap();
 
         assert!(cleared);
         assert!(!history_dir.exists());
@@ -1433,7 +1438,11 @@ mod tests {
             Some("operator"),
             "username must round-trip so install.rs can compare it"
         );
-        assert_eq!(defaults.bound_dm_user_id, Some(777), "bound ID must round-trip");
+        assert_eq!(
+            defaults.bound_dm_user_id,
+            Some(777),
+            "bound ID must round-trip"
+        );
 
         let reinstall_username = Some("operator".to_string());
         let preserved = if reinstall_username == defaults.allowed_dm_username {

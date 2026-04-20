@@ -86,7 +86,7 @@ pub(crate) fn render_session_status(workspace: &Path) -> String {
 }
 
 pub(crate) fn format_session_time(unix_millis: u128) -> String {
-    use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+    use time::{OffsetDateTime, format_description::well_known::Rfc3339};
     let timestamp = i64::try_from(unix_millis / 1000).unwrap_or(i64::MAX);
     OffsetDateTime::from_unix_timestamp(timestamp)
         .ok()

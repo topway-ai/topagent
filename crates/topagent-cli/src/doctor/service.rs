@@ -2,7 +2,7 @@ use crate::config::defaults::{
     CliParams, TOPAGENT_MODEL_KEY, TOPAGENT_PROVIDER_KEY, TOPAGENT_SERVICE_MANAGED_KEY,
 };
 use crate::config::model_selection::{
-    provider_or_default, resolve_runtime_model_selection, ModelResolutionSource, SelectedProvider,
+    ModelResolutionSource, SelectedProvider, provider_or_default, resolve_runtime_model_selection,
 };
 use crate::doctor::types::{CheckLevel, CheckResult};
 use crate::managed_files::{is_topagent_managed_file, read_managed_env_metadata};

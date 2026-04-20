@@ -1,4 +1,4 @@
-use topagent_core::{model::ModelRoute, ProviderKind};
+use topagent_core::{ProviderKind, model::ModelRoute};
 
 /// Canonical form of an allowed Telegram DM username.
 ///
@@ -273,8 +273,10 @@ mod tests {
 
     #[test]
     fn test_current_configured_model_uses_persisted_then_built_in_fallback() {
-        let configured =
-            current_configured_model(ProviderKind::OpenRouter, Some("persisted/model".to_string()));
+        let configured = current_configured_model(
+            ProviderKind::OpenRouter,
+            Some("persisted/model".to_string()),
+        );
         assert_eq!(configured.model_id, "persisted/model");
         assert_eq!(configured.source, ModelResolutionSource::PersistedDefault);
 
@@ -311,8 +313,8 @@ mod tests {
 
     #[test]
     fn test_empty_persisted_model_falls_back_to_built_in_default() {
+        use crate::config::defaults::{TOPAGENT_MODEL_KEY, TelegramModeDefaults};
         use std::collections::HashMap;
-        use crate::config::defaults::{TelegramModeDefaults, TOPAGENT_MODEL_KEY};
         let values = HashMap::from([(TOPAGENT_MODEL_KEY.to_string(), "   ".to_string())]);
         let defaults = TelegramModeDefaults::from_metadata(&values);
         assert!(

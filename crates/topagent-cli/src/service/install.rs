@@ -5,27 +5,29 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
 use crate::config::defaults::{
-    CliParams, TelegramModeDefaults, OPENCODE_API_KEY_KEY, OPENROUTER_API_KEY_KEY,
-    TELEGRAM_BOT_TOKEN_KEY, TOPAGENT_WORKSPACE_KEY,
+    CliParams, OPENCODE_API_KEY_KEY, OPENROUTER_API_KEY_KEY, TELEGRAM_BOT_TOKEN_KEY,
+    TOPAGENT_WORKSPACE_KEY, TelegramModeDefaults,
 };
-use crate::config::keys::{require_opencode_api_key, require_openrouter_api_key, require_telegram_token};
+use crate::config::keys::{
+    require_opencode_api_key, require_openrouter_api_key, require_telegram_token,
+};
 use crate::config::model_selection::{
-    build_route_from_resolved, canonicalize_allowed_username, current_configured_model,
-    resolve_model_choice, SelectedProvider,
+    SelectedProvider, build_route_from_resolved, canonicalize_allowed_username,
+    current_configured_model, resolve_model_choice,
 };
 use crate::config::runtime::{
-    build_runtime_options_with_defaults, resolve_telegram_mode_config, TelegramModeConfig,
+    TelegramModeConfig, build_runtime_options_with_defaults, resolve_telegram_mode_config,
 };
 use crate::managed_files::{assert_managed_or_absent, read_managed_env_metadata};
 use crate::openrouter_models::{
-    discover_install_openrouter_models, humanize_age, openrouter_model_cache_path,
-    OpenRouterCatalogSource,
+    OpenRouterCatalogSource, discover_install_openrouter_models, humanize_age,
+    openrouter_model_cache_path,
 };
 use crate::operational_paths::service_paths;
 
 use super::lifecycle::{
-    detect_install_root, ensure_systemd_user_available, install_service_with_config,
-    ServiceConfigApplyAction,
+    ServiceConfigApplyAction, detect_install_root, ensure_systemd_user_available,
+    install_service_with_config,
 };
 use super::managed_env::trim_nonempty;
 
@@ -93,8 +95,12 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
     let explicit_model = trim_nonempty(params.model.clone());
     let provider_kind = selected_provider.to_provider_kind();
     let selected_model = if explicit_model.is_some() {
-        let resolved =
-            resolve_model_choice(provider_kind, params.model.clone(), None, defaults.model.clone());
+        let resolved = resolve_model_choice(
+            provider_kind,
+            params.model.clone(),
+            None,
+            defaults.model.clone(),
+        );
         println!(
             "{} model: {} (--model)",
             selected_provider.label(),
@@ -119,8 +125,12 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
 
     let allowed_username = prompt_for_install_username(defaults.allowed_dm_username.as_deref())?;
 
-    let resolved_model =
-        resolve_model_choice(provider_kind, params.model, selected_model, defaults.model.clone());
+    let resolved_model = resolve_model_choice(
+        provider_kind,
+        params.model,
+        selected_model,
+        defaults.model.clone(),
+    );
     // Preserve the bound DM user id when the operator kept the same allowed
     // username; otherwise reset binding so Telegram rebinds against the new
     // admission policy on the next matched message.

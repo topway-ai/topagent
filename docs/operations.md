@@ -94,8 +94,6 @@ topagent trajectory list     # list saved trajectories
 topagent trajectory show <id> # show one trajectory
 topagent trajectory review <id> # mark a trajectory ready for export
 topagent trajectory export <id> # export a reviewed trajectory
-topagent observation list    # list recent observation records
-topagent observation show <id> # show one observation record in detail
 topagent service start       # start the service
 topagent service stop        # stop the service
 topagent service restart     # restart the service (keeps current config)
@@ -201,7 +199,6 @@ workspace/.topagent/
   lessons/                   # saved lesson notes (markdown)
   procedures/                # governed reusable procedures (markdown)
   trajectories/              # local saved trajectory records (JSON)
-  observations/              # retrieval-oriented observation records (JSON)
   exports/trajectories/      # reviewed trajectory export packages (JSON)
   checkpoints/               # automatic workspace checkpoints for restore
   tools/                     # generated custom tools (manifests + scripts)
@@ -297,15 +294,6 @@ If `sandbox` is omitted, TopAgent rejects the external-tool config. Generated to
 - Trajectory export refuses weak, unsafe, or still-low-trust artifacts
 - Saved-local and exported trajectories are distinct states
 
-#### 6. Observation records
-
-`workspace/.topagent/observations/*.json`
-
-- Lightweight records emitted when tasks are promoted into lessons, procedures, or trajectories
-- Each record links back to promoted artifacts with task intent, trust class, changed files, and verification command
-- Inspectable via `topagent observation list` and `topagent observation show <id>`
-- No longer used for hot-path retrieval or briefing score boosting
-
 ### Retrieval behavior
 
 When a new Telegram message arrives, TopAgent:
@@ -327,7 +315,7 @@ If memory conflicts with the current repo, runtime, config, or service state, th
 - Clears any in-memory running state for that chat
 - Does **not** remove `USER.md`
 - Does **not** remove `MEMORY.md`
-- Does **not** remove topic files, plans, lessons, procedures, trajectories, observations, or tools
+- Does **not** remove topic files, plans, lessons, procedures, trajectories, or tools
 
 This keeps reset semantics simple and aligned with the current product shape.
 
@@ -516,3 +504,52 @@ Code-changing runs end with a structured delivery summary that explicitly surfac
 **Verification follow-through**: When files are changed but no verification command was run, TopAgent may attempt a bounded best-effort verification automatically. This gives operators a signal without requiring manual verification commands.
 
 **Why explicit status matters**: The delivery summary uses truthful wording rather than optimistic success claims. Failed verification is not hidden behind "task completed" — it's explicitly marked as failed so the operator knows to investigate before relying on the changes.
+
+## Command lanes
+
+TopAgent commands fall into three operator-facing lanes. Understanding the lane helps operators know when to use each command and what side effects to expect.
+
+### Setup and lifecycle
+
+Commands that install, configure, upgrade, or remove the TopAgent service. These change durable state (config files, systemd units, installed binaries).
+
+| Command | When to use |
+|---------|-------------|
+| `topagent install` / `topagent setup` | First-time setup or reconfiguring an existing install |
+| `topagent upgrade` | Download and install a newer release binary |
+| `topagent uninstall` | Remove service, config, and binary |
+| `topagent service start/stop/restart` | Control the background Telegram service |
+| `topagent service install` | Install service unit without the full interactive flow |
+
+### Diagnostics and inspection
+
+Commands that read and display state without side effects (except `checkpoint restore`). These are safe to run at any time.
+
+| Command | When to use |
+|---------|-------------|
+| `topagent status` | Check whether the service is installed and healthy |
+| `topagent config inspect` | See the resolved runtime contract (provider, model, key presence) |
+| `topagent model status` | Show the configured and effective model |
+| `topagent doctor` | Run health checks on setup, config, workspace, and tools |
+| `topagent run status` | Inspect execution-session state and recovery readiness |
+| `topagent checkpoint status` | Show the latest workspace checkpoint |
+| `topagent checkpoint diff` | Preview what restore would change |
+| `topagent checkpoint restore` | Roll back to the latest checkpoint (clears transcripts) |
+
+### Memory and learning management
+
+Commands that inspect and govern the workspace's durable learning artifacts. These are read-only by default; prune/disable/export are the mutation operations.
+
+| Command | When to use |
+|---------|-------------|
+| `topagent memory status` | See counts of topics, lessons, procedures, and trajectories |
+| `topagent memory lint` | Check USER.md and MEMORY.md for size and content policy issues |
+| `topagent memory recall` | Dry-run retrieval to see what memory would be loaded for a task |
+| `topagent model set` / `topagent model pick` | Change the configured model without re-running full setup |
+| `topagent procedure list` | List active (or all) procedures |
+| `topagent procedure show` | Inspect one procedure's raw content |
+| `topagent procedure prune` | Remove superseded and disabled procedures |
+| `topagent procedure disable` | Disable a noisy procedure without deleting it |
+| `topagent trajectory list` | List saved trajectories and their review state |
+| `topagent trajectory review` | Mark a trajectory ready for export |
+| `topagent trajectory export` | Export a reviewed trajectory to the export directory |

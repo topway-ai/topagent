@@ -1,23 +1,22 @@
 mod briefing;
 mod memory_consolidation;
-pub(crate) mod observation;
 pub(crate) mod procedures;
 mod promotion;
 pub(crate) mod trajectories;
 
 pub(crate) use self::procedures::{
-    disable_procedure, parse_saved_procedure, ParsedProcedure, ProcedureStatus,
+    ParsedProcedure, ProcedureStatus, disable_procedure, parse_saved_procedure,
 };
-pub(crate) use self::promotion::{promote_verified_task, PromotionContext};
+pub(crate) use self::promotion::{PromotionContext, promote_verified_task};
 pub(crate) use self::trajectories::{
+    TRAJECTORY_EXPORTS_RELATIVE_DIR, TrajectoryReviewState,
     export_trajectory as write_exported_trajectory, mark_trajectory_ready, parse_saved_trajectory,
-    TrajectoryReviewState, TRAJECTORY_EXPORTS_RELATIVE_DIR,
 };
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use topagent_core::{
-    migrate_legacy_operator_preferences, BehaviorContract, Message, RunTrustContext,
+    BehaviorContract, Message, RunTrustContext, migrate_legacy_operator_preferences,
 };
 
 use crate::managed_files::write_managed_file;
@@ -26,10 +25,9 @@ const MEMORY_ROOT_DIR: &str = ".topagent";
 pub(crate) const MEMORY_INDEX_RELATIVE_PATH: &str = ".topagent/MEMORY.md";
 pub(crate) const MEMORY_TOPICS_RELATIVE_DIR: &str = ".topagent/topics";
 pub(crate) const MEMORY_LESSONS_RELATIVE_DIR: &str = ".topagent/lessons";
-pub(crate) const MEMORY_PLANS_RELATIVE_DIR: &str = ".topagent/plans";
 pub(crate) const MEMORY_PROCEDURES_RELATIVE_DIR: &str = ".topagent/procedures";
 pub(crate) const MEMORY_TRAJECTORIES_RELATIVE_DIR: &str = ".topagent/trajectories";
-pub(crate) const MEMORY_OBSERVATIONS_RELATIVE_DIR: &str = ".topagent/observations";
+
 const AUTO_PROMOTED_TAG: &str = "curated";
 
 const STOP_WORDS: &[&str] = &[
@@ -117,10 +115,8 @@ pub(crate) struct WorkspaceMemory {
     index_path: PathBuf,
     topics_dir: PathBuf,
     lessons_dir: PathBuf,
-    plans_dir: PathBuf,
     procedures_dir: PathBuf,
     trajectories_dir: PathBuf,
-    observations_dir: PathBuf,
 }
 
 impl WorkspaceMemory {
@@ -129,10 +125,8 @@ impl WorkspaceMemory {
             index_path: workspace_root.join(MEMORY_INDEX_RELATIVE_PATH),
             topics_dir: workspace_root.join(MEMORY_TOPICS_RELATIVE_DIR),
             lessons_dir: workspace_root.join(MEMORY_LESSONS_RELATIVE_DIR),
-            plans_dir: workspace_root.join(MEMORY_PLANS_RELATIVE_DIR),
             procedures_dir: workspace_root.join(MEMORY_PROCEDURES_RELATIVE_DIR),
             trajectories_dir: workspace_root.join(MEMORY_TRAJECTORIES_RELATIVE_DIR),
-            observations_dir: workspace_root.join(MEMORY_OBSERVATIONS_RELATIVE_DIR),
             workspace_root,
         }
     }
@@ -141,23 +135,15 @@ impl WorkspaceMemory {
         &self.workspace_root
     }
 
-    pub(crate) fn observations_dir(&self) -> &Path {
-        &self.observations_dir
-    }
-
     pub(crate) fn ensure_layout(&self) -> Result<()> {
         std::fs::create_dir_all(&self.topics_dir)
             .with_context(|| format!("failed to create {}", self.topics_dir.display()))?;
         std::fs::create_dir_all(&self.lessons_dir)
             .with_context(|| format!("failed to create {}", self.lessons_dir.display()))?;
-        std::fs::create_dir_all(&self.plans_dir)
-            .with_context(|| format!("failed to create {}", self.plans_dir.display()))?;
         std::fs::create_dir_all(&self.procedures_dir)
             .with_context(|| format!("failed to create {}", self.procedures_dir.display()))?;
         std::fs::create_dir_all(&self.trajectories_dir)
             .with_context(|| format!("failed to create {}", self.trajectories_dir.display()))?;
-        std::fs::create_dir_all(&self.observations_dir)
-            .with_context(|| format!("failed to create {}", self.observations_dir.display()))?;
         migrate_legacy_operator_preferences(&self.workspace_root)
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
@@ -257,7 +243,6 @@ fn display_memory_file(file: &str) -> String {
     let normalized = normalize_memory_file(file);
     if normalized.starts_with("topics/")
         || normalized.starts_with("lessons/")
-        || normalized.starts_with("plans/")
         || normalized.starts_with("procedures/")
     {
         normalized
@@ -334,16 +319,16 @@ fn artifact_filename(path: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::procedures::{save_procedure, ProcedureDraft};
+    use super::procedures::{ProcedureDraft, save_procedure};
     use super::promotion::{PromotionContext, TaskPromotionReport};
     use super::*;
     use std::fs;
     use tempfile::TempDir;
     use topagent_core::{
-        tools::default_tools, Agent, ExecutionContext, InfluenceMode, Message, Plan,
-        ProviderResponse, Role, RunTrustContext, RuntimeOptions, ScriptedProvider, SecretRegistry,
-        SourceKind, SourceLabel, TaskMode, TaskResult, ToolTraceStep, VerificationCommand,
-        WorkspaceCheckpointStore,
+        Agent, ExecutionContext, InfluenceMode, Message, Plan, ProviderResponse, Role,
+        RunTrustContext, RuntimeOptions, ScriptedProvider, SecretRegistry, SourceKind, SourceLabel,
+        TaskMode, TaskResult, ToolTraceStep, VerificationCommand, WorkspaceCheckpointStore,
+        tools::default_tools,
     };
 
     fn write_memory_index(workspace: &Path, body: &str) {
@@ -360,12 +345,6 @@ mod tests {
 
     fn write_lesson(workspace: &Path, name: &str, body: &str) {
         let path = workspace.join(MEMORY_LESSONS_RELATIVE_DIR).join(name);
-        fs::create_dir_all(path.parent().unwrap()).unwrap();
-        fs::write(path, body).unwrap();
-    }
-
-    fn write_plan(workspace: &Path, name: &str, body: &str) {
-        let path = workspace.join(MEMORY_PLANS_RELATIVE_DIR).join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, body).unwrap();
     }
@@ -692,17 +671,21 @@ path = "src/lib.rs"
             )
             .unwrap();
 
-        assert!(prompt
-            .operator_prompt
-            .as_deref()
-            .unwrap()
-            .contains("concise final answers"));
+        assert!(
+            prompt
+                .operator_prompt
+                .as_deref()
+                .unwrap()
+                .contains("concise final answers")
+        );
         assert!(prompt.prompt.as_deref().unwrap().contains("# Architecture"));
-        assert!(!prompt
-            .prompt
-            .as_deref()
-            .unwrap()
-            .contains("concise final answers"));
+        assert!(
+            !prompt
+                .prompt
+                .as_deref()
+                .unwrap()
+                .contains("concise final answers")
+        );
     }
 
     #[test]
@@ -722,11 +705,13 @@ path = "src/lib.rs"
             .unwrap();
 
         assert!(prompt.trust_context.has_low_trust_action_influence());
-        assert!(prompt
-            .trust_context
-            .low_trust_action_summary(2)
-            .unwrap_or_default()
-            .contains("prior transcript"));
+        assert!(
+            prompt
+                .trust_context
+                .low_trust_action_summary(2)
+                .unwrap_or_default()
+                .contains("prior transcript")
+        );
     }
 
     #[test]
@@ -758,11 +743,13 @@ path = "src/lib.rs"
                 <= memory_contract().memory.max_transcript_prompt_bytes
         );
         assert_eq!(prompt.trust_context.low_trust_sources().len(), 1);
-        assert!(prompt
-            .trust_context
-            .low_trust_action_summary(2)
-            .unwrap_or_default()
-            .contains("prior transcript"));
+        assert!(
+            prompt
+                .trust_context
+                .low_trust_action_summary(2)
+                .unwrap_or_default()
+                .contains("prior transcript")
+        );
     }
 
     #[test]
@@ -921,11 +908,13 @@ path = "src/lib.rs"
         assert!(
             grown.stats.index_prompt_bytes <= memory_contract().memory.max_index_prompt_bytes + 80
         );
-        assert!(!grown
-            .prompt
-            .as_deref()
-            .unwrap_or_default()
-            .contains("ignored trajectory"));
+        assert!(
+            !grown
+                .prompt
+                .as_deref()
+                .unwrap_or_default()
+                .contains("ignored trajectory")
+        );
     }
 
     #[test]
@@ -1001,10 +990,12 @@ path = "src/lib.rs"
         assert!(report.lesson_file.is_some());
         assert!(report.procedure_file.is_none());
         assert!(report.trajectory_file.is_some());
-        assert!(report
-            .notes
-            .iter()
-            .any(|note| note.contains("Procedure promotion blocked")));
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("Procedure promotion blocked"))
+        );
     }
 
     #[test]
@@ -1146,10 +1137,12 @@ path = "src/lib.rs"
         assert_eq!(reused.status, ProcedureStatus::Active);
         assert_eq!(reused.reuse_count, 1);
         assert_eq!(reused.revision_count, 0);
-        assert!(prompt
-            .stats
-            .loaded_procedure_files
-            .contains(&first_procedure));
+        assert!(
+            prompt
+                .stats
+                .loaded_procedure_files
+                .contains(&first_procedure)
+        );
     }
 
     #[test]
@@ -1202,10 +1195,12 @@ path = "src/lib.rs"
         assert_eq!(refined.status, ProcedureStatus::Active);
         assert_eq!(refined.reuse_count, 4);
         assert_eq!(refined.revision_count, 1);
-        assert!(refined
-            .steps
-            .iter()
-            .any(|step| step.contains("Clear stale transcript state")));
+        assert!(
+            refined
+                .steps
+                .iter()
+                .any(|step| step.contains("Clear stale transcript state"))
+        );
     }
 
     #[test]
@@ -1330,18 +1325,24 @@ path = "src/lib.rs"
             .build_prompt("repair approval mailbox compaction and restore flow", None)
             .unwrap();
         assert_eq!(prompt.stats.loaded_items.len(), 2);
-        assert!(prompt
-            .stats
-            .loaded_items
-            .contains(&"Approval mailbox compaction playbook".to_string()));
-        assert!(prompt
-            .stats
-            .loaded_items
-            .contains(&"Approval mailbox restore flow".to_string()));
-        assert!(!prompt
-            .stats
-            .loaded_items
-            .contains(&"Operator response tone guide".to_string()));
+        assert!(
+            prompt
+                .stats
+                .loaded_items
+                .contains(&"Approval mailbox compaction playbook".to_string())
+        );
+        assert!(
+            prompt
+                .stats
+                .loaded_items
+                .contains(&"Approval mailbox restore flow".to_string())
+        );
+        assert!(
+            !prompt
+                .stats
+                .loaded_items
+                .contains(&"Operator response tone guide".to_string())
+        );
     }
 
     #[test]
@@ -1578,29 +1579,19 @@ path = "src/lib.rs"
     }
 
     #[test]
-    fn test_consolidate_merges_saved_plan_duplicates_by_title() {
+    fn test_consolidate_drops_index_entries_pointing_at_retired_plans_dir() {
         let temp = TempDir::new().unwrap();
-        write_memory_index(temp.path(), "# TopAgent Memory Index\n\n");
-        write_plan(
+        write_memory_index(
             temp.path(),
-            "1700000100-release-flow.md",
-            "# Release Flow\n\n**Saved:** <t:1700000100>\n\n**Task:** ship the current patch safely\n\n---\n\n## Plan Items\n\n- [>] run cargo fmt --all --check\n- [ ] run cargo test --workspace\n\n---\n*Saved by topagent*\n",
-        );
-        write_plan(
-            temp.path(),
-            "1700000200-release-flow.md",
-            "# Release Flow\n\n**Saved:** <t:1700000200>\n\n**Task:** ship the current patch safely\n\n---\n\n## Plan Items\n\n- [>] run cargo clippy --workspace --all-targets -- -D warnings\n- [ ] run cargo test --workspace\n\n---\n*Saved by topagent*\n",
+            "# TopAgent Memory Index\n\n- topic: release flow | file: plans/1700000200-release-flow.md | status: verified | note: legacy plan entry\n",
         );
 
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
-        let report = memory.consolidate_memory_if_needed().unwrap();
+        memory.consolidate_memory_if_needed().unwrap();
         let rewritten = fs::read_to_string(temp.path().join(MEMORY_INDEX_RELATIVE_PATH)).unwrap();
 
-        assert_eq!(report.promoted_plans, 1);
-        assert_eq!(report.merged_entries, 1);
-        assert_eq!(rewritten.matches("topic: Release Flow").count(), 1);
-        assert!(rewritten.contains("file: plans/1700000200-release-flow.md"));
-        assert!(rewritten.contains("saved 2023-11-14"));
+        assert!(!rewritten.contains("plans/1700000200-release-flow.md"));
+        assert!(!rewritten.contains("topic: release flow"));
     }
 
     #[test]
@@ -1676,17 +1667,21 @@ path = "src/lib.rs"
         .unwrap();
 
         assert!(task_result.final_verification_passed());
-        assert!(task_result
-            .source_labels()
-            .iter()
-            .any(|label| label.kind == SourceKind::TranscriptPrior));
+        assert!(
+            task_result
+                .source_labels()
+                .iter()
+                .any(|label| label.kind == SourceKind::TranscriptPrior)
+        );
         assert!(report.lesson_file.is_some());
         assert!(report.procedure_file.is_none());
         assert!(report.trajectory_file.is_some());
-        assert!(report
-            .notes
-            .iter()
-            .any(|note| note.contains("Procedure promotion blocked")));
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|note| note.contains("Procedure promotion blocked"))
+        );
     }
 
     #[test]
@@ -1712,22 +1707,26 @@ path = "src/lib.rs"
             .run(&write_ctx, "update src/lib.rs and verify")
             .unwrap();
         assert!(first_result.contains("verified update"));
-        assert!(checkpoint_store
-            .latest_status()
-            .unwrap()
-            .expect("checkpoint should exist")
-            .captured_paths
-            .iter()
-            .any(|path| path == "src/lib.rs"));
+        assert!(
+            checkpoint_store
+                .latest_status()
+                .unwrap()
+                .expect("checkpoint should exist")
+                .captured_paths
+                .iter()
+                .any(|path| path == "src/lib.rs")
+        );
 
         let restore_report = checkpoint_store
             .restore_latest()
             .unwrap()
             .expect("restore should succeed");
-        assert!(restore_report
-            .restored_files
-            .iter()
-            .any(|path| path == "src/lib.rs"));
+        assert!(
+            restore_report
+                .restored_files
+                .iter()
+                .any(|path| path == "src/lib.rs")
+        );
         assert_eq!(
             fs::read_to_string(temp.path().join("src/lib.rs")).unwrap(),
             "pub fn answer() -> u32 {\n    42\n}\n"
@@ -1772,250 +1771,5 @@ path = "src/lib.rs"
         assert!(!temp.path().join(MEMORY_LESSONS_RELATIVE_DIR).exists());
         assert!(!temp.path().join(MEMORY_PROCEDURES_RELATIVE_DIR).exists());
         assert!(!temp.path().join(MEMORY_TRAJECTORIES_RELATIVE_DIR).exists());
-    }
-
-    // ── Observation integration tests ──
-
-    #[test]
-    fn test_ensure_layout_creates_observations_dir() {
-        let temp = TempDir::new().unwrap();
-        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
-        memory.ensure_layout().unwrap();
-        assert!(temp.path().join(MEMORY_OBSERVATIONS_RELATIVE_DIR).is_dir());
-    }
-
-    #[test]
-    fn test_observation_growth_does_not_increase_prompt_size() {
-        let temp = TempDir::new().unwrap();
-        write_memory_index(
-            temp.path(),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/architecture.md | status: verified | tags: runtime | note: agent lifecycle\n",
-        );
-        write_topic(
-            temp.path(),
-            "architecture.md",
-            "# Architecture\nruntime session model details",
-        );
-
-        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
-
-        // Baseline: no observations
-        let baseline_prompt = memory
-            .build_prompt("inspect the runtime architecture", None)
-            .unwrap();
-        let baseline_bytes = baseline_prompt.stats.total_prompt_bytes;
-
-        // Write 100 observations
-        let obs_dir = temp.path().join(MEMORY_OBSERVATIONS_RELATIVE_DIR);
-        std::fs::create_dir_all(&obs_dir).unwrap();
-        for i in 0..100 {
-            let record = observation::ObservationRecord {
-                id: format!("obs-{:010}-task-{i}", 1000000 + i),
-                timestamp_unix_secs: 1000000 + i as i64,
-                task_intent: format!("some unrelated task number {i}"),
-                source_kind: observation::ObservationSourceKind::Lesson,
-                trust_class: observation::ObservationTrustClass::Trusted,
-                summary: format!("[lesson] some unrelated task number {i}"),
-                artifact_links: observation::ObservationArtifactLinks {
-                    lesson_file: Some(format!(".topagent/lessons/{i}-lesson.md")),
-                    procedure_file: None,
-                    trajectory_file: None,
-                    superseded_procedure_file: None,
-                },
-                changed_files: vec![format!("unrelated/file_{i}.rs")],
-                verification_command: None,
-            };
-            let json = serde_json::to_string_pretty(&record).unwrap();
-            std::fs::write(obs_dir.join(format!("{}.json", record.id)), json).unwrap();
-        }
-
-        // After: prompt size unchanged (observations don't add prompt content)
-        let after_prompt = memory
-            .build_prompt("inspect the runtime architecture", None)
-            .unwrap();
-        assert_eq!(
-            after_prompt.stats.total_prompt_bytes, baseline_bytes,
-            "100 observations must not increase prompt bytes"
-        );
-    }
-
-    #[test]
-    fn test_relevant_lesson_loads_by_keyword_match() {
-        let temp = TempDir::new().unwrap();
-        write_memory_index(
-            temp.path(),
-            "# TopAgent Memory Index\n\n- topic: approval-flow | file: lessons/approval-fix.md | status: verified | tags: approval, mailbox | note: approval flow hardening\n- topic: unrelated-topic | file: topics/unrelated.md | status: verified | tags: other | note: something else entirely\n",
-        );
-        write_lesson(
-            temp.path(),
-            "approval-fix.md",
-            "# Lesson: Approval Fix\n## What Changed\nHardened the approval mailbox.\n## What Learned\nAlways rerun verification.\n",
-        );
-        write_topic(
-            temp.path(),
-            "unrelated.md",
-            "# Unrelated Topic\nSome other content.\n",
-        );
-
-        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
-        let prompt = memory
-            .build_prompt("harden the approval mailbox", None)
-            .unwrap();
-
-        assert!(prompt
-            .stats
-            .loaded_items
-            .contains(&"approval-flow".to_string()));
-    }
-
-    #[test]
-    fn test_trajectories_stay_off_prompt_even_with_observation_links() {
-        let temp = TempDir::new().unwrap();
-        write_memory_index(temp.path(), "# TopAgent Memory Index\n\n");
-
-        // Write an observation linking to a trajectory
-        let obs_dir = temp.path().join(MEMORY_OBSERVATIONS_RELATIVE_DIR);
-        std::fs::create_dir_all(&obs_dir).unwrap();
-        let record = observation::ObservationRecord {
-            id: "obs-1-with-trajectory".to_string(),
-            timestamp_unix_secs: observation::tests::current_timestamp(),
-            task_intent: "fix parsing bug".to_string(),
-            source_kind: observation::ObservationSourceKind::Full,
-            trust_class: observation::ObservationTrustClass::Trusted,
-            summary: "[full] fix parsing bug".to_string(),
-            artifact_links: observation::ObservationArtifactLinks {
-                lesson_file: None,
-                procedure_file: None,
-                trajectory_file: Some(
-                    ".topagent/trajectories/trj-123-fix-parsing.json".to_string(),
-                ),
-                superseded_procedure_file: None,
-            },
-            changed_files: vec!["src/parser.rs".to_string()],
-            verification_command: Some("cargo test".to_string()),
-        };
-        let json = serde_json::to_string_pretty(&record).unwrap();
-        std::fs::write(obs_dir.join("obs-1-with-trajectory.json"), json).unwrap();
-
-        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
-        let prompt = memory.build_prompt("fix parsing bug", None).unwrap();
-
-        // Trajectory content must not appear in the prompt
-        if let Some(ref rendered) = prompt.prompt {
-            assert!(
-                !rendered.contains("trj-123-fix-parsing"),
-                "trajectory file must not appear in prompt text"
-            );
-        }
-    }
-
-    #[test]
-    fn test_observations_do_not_enter_prompt_directly() {
-        let temp = TempDir::new().unwrap();
-        write_memory_index(
-            temp.path(),
-            "# TopAgent Memory Index\n\n- topic: security | file: topics/security.md | status: verified | tags: secret | note: security notes\n",
-        );
-        write_topic(
-            temp.path(),
-            "security.md",
-            "# Security\nsecret handling details",
-        );
-
-        let obs_dir = temp.path().join(MEMORY_OBSERVATIONS_RELATIVE_DIR);
-        std::fs::create_dir_all(&obs_dir).unwrap();
-        let record = observation::ObservationRecord {
-            id: "obs-1-trusted".to_string(),
-            timestamp_unix_secs: observation::tests::current_timestamp(),
-            task_intent: "audit secret handling".to_string(),
-            source_kind: observation::ObservationSourceKind::Lesson,
-            trust_class: observation::ObservationTrustClass::Trusted,
-            summary: "[lesson] audit secret handling".to_string(),
-            artifact_links: observation::ObservationArtifactLinks {
-                lesson_file: Some(".topagent/topics/security.md".to_string()),
-                procedure_file: None,
-                trajectory_file: None,
-                superseded_procedure_file: None,
-            },
-            changed_files: vec!["src/secrets.rs".to_string()],
-            verification_command: None,
-        };
-        let json = serde_json::to_string_pretty(&record).unwrap();
-        std::fs::write(obs_dir.join("obs-1-trusted.json"), json).unwrap();
-
-        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
-        let prompt = memory.build_prompt("audit secret handling", None).unwrap();
-
-        assert!(prompt.stats.loaded_items.contains(&"security".to_string()));
-        assert!(prompt
-            .prompt
-            .as_deref()
-            .unwrap_or_default()
-            .contains("Security"));
-    }
-
-    #[test]
-    fn test_observations_have_zero_effect_on_prompt_content() {
-        let temp = TempDir::new().unwrap();
-        write_memory_index(
-            temp.path(),
-            "# TopAgent Memory Index\n\n- topic: auth | file: topics/auth.md | status: verified | tags: login, token\n",
-        );
-        write_topic(
-            temp.path(),
-            "auth.md",
-            "# Auth\nLogin token rotation policy",
-        );
-
-        let memory_without_obs = WorkspaceMemory::new(temp.path().to_path_buf());
-        let prompt_without = memory_without_obs
-            .build_prompt("rotate login tokens", None)
-            .unwrap();
-
-        let obs_dir = temp.path().join(MEMORY_OBSERVATIONS_RELATIVE_DIR);
-        std::fs::create_dir_all(&obs_dir).unwrap();
-        for i in 0..5 {
-            let record = observation::ObservationRecord {
-                id: format!("obs-many-{i}"),
-                timestamp_unix_secs: observation::tests::current_timestamp(),
-                task_intent: "rotate login tokens".to_string(),
-                source_kind: observation::ObservationSourceKind::Lesson,
-                trust_class: observation::ObservationTrustClass::Trusted,
-                summary: format!("[lesson] observation {i} about token rotation"),
-                artifact_links: observation::ObservationArtifactLinks {
-                    lesson_file: Some(".topagent/topics/auth.md".to_string()),
-                    procedure_file: None,
-                    trajectory_file: None,
-                    superseded_procedure_file: None,
-                },
-                changed_files: vec![format!("src/auth_{i}.rs")],
-                verification_command: None,
-            };
-            let json = serde_json::to_string_pretty(&record).unwrap();
-            std::fs::write(obs_dir.join(format!("obs-many-{i}.json")), json).unwrap();
-        }
-
-        let memory_with_obs = WorkspaceMemory::new(temp.path().to_path_buf());
-        let prompt_with = memory_with_obs
-            .build_prompt("rotate login tokens", None)
-            .unwrap();
-
-        assert_eq!(
-            prompt_without.stats.loaded_items, prompt_with.stats.loaded_items,
-            "observations must not change which durable artifacts are loaded"
-        );
-        assert_eq!(
-            prompt_without.stats.loaded_items, prompt_with.stats.loaded_items,
-            "observations must not change which durable artifacts are loaded"
-        );
-        assert_eq!(
-            prompt_without.prompt.as_deref().map(|s| s.len()),
-            prompt_with.prompt.as_deref().map(|s| s.len()),
-            "observations must not change prompt length"
-        );
-        assert_eq!(
-            prompt_without.stats.transcript_snippets, prompt_with.stats.transcript_snippets,
-            "observations must not change transcript snippet count"
-        );
     }
 }

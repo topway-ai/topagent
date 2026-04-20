@@ -1,9 +1,9 @@
-use std::path::PathBuf;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
+use crate::config::model_selection::{SelectedProvider, canonicalize_allowed_username};
 use crate::managed_files::read_managed_env_metadata;
 use crate::operational_paths::managed_service_env_path;
-use crate::config::model_selection::{SelectedProvider, canonicalize_allowed_username};
 
 pub(crate) const TELEGRAM_SERVICE_UNIT_NAME: &str = "topagent-telegram.service";
 pub(crate) const TOPAGENT_SERVICE_MANAGED_KEY: &str = "TOPAGENT_SERVICE_MANAGED";

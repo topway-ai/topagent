@@ -3,19 +3,19 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use crate::config::defaults::{
-    CliParams, parse_env_bool, TELEGRAM_SERVICE_UNIT_NAME, TOPAGENT_TOOL_AUTHORING_KEY,
-    TOPAGENT_WORKSPACE_KEY,
+    CliParams, TELEGRAM_SERVICE_UNIT_NAME, TOPAGENT_TOOL_AUTHORING_KEY, TOPAGENT_WORKSPACE_KEY,
+    parse_env_bool,
 };
 use crate::config::runtime::TelegramModeConfig;
 use crate::managed_files::{
-    assert_managed_or_absent, ensure_service_setup_present, is_topagent_managed_file,
-    read_managed_env_metadata, remove_managed_env_file, remove_managed_file, write_managed_file,
-    TOPAGENT_MANAGED_HEADER,
+    TOPAGENT_MANAGED_HEADER, assert_managed_or_absent, ensure_service_setup_present,
+    is_topagent_managed_file, read_managed_env_metadata, remove_managed_env_file,
+    remove_managed_file, write_managed_file,
 };
-use crate::operational_paths::{resolve_config_home, service_paths, ServicePaths};
+use crate::operational_paths::{ServicePaths, resolve_config_home, service_paths};
 
 use super::managed_env::render_service_env_file;
-use super::state::{load_control_plane_state, load_service_probe, ServiceStatusSnapshot};
+use super::state::{ServiceStatusSnapshot, load_control_plane_state, load_service_probe};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InstallRootKind {
@@ -695,11 +695,7 @@ fn is_enabled_state(state: Option<&str>) -> bool {
 }
 
 fn yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
-    }
+    if value { "yes" } else { "no" }
 }
 
 #[cfg(test)]

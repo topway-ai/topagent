@@ -1,7 +1,7 @@
 use super::{
-    compact_note, compact_text_line, display_memory_file, limit_text_block, memory_contract,
-    normalize_memory_file, procedures::parse_saved_procedure, procedures::ParsedProcedure,
-    procedures::ProcedureStatus, WorkspaceMemory, AUTO_PROMOTED_TAG,
+    AUTO_PROMOTED_TAG, WorkspaceMemory, compact_note, compact_text_line, display_memory_file,
+    limit_text_block, memory_contract, normalize_memory_file, procedures::ParsedProcedure,
+    procedures::ProcedureStatus, procedures::parse_saved_procedure,
 };
 use anyhow::{Context, Result};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -20,7 +20,6 @@ pub(crate) struct ConsolidationReport {
     pub contradictions_resolved: usize,
     pub stale_entries_pruned: usize,
     pub promoted_lessons: usize,
-    pub promoted_plans: usize,
     pub promoted_procedures: usize,
     pub normalized_dates: usize,
     pub pruned_entries: usize,
@@ -39,7 +38,6 @@ pub(super) struct MemoryIndexEntry {
 pub(super) enum MemoryIndexEntryKind {
     Topic,
     Lesson,
-    Plan,
     Procedure,
 }
 
@@ -56,7 +54,6 @@ enum DurableMemoryCategory {
 enum MemorySourceKind {
     ManualIndex,
     SavedLesson,
-    SavedPlan,
     SavedProcedure,
 }
 
@@ -73,7 +70,6 @@ struct MemoryOrientation {
     prelude_lines: Vec<String>,
     index_entries: Vec<MemoryIndexEntry>,
     lesson_files: Vec<PathBuf>,
-    plan_files: Vec<PathBuf>,
     procedure_files: Vec<PathBuf>,
 }
 
@@ -85,15 +81,6 @@ pub(super) struct ParsedLesson {
     what_learned: String,
     reuse_next_time: Option<String>,
     avoid_next_time: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub(super) struct ParsedPlan {
-    filename: String,
-    title: String,
-    saved_at: Option<i64>,
-    task: Option<String>,
-    items: Vec<String>,
 }
 
 impl WorkspaceMemory {
@@ -149,7 +136,6 @@ impl WorkspaceMemory {
         }
 
         orientation.lesson_files = list_markdown_files(&self.lessons_dir)?;
-        orientation.plan_files = list_markdown_files(&self.plans_dir)?;
         orientation.procedure_files = list_markdown_files(&self.procedures_dir)?;
         Ok(orientation)
     }
@@ -162,9 +148,15 @@ impl WorkspaceMemory {
         let mut candidates = orientation
             .index_entries
             .iter()
+            .filter(|entry| !is_retired_plan_entry(entry))
             .cloned()
             .map(MemoryCandidate::from_manual_entry)
             .collect::<Vec<_>>();
+        report.pruned_entries += orientation
+            .index_entries
+            .iter()
+            .filter(|entry| is_retired_plan_entry(entry))
+            .count();
 
         let lesson_candidates = orientation
             .lesson_files
@@ -177,18 +169,6 @@ impl WorkspaceMemory {
                 MemoryCandidate::from_saved_lesson(&memory_contract(), lesson)
             });
         candidates.extend(lesson_candidates);
-
-        let plan_candidates = orientation
-            .plan_files
-            .iter()
-            .filter_map(|path| parse_saved_plan(path).transpose())
-            .collect::<Result<Vec<_>>>()?
-            .into_iter()
-            .map(|plan| {
-                report.normalized_dates += usize::from(plan.saved_at.is_some());
-                MemoryCandidate::from_saved_plan(&memory_contract(), plan)
-            });
-        candidates.extend(plan_candidates);
 
         let procedure_candidates = orientation
             .procedure_files
@@ -206,6 +186,10 @@ impl WorkspaceMemory {
     }
 }
 
+fn is_retired_plan_entry(entry: &MemoryIndexEntry) -> bool {
+    normalize_memory_file(&entry.file).starts_with("plans/")
+}
+
 impl MemoryIndexEntry {
     pub(super) fn kind(&self) -> MemoryIndexEntryKind {
         let normalized = normalize_memory_file(&self.file);
@@ -213,8 +197,6 @@ impl MemoryIndexEntry {
             MemoryIndexEntryKind::Procedure
         } else if normalized.starts_with("lessons/") {
             MemoryIndexEntryKind::Lesson
-        } else if normalized.starts_with("plans/") {
-            MemoryIndexEntryKind::Plan
         } else {
             MemoryIndexEntryKind::Topic
         }
@@ -269,44 +251,6 @@ impl MemoryCandidate {
             category: DurableMemoryCategory::ReusableLesson,
             source: MemorySourceKind::SavedLesson,
             saved_at: lesson.saved_at,
-        }
-    }
-
-    fn from_saved_plan(contract: &BehaviorContract, plan: ParsedPlan) -> Self {
-        let date = plan.saved_at.and_then(format_saved_date);
-        let task = plan
-            .task
-            .as_deref()
-            .map(|value| compact_text_line(value, 72));
-        let first_item = plan.items.first().map(|value| compact_text_line(value, 48));
-        let tags = derived_tags(
-            &[
-                plan.title.as_str(),
-                plan.task.as_deref().unwrap_or_default(),
-                plan.items.first().map(String::as_str).unwrap_or_default(),
-            ],
-            &["plan", "workflow", AUTO_PROMOTED_TAG],
-        );
-        let note = compact_note(
-            &[
-                date.map(|value| format!("saved {value}")),
-                task.map(|value| format!("task: {value}")),
-                first_item.map(|value| format!("starts with: {value}")),
-            ],
-            contract.memory.max_index_note_chars,
-        );
-
-        Self {
-            entry: MemoryIndexEntry {
-                topic: plan.title,
-                file: format!("plans/{}", plan.filename),
-                status: "tentative".to_string(),
-                tags,
-                note,
-            },
-            category: DurableMemoryCategory::RepoOperational,
-            source: MemorySourceKind::SavedPlan,
-            saved_at: plan.saved_at,
         }
     }
 
@@ -428,9 +372,6 @@ fn merge_group_key(candidate: &MemoryCandidate) -> String {
             "lesson|{}",
             candidate.entry.topic.trim().to_ascii_lowercase()
         ),
-        MemorySourceKind::SavedPlan => {
-            format!("plan|{}", candidate.entry.topic.trim().to_ascii_lowercase())
-        }
         MemorySourceKind::SavedProcedure => format!(
             "procedure|{}",
             candidate.entry.topic.trim().to_ascii_lowercase()
@@ -508,7 +449,6 @@ fn candidate_priority(candidate: &MemoryCandidate) -> (usize, usize, usize, i64,
     let source = match candidate.source {
         MemorySourceKind::ManualIndex => 3,
         MemorySourceKind::SavedLesson => 2,
-        MemorySourceKind::SavedPlan => 1,
         MemorySourceKind::SavedProcedure => 2,
     };
     (
@@ -604,7 +544,6 @@ fn prune_candidates(
 
     let mut kept = Vec::new();
     let mut kept_lessons = 0usize;
-    let mut kept_plans = 0usize;
     let mut kept_procedures = 0usize;
 
     for candidate in candidates {
@@ -621,10 +560,6 @@ fn prune_candidates(
                 report.pruned_entries += 1;
                 continue;
             }
-            MemorySourceKind::SavedPlan if kept_plans >= contract.memory.max_curated_plans => {
-                report.pruned_entries += 1;
-                continue;
-            }
             MemorySourceKind::SavedProcedure
                 if kept_procedures >= contract.memory.max_curated_procedures =>
             {
@@ -636,7 +571,6 @@ fn prune_candidates(
 
         match candidate.source {
             MemorySourceKind::SavedLesson => kept_lessons += 1,
-            MemorySourceKind::SavedPlan => kept_plans += 1,
             MemorySourceKind::SavedProcedure => kept_procedures += 1,
             MemorySourceKind::ManualIndex => {}
         }
@@ -651,7 +585,6 @@ fn prune_candidates(
 
     kept.sort_by(|left, right| candidate_priority(right).cmp(&candidate_priority(left)));
     report.promoted_lessons = kept_lessons;
-    report.promoted_plans = kept_plans;
     report.promoted_procedures = kept_procedures;
     kept
 }
@@ -739,40 +672,11 @@ pub(super) fn parse_saved_lesson(path: &Path) -> Result<Option<ParsedLesson>> {
     }))
 }
 
-pub(super) fn parse_saved_plan(path: &Path) -> Result<Option<ParsedPlan>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let raw = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    let items = extract_plan_items(&raw);
-    if items.is_empty() {
-        return Ok(None);
-    }
-
-    Ok(Some(ParsedPlan {
-        filename: file_name_or_default(path),
-        title: extract_heading(&raw).unwrap_or_else(|| file_stem_or_default(path, "Plan")),
-        saved_at: extract_saved_timestamp(&raw),
-        task: extract_inline_field(&raw, "**Task:**"),
-        items,
-    }))
-}
-
 fn extract_heading(contents: &str) -> Option<String> {
     contents.lines().find_map(|line| {
         line.trim()
             .strip_prefix("# ")
             .map(|value| value.trim().to_string())
-    })
-}
-
-fn extract_inline_field(contents: &str, prefix: &str) -> Option<String> {
-    contents.lines().find_map(|line| {
-        line.trim()
-            .strip_prefix(prefix)
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
     })
 }
 
@@ -797,34 +701,6 @@ fn extract_markdown_section(contents: &str, heading: &str) -> Option<String> {
 
     let joined = lines.join("\n").trim().to_string();
     (!joined.is_empty()).then_some(joined)
-}
-
-fn extract_plan_items(contents: &str) -> Vec<String> {
-    let mut items = Vec::new();
-    let mut in_section = false;
-
-    for line in contents.lines() {
-        let trimmed = line.trim();
-        if trimmed == "## Plan Items" {
-            in_section = true;
-            continue;
-        }
-        if in_section && trimmed.starts_with("## ") {
-            break;
-        }
-        if !in_section {
-            continue;
-        }
-        if let Some(item) = trimmed.strip_prefix("- [ ] ") {
-            items.push(item.trim().to_string());
-        } else if let Some(item) = trimmed.strip_prefix("- [>] ") {
-            items.push(item.trim().to_string());
-        } else if let Some(item) = trimmed.strip_prefix("- [x] ") {
-            items.push(item.trim().to_string());
-        }
-    }
-
-    items
 }
 
 fn extract_saved_timestamp(contents: &str) -> Option<i64> {
@@ -874,21 +750,6 @@ pub(super) fn render_saved_lesson_excerpt(
     limit_text_block(&excerpt, contract.memory.max_durable_file_prompt_bytes)
 }
 
-pub(super) fn render_saved_plan_excerpt(contract: &BehaviorContract, plan: &ParsedPlan) -> String {
-    let mut excerpt = format!("# {}\n", plan.title);
-    if let Some(saved_at) = plan.saved_at.and_then(format_saved_date) {
-        excerpt.push_str(&format!("Saved: {saved_at}\n"));
-    }
-    if let Some(task) = &plan.task {
-        excerpt.push_str(&format!("Task: {}\n", compact_text_line(task, 220)));
-    }
-    excerpt.push_str("Plan items:\n");
-    for item in plan.items.iter().take(5) {
-        excerpt.push_str(&format!("- {}\n", compact_text_line(item, 120)));
-    }
-    limit_text_block(&excerpt, contract.memory.max_durable_file_prompt_bytes)
-}
-
 fn derived_tags(texts: &[&str], fixed: &[&str]) -> Vec<String> {
     let mut frequencies = HashMap::new();
     for text in texts {
@@ -932,7 +793,7 @@ fn file_stem_or_default(path: &Path, default: &str) -> String {
 mod tests {
     use super::*;
     use crate::memory::{
-        WorkspaceMemory, MEMORY_INDEX_RELATIVE_PATH, MEMORY_PROCEDURES_RELATIVE_DIR,
+        MEMORY_INDEX_RELATIVE_PATH, MEMORY_PROCEDURES_RELATIVE_DIR, WorkspaceMemory,
     };
     use std::fs;
     use tempfile::TempDir;

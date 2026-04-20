@@ -99,13 +99,13 @@ pub(crate) fn resolve_contract_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use tempfile::TempDir;
     use crate::config::defaults::{
-        TelegramModeDefaults, TOPAGENT_MODEL_KEY, TOPAGENT_WORKSPACE_KEY,
-        TELEGRAM_ALLOWED_DM_USERNAME_KEY, TELEGRAM_BOUND_DM_USER_ID_KEY,
+        TELEGRAM_ALLOWED_DM_USERNAME_KEY, TELEGRAM_BOUND_DM_USER_ID_KEY, TOPAGENT_MODEL_KEY,
+        TOPAGENT_WORKSPACE_KEY, TelegramModeDefaults,
     };
     use crate::config::model_selection::SelectedProvider;
+    use std::collections::HashMap;
+    use tempfile::TempDir;
 
     #[test]
     fn test_resolve_contract_summary_shows_key_presence_without_values() {
@@ -163,7 +163,11 @@ mod tests {
             summary.configured_default_model.as_deref(),
             Some("persisted/model")
         );
-        assert!(summary.effective_model_source_label.contains("CLI override"));
+        assert!(
+            summary
+                .effective_model_source_label
+                .contains("CLI override")
+        );
     }
 
     #[test]
@@ -196,8 +200,14 @@ mod tests {
 
         let values_unbound = HashMap::from([
             ("OPENROUTER_API_KEY".to_string(), "k".to_string()),
-            (TOPAGENT_WORKSPACE_KEY.to_string(), workspace.path().display().to_string()),
-            (TELEGRAM_ALLOWED_DM_USERNAME_KEY.to_string(), "alice".to_string()),
+            (
+                TOPAGENT_WORKSPACE_KEY.to_string(),
+                workspace.path().display().to_string(),
+            ),
+            (
+                TELEGRAM_ALLOWED_DM_USERNAME_KEY.to_string(),
+                "alice".to_string(),
+            ),
         ]);
         let defaults_unbound = TelegramModeDefaults::from_metadata(&values_unbound);
         let params = CliParams {
@@ -211,11 +221,17 @@ mod tests {
             generated_tool_authoring: None,
         };
         let summary_unbound = resolve_contract_summary(&params, &defaults_unbound);
-        assert_eq!(summary_unbound.allowed_dm_username.as_deref(), Some("alice"));
+        assert_eq!(
+            summary_unbound.allowed_dm_username.as_deref(),
+            Some("alice")
+        );
         assert!(summary_unbound.bound_dm_user_id.is_none());
 
         let mut values_bound = values_unbound.clone();
-        values_bound.insert(TELEGRAM_BOUND_DM_USER_ID_KEY.to_string(), "424242".to_string());
+        values_bound.insert(
+            TELEGRAM_BOUND_DM_USER_ID_KEY.to_string(),
+            "424242".to_string(),
+        );
         let defaults_bound = TelegramModeDefaults::from_metadata(&values_bound);
         let summary_bound = resolve_contract_summary(&params, &defaults_bound);
         assert_eq!(summary_bound.bound_dm_user_id, Some(424242));
@@ -227,8 +243,14 @@ mod tests {
         let workspace = TempDir::new().unwrap();
         let values = HashMap::from([
             ("OPENROUTER_API_KEY".to_string(), "k".to_string()),
-            (TOPAGENT_WORKSPACE_KEY.to_string(), workspace.path().display().to_string()),
-            (TOPAGENT_MODEL_KEY.to_string(), "persisted/model".to_string()),
+            (
+                TOPAGENT_WORKSPACE_KEY.to_string(),
+                workspace.path().display().to_string(),
+            ),
+            (
+                TOPAGENT_MODEL_KEY.to_string(),
+                "persisted/model".to_string(),
+            ),
         ]);
         let defaults = TelegramModeDefaults::from_metadata(&values);
         let params = CliParams {
@@ -248,6 +270,10 @@ mod tests {
             summary.configured_default_model.as_deref(),
             Some("persisted/model")
         );
-        assert!(summary.effective_model_source_label.contains("CLI override"));
+        assert!(
+            summary
+                .effective_model_source_label
+                .contains("CLI override")
+        );
     }
 }

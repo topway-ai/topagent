@@ -1,7 +1,11 @@
 use crate::config::defaults::normalize_nonempty_string;
 
 /// Resolve a required parameter from an explicit value or environment variable.
-fn require_param(value: Option<String>, env_var: &str, missing_msg: &str) -> anyhow::Result<String> {
+fn require_param(
+    value: Option<String>,
+    env_var: &str,
+    missing_msg: &str,
+) -> anyhow::Result<String> {
     let resolved = value
         .and_then(|value| normalize_nonempty_string(Some(value)))
         .or_else(|| normalize_nonempty_string(std::env::var(env_var).ok()))

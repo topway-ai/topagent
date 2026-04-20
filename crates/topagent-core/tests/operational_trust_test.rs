@@ -311,12 +311,6 @@ fn test_memory_write_blocking_remains_strict_under_low_trust() {
     );
     assert!(
         contract
-            .memory_write_block_reason("save_plan", &low, false)
-            .is_some(),
-        "save_plan must be blocked under low trust without corroboration"
-    );
-    assert!(
-        contract
             .memory_write_block_reason("manage_operator_preference", &low, false)
             .is_some(),
         "manage_operator_preference must be blocked under low trust"
@@ -338,12 +332,6 @@ fn test_memory_write_allows_trusted_context() {
             .memory_write_block_reason("save_lesson", &high, false)
             .is_none(),
         "save_lesson should be allowed under high trust"
-    );
-    assert!(
-        contract
-            .memory_write_block_reason("save_plan", &high, false)
-            .is_none(),
-        "save_plan should be allowed under high trust"
     );
 }
 

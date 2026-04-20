@@ -1,5 +1,5 @@
-use topagent_core::channel::telegram::TelegramInlineKeyboardMarkup;
 use topagent_core::TelegramAdapter;
+use topagent_core::channel::telegram::TelegramInlineKeyboardMarkup;
 use tracing::error;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

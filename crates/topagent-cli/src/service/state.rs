@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 
 use crate::config::defaults::{TOPAGENT_PROVIDER_KEY, TOPAGENT_WORKSPACE_KEY};
 use crate::config::model_selection::{
-    provider_or_default, resolve_runtime_model_selection, RuntimeModelSelection, SelectedProvider,
+    RuntimeModelSelection, SelectedProvider, provider_or_default, resolve_runtime_model_selection,
 };
 use crate::managed_files::{is_topagent_managed_file, read_managed_env_metadata};
-use crate::operational_paths::{service_paths, ServicePaths};
+use crate::operational_paths::{ServicePaths, service_paths};
 
 use super::lifecycle::{ensure_systemd_user_available, load_service_status_snapshot};
 use super::managed_env::persisted_model_from_env_values;

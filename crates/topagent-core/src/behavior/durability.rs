@@ -6,7 +6,7 @@ use crate::task_result::VerificationCommand;
 pub(super) fn default_memory_policy() -> MemoryPolicy {
     MemoryPolicy {
         loaded_memory_is_advisory: true,
-        durable_write_tools: &["save_plan", "save_lesson", "manage_operator_preference"],
+        durable_write_tools: &["save_lesson", "manage_operator_preference"],
         current_state_wins: true,
         never_store: &[
             "transcripts",
@@ -18,7 +18,7 @@ pub(super) fn default_memory_policy() -> MemoryPolicy {
         keep_index_tiny: true,
         index_is_pointer_only: true,
         topic_file_relative_dir: "topics",
-        archival_relative_dirs: &["lessons", "plans", "procedures"],
+        archival_relative_dirs: &["lessons", "procedures"],
         index_entry_format: "- topic: <name> | file: topics/<name>.md | status: verified|tentative|stale | tags: tag1, tag2 | note: short pointer",
         max_index_entries: 24,
         max_index_note_chars: 120,
@@ -29,7 +29,6 @@ pub(super) fn default_memory_policy() -> MemoryPolicy {
         max_transcript_snippets: 3,
         max_transcript_message_bytes: 220,
         max_curated_lessons: 6,
-        max_curated_plans: 4,
         max_curated_procedures: 4,
         max_procedures_to_load: 2,
         max_operator_preferences_to_load: 2,

@@ -341,10 +341,8 @@ fn test_cli_memory_lint_clean_workspace_ok() {
     let temp = TempDir::new().unwrap();
     std::fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
     std::fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
-    std::fs::create_dir_all(temp.path().join(".topagent/plans")).unwrap();
     std::fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
     std::fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
-    std::fs::create_dir_all(temp.path().join(".topagent/observations")).unwrap();
     std::fs::write(
         temp.path().join(".topagent/MEMORY.md"),
         "# TopAgent Memory Index\n\n- topic: arch | file: topics/arch.md | status: verified | note: layout\n",
@@ -384,25 +382,6 @@ fn test_cli_trajectory_help_mentions_review_and_export_commands() {
 }
 
 #[test]
-fn test_cli_observation_appears_in_help() {
-    let mut cmd = Command::cargo_bin("topagent").unwrap();
-    cmd.arg("--help")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("observation"));
-}
-
-#[test]
-fn test_cli_observation_help_mentions_list_and_show_commands() {
-    let mut cmd = Command::cargo_bin("topagent").unwrap();
-    cmd.args(["observation", "--help"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("list"))
-        .stdout(predicates::str::contains("show"));
-}
-
-#[test]
 fn test_cli_checkpoint_help_mentions_management_commands() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
     cmd.args(["checkpoint", "--help"])
@@ -428,8 +407,7 @@ fn test_cli_memory_status_reports_learning_layers_for_fresh_workspace() {
         ))
         .stdout(predicates::str::contains(
             "Trajectories: 0 local, 0 ready, 0 exported",
-        ))
-        .stdout(predicates::str::contains("Observations: 0"));
+        ));
 }
 
 #[test]
@@ -475,8 +453,6 @@ fn test_readme_documents_product_setup_commands() {
     assert!(readme.contains("topagent trajectory list"));
     assert!(readme.contains("topagent trajectory review <id>"));
     assert!(readme.contains("topagent trajectory export <id>"));
-    assert!(readme.contains("topagent observation list"));
-    assert!(readme.contains("topagent observation show <id>"));
     assert!(readme.contains("topagent uninstall"));
     assert!(readme.contains("topagent service start"));
     assert!(readme.contains("topagent service stop"));
@@ -586,4 +562,71 @@ fn test_readme_and_architecture_document_governed_learning_layers() {
     assert!(readme.contains("reviewed and exported explicitly"));
     assert!(architecture.contains("Operator Model"));
     assert!(architecture.contains("trajectory review/export"));
+}
+
+#[test]
+fn test_cli_docs_consistency_readme_covers_all_subcommands() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let readme = std::fs::read_to_string(repo_root.join("README.md")).unwrap();
+
+    let subcommands = [
+        "install",
+        "status",
+        "telegram",
+        "service",
+        "model",
+        "memory",
+        "procedure",
+        "trajectory",
+        "checkpoint",
+        "config",
+        "doctor",
+        "upgrade",
+        "uninstall",
+    ];
+
+    for cmd in &subcommands {
+        assert!(
+            readme.contains(&format!("topagent {}", cmd)),
+            "README.md does not document `topagent {}`",
+            cmd
+        );
+    }
+}
+
+#[test]
+fn test_cli_docs_consistency_no_removed_commands_in_readme() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let readme = std::fs::read_to_string(repo_root.join("README.md")).unwrap();
+
+    assert!(
+        !readme.contains("topagent observation"),
+        "README.md still references removed `topagent observation` command"
+    );
+}
+
+#[test]
+fn test_telegram_bot_command_table_matches_router() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let readme = std::fs::read_to_string(repo_root.join("README.md")).unwrap();
+
+    let bot_commands = [
+        "/start",
+        "/help",
+        "/stop",
+        "/approvals",
+        "/approve",
+        "/deny",
+        "/reset",
+    ];
+    for cmd in &bot_commands {
+        assert!(
+            readme.contains(cmd),
+            "README.md Bot commands table is missing `{}`",
+            cmd
+        );
+    }
 }

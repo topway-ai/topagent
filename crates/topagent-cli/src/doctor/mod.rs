@@ -72,10 +72,8 @@ mod tests {
 
         std::fs::create_dir_all(ws.join(".topagent/topics")).unwrap();
         std::fs::create_dir_all(ws.join(".topagent/lessons")).unwrap();
-        std::fs::create_dir_all(ws.join(".topagent/plans")).unwrap();
         std::fs::create_dir_all(ws.join(".topagent/procedures")).unwrap();
         std::fs::create_dir_all(ws.join(".topagent/trajectories")).unwrap();
-        std::fs::create_dir_all(ws.join(".topagent/observations")).unwrap();
 
         std::fs::write(
             ws.join(MEMORY_INDEX_RELATIVE_PATH),

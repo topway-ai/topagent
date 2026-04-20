@@ -1,5 +1,5 @@
 use anyhow::Result;
-use topagent_core::{context::ExecutionContext, TelegramAdapter, POLL_TIMEOUT_SECS};
+use topagent_core::{POLL_TIMEOUT_SECS, TelegramAdapter, context::ExecutionContext};
 use tracing::{debug, error, info, warn};
 
 use crate::config::defaults::{CliParams, load_persisted_telegram_defaults};
@@ -109,7 +109,9 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
                         continue;
                     }
 
-                    let Some(ref msg) = update.message else { continue };
+                    let Some(ref msg) = update.message else {
+                        continue;
+                    };
                     route_message(
                         &adapter,
                         &mut session_manager,

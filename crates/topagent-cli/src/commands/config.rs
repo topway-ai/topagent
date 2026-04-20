@@ -2,7 +2,7 @@ use anyhow::Result;
 
 use crate::config::defaults::CliParams;
 use crate::config::defaults::load_persisted_telegram_defaults;
-use crate::config::summary::{resolve_contract_summary, ResolvedContractSummary};
+use crate::config::summary::{ResolvedContractSummary, resolve_contract_summary};
 
 pub(crate) fn run_config_inspect(params: CliParams) -> Result<()> {
     let defaults = load_persisted_telegram_defaults().unwrap_or_default();
@@ -124,14 +124,38 @@ mod tests {
 
         assert!(output.contains("Provider:"), "must show provider: {output}");
         assert!(output.contains("Model:"), "must show model: {output}");
-        assert!(output.contains("Workspace:"), "must show workspace: {output}");
-        assert!(output.contains("OpenRouter:"), "must show OpenRouter key status: {output}");
-        assert!(output.contains("Bot token:"), "must show token status: {output}");
-        assert!(output.contains("DM access:"), "must show DM access: {output}");
-        assert!(output.contains("present"), "must indicate key present: {output}");
-        assert!(!output.contains("sk-real-secret"), "must not reveal OpenRouter key: {output}");
-        assert!(!output.contains("token-secret"), "must not reveal Telegram token: {output}");
-        assert!(output.contains("operator"), "username is safe to show: {output}");
+        assert!(
+            output.contains("Workspace:"),
+            "must show workspace: {output}"
+        );
+        assert!(
+            output.contains("OpenRouter:"),
+            "must show OpenRouter key status: {output}"
+        );
+        assert!(
+            output.contains("Bot token:"),
+            "must show token status: {output}"
+        );
+        assert!(
+            output.contains("DM access:"),
+            "must show DM access: {output}"
+        );
+        assert!(
+            output.contains("present"),
+            "must indicate key present: {output}"
+        );
+        assert!(
+            !output.contains("sk-real-secret"),
+            "must not reveal OpenRouter key: {output}"
+        );
+        assert!(
+            !output.contains("token-secret"),
+            "must not reveal Telegram token: {output}"
+        );
+        assert!(
+            output.contains("operator"),
+            "username is safe to show: {output}"
+        );
     }
 
     #[test]
@@ -162,9 +186,18 @@ mod tests {
         let summary = resolve_contract_summary(&params, &defaults);
         let output = render_contract_summary(&summary);
 
-        assert!(output.contains("override/model"), "must show effective (overridden) model: {output}");
-        assert!(output.contains("persisted/model"), "must show configured default model: {output}");
-        assert!(output.contains("CLI override"), "must label the source: {output}");
+        assert!(
+            output.contains("override/model"),
+            "must show effective (overridden) model: {output}"
+        );
+        assert!(
+            output.contains("persisted/model"),
+            "must show configured default model: {output}"
+        );
+        assert!(
+            output.contains("CLI override"),
+            "must label the source: {output}"
+        );
     }
 
     #[test]
@@ -208,7 +241,13 @@ mod tests {
         let defaults_bound = TelegramModeDefaults::from_metadata(&values_bound);
         let output_bound =
             render_contract_summary(&resolve_contract_summary(&params, &defaults_bound));
-        assert!(output_bound.contains("bound"), "must say bound after first message: {output_bound}");
-        assert!(!output_bound.contains("424242"), "must not reveal numeric bound ID: {output_bound}");
+        assert!(
+            output_bound.contains("bound"),
+            "must say bound after first message: {output_bound}"
+        );
+        assert!(
+            !output_bound.contains("424242"),
+            "must not reveal numeric bound ID: {output_bound}"
+        );
     }
 }

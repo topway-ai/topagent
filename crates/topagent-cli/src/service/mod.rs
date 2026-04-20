@@ -7,6 +7,7 @@ mod upgrade;
 
 use anyhow::Result;
 
+use crate::commands::{ModelCommands, ServiceCommands};
 use crate::config::defaults::CliParams;
 
 pub(crate) use install::run_install;
@@ -14,21 +15,21 @@ pub(crate) use lifecycle::{run_status, run_uninstall};
 pub(crate) use upgrade::run_upgrade;
 
 pub(crate) fn run_service_command(
-    command: crate::ServiceCommands,
+    command: ServiceCommands,
     params: CliParams,
     purge: bool,
 ) -> Result<()> {
     match command {
-        crate::ServiceCommands::Install { token } => install::run_service_install(token, params),
-        crate::ServiceCommands::Status => lifecycle::run_service_status(params),
-        crate::ServiceCommands::Start => lifecycle::run_service_start(),
-        crate::ServiceCommands::Stop => lifecycle::run_service_stop(),
-        crate::ServiceCommands::Restart => lifecycle::run_service_restart(),
-        crate::ServiceCommands::Uninstall { .. } => lifecycle::run_service_uninstall(purge),
+        ServiceCommands::Install { token } => install::run_service_install(token, params),
+        ServiceCommands::Status => lifecycle::run_service_status(params),
+        ServiceCommands::Start => lifecycle::run_service_start(),
+        ServiceCommands::Stop => lifecycle::run_service_stop(),
+        ServiceCommands::Restart => lifecycle::run_service_restart(),
+        ServiceCommands::Uninstall { .. } => lifecycle::run_service_uninstall(purge),
     }
 }
 
-pub(crate) fn run_model_command(command: crate::ModelCommands, params: CliParams) -> Result<()> {
+pub(crate) fn run_model_command(command: ModelCommands, params: CliParams) -> Result<()> {
     model::run_model_command(command, params)
 }
 

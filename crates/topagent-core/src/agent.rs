@@ -16,7 +16,7 @@ use crate::tool_genesis::{
     GeneratedToolRuntimeGuard,
 };
 use crate::tools::{
-    ManageOperatorPreferenceTool, SaveLessonTool, SavePlanTool, Tool, ToolRegistry, UpdatePlanTool,
+    ManageOperatorPreferenceTool, SaveLessonTool, Tool, ToolRegistry, UpdatePlanTool,
 };
 use crate::{Error, Message, Provider, ProviderResponse, Result, ToolSpec};
 use std::collections::HashMap;
@@ -115,9 +115,6 @@ impl Agent {
         let plan = Arc::new(Mutex::new(Plan::new()));
         let planning_tool = UpdatePlanTool::with_plan(plan.clone());
         registry.add(Box::new(planning_tool));
-
-        let save_plan_tool = SavePlanTool::with_plan(plan.clone());
-        registry.add(Box::new(save_plan_tool));
 
         registry.add(Box::new(SaveLessonTool::new()));
         registry.add(Box::new(ManageOperatorPreferenceTool::new()));

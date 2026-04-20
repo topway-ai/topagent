@@ -10,7 +10,7 @@ use crate::config::defaults::{
     TOPAGENT_WORKSPACE_KEY,
 };
 use crate::config::runtime::TelegramModeConfig;
-use crate::managed_files::{write_managed_file, TOPAGENT_MANAGED_HEADER};
+use crate::managed_files::{TOPAGENT_MANAGED_HEADER, write_managed_file};
 
 pub(super) fn render_service_env_file(config: &TelegramModeConfig) -> Result<String> {
     let workspace = config.workspace.display().to_string();
@@ -171,11 +171,11 @@ mod tests {
 
     #[test]
     fn test_render_service_env_file_round_trips_operator_config_in_one_write() {
-        use crate::config::model_selection::SelectedProvider;
         use crate::config::defaults::TelegramModeDefaults;
+        use crate::config::model_selection::SelectedProvider;
         use crate::config::runtime::TelegramModeConfig;
         use std::path::PathBuf;
-        use topagent_core::{model::ModelRoute, ProviderKind, RuntimeOptions};
+        use topagent_core::{ProviderKind, RuntimeOptions, model::ModelRoute};
 
         let workspace = PathBuf::from("/tmp/topagent-roundtrip-workspace");
         let config = TelegramModeConfig {
@@ -234,7 +234,7 @@ mod tests {
         use crate::config::model_selection::SelectedProvider;
         use crate::config::runtime::TelegramModeConfig;
         use std::path::PathBuf;
-        use topagent_core::{model::ModelRoute, ProviderKind, RuntimeOptions};
+        use topagent_core::{ProviderKind, RuntimeOptions, model::ModelRoute};
 
         let config = TelegramModeConfig {
             token: "1:t".to_string(),

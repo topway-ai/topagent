@@ -1,14 +1,14 @@
 use anyhow::Result;
 use std::path::PathBuf;
-use topagent_core::{model::ModelRoute, ProviderKind, RuntimeOptions};
+use topagent_core::{ProviderKind, RuntimeOptions, model::ModelRoute};
 
 use crate::config::defaults::{CliParams, TelegramModeDefaults};
 use crate::config::keys::{
     require_telegram_token_with_default, resolve_opencode_api_key, resolve_openrouter_api_key,
 };
 use crate::config::model_selection::{
-    build_route_from_resolved, provider_or_default, resolve_runtime_model_selection,
-    SelectedProvider,
+    SelectedProvider, build_route_from_resolved, provider_or_default,
+    resolve_runtime_model_selection,
 };
 use crate::config::workspace::resolve_workspace_path;
 
@@ -113,8 +113,10 @@ pub(crate) fn resolve_telegram_mode_config(
     let route = build_route_from_resolved(&model_selection.effective);
     let openrouter_api_key =
         resolve_openrouter_api_key(params.api_key, defaults.api_key.as_deref());
-    let opencode_api_key =
-        resolve_opencode_api_key(params.opencode_api_key, defaults.opencode_api_key.as_deref());
+    let opencode_api_key = resolve_opencode_api_key(
+        params.opencode_api_key,
+        defaults.opencode_api_key.as_deref(),
+    );
 
     // Fail fast: the resolved route must have its provider API key present.
     match route.provider {
@@ -218,15 +220,15 @@ pub(crate) fn resolve_one_shot_config(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::defaults::{
+        TOPAGENT_MAX_RETRIES_KEY, TOPAGENT_MAX_STEPS_KEY, TOPAGENT_MODEL_KEY,
+        TOPAGENT_TIMEOUT_SECS_KEY, TOPAGENT_TOOL_AUTHORING_KEY, TOPAGENT_WORKSPACE_KEY,
+        TelegramModeDefaults,
+    };
+    use crate::config::model_selection::SelectedProvider;
     use std::collections::HashMap;
     use tempfile::TempDir;
     use topagent_core::model::DEFAULT_OPENROUTER_MODEL_ID;
-    use crate::config::defaults::{
-        TelegramModeDefaults, TOPAGENT_MODEL_KEY, TOPAGENT_MAX_STEPS_KEY,
-        TOPAGENT_MAX_RETRIES_KEY, TOPAGENT_TIMEOUT_SECS_KEY, TOPAGENT_TOOL_AUTHORING_KEY,
-        TOPAGENT_WORKSPACE_KEY,
-    };
-    use crate::config::model_selection::SelectedProvider;
 
     #[test]
     fn test_resolve_generated_tool_authoring_prefers_requested_value() {
@@ -299,10 +301,22 @@ mod tests {
     fn test_resolve_telegram_mode_config_reuses_service_managed_defaults_for_foreground_telegram() {
         let workspace = TempDir::new().unwrap();
         let values = HashMap::from([
-            ("OPENROUTER_API_KEY".to_string(), "persisted-key".to_string()),
-            ("TELEGRAM_BOT_TOKEN".to_string(), "123456:abcdef".to_string()),
-            (TOPAGENT_WORKSPACE_KEY.to_string(), workspace.path().display().to_string()),
-            (TOPAGENT_MODEL_KEY.to_string(), "persisted/model".to_string()),
+            (
+                "OPENROUTER_API_KEY".to_string(),
+                "persisted-key".to_string(),
+            ),
+            (
+                "TELEGRAM_BOT_TOKEN".to_string(),
+                "123456:abcdef".to_string(),
+            ),
+            (
+                TOPAGENT_WORKSPACE_KEY.to_string(),
+                workspace.path().display().to_string(),
+            ),
+            (
+                TOPAGENT_MODEL_KEY.to_string(),
+                "persisted/model".to_string(),
+            ),
             (TOPAGENT_MAX_STEPS_KEY.to_string(), "61".to_string()),
             (TOPAGENT_MAX_RETRIES_KEY.to_string(), "4".to_string()),
             (TOPAGENT_TIMEOUT_SECS_KEY.to_string(), "75".to_string()),
@@ -666,8 +680,14 @@ mod tests {
         let workspace = TempDir::new().unwrap();
         let values = HashMap::from([
             ("OPENROUTER_API_KEY".to_string(), "shared-key".to_string()),
-            ("TELEGRAM_BOT_TOKEN".to_string(), "123456:shared-token".to_string()),
-            (TOPAGENT_WORKSPACE_KEY.to_string(), workspace.path().display().to_string()),
+            (
+                "TELEGRAM_BOT_TOKEN".to_string(),
+                "123456:shared-token".to_string(),
+            ),
+            (
+                TOPAGENT_WORKSPACE_KEY.to_string(),
+                workspace.path().display().to_string(),
+            ),
             (TOPAGENT_MODEL_KEY.to_string(), "shared/model".to_string()),
             (TOPAGENT_MAX_STEPS_KEY.to_string(), "65".to_string()),
             (TOPAGENT_MAX_RETRIES_KEY.to_string(), "5".to_string()),
@@ -710,10 +730,22 @@ mod tests {
     fn test_cli_model_override_does_not_alter_persisted_defaults() {
         let workspace = TempDir::new().unwrap();
         let values = HashMap::from([
-            ("OPENROUTER_API_KEY".to_string(), "persisted-key".to_string()),
-            ("TELEGRAM_BOT_TOKEN".to_string(), "999:persisted-token".to_string()),
-            (TOPAGENT_WORKSPACE_KEY.to_string(), workspace.path().display().to_string()),
-            (TOPAGENT_MODEL_KEY.to_string(), "persisted/model".to_string()),
+            (
+                "OPENROUTER_API_KEY".to_string(),
+                "persisted-key".to_string(),
+            ),
+            (
+                "TELEGRAM_BOT_TOKEN".to_string(),
+                "999:persisted-token".to_string(),
+            ),
+            (
+                TOPAGENT_WORKSPACE_KEY.to_string(),
+                workspace.path().display().to_string(),
+            ),
+            (
+                TOPAGENT_MODEL_KEY.to_string(),
+                "persisted/model".to_string(),
+            ),
         ]);
         let defaults = TelegramModeDefaults::from_metadata(&values);
         let params = CliParams {
@@ -738,10 +770,22 @@ mod tests {
     fn test_metadata_roundtrip_preserves_all_runtime_options() {
         let workspace = TempDir::new().unwrap();
         let original_values = HashMap::from([
-            ("OPENROUTER_API_KEY".to_string(), "key-roundtrip".to_string()),
-            ("TELEGRAM_BOT_TOKEN".to_string(), "111:token-roundtrip".to_string()),
-            (TOPAGENT_WORKSPACE_KEY.to_string(), workspace.path().display().to_string()),
-            (TOPAGENT_MODEL_KEY.to_string(), "model/roundtrip".to_string()),
+            (
+                "OPENROUTER_API_KEY".to_string(),
+                "key-roundtrip".to_string(),
+            ),
+            (
+                "TELEGRAM_BOT_TOKEN".to_string(),
+                "111:token-roundtrip".to_string(),
+            ),
+            (
+                TOPAGENT_WORKSPACE_KEY.to_string(),
+                workspace.path().display().to_string(),
+            ),
+            (
+                TOPAGENT_MODEL_KEY.to_string(),
+                "model/roundtrip".to_string(),
+            ),
             (TOPAGENT_MAX_STEPS_KEY.to_string(), "80".to_string()),
             (TOPAGENT_MAX_RETRIES_KEY.to_string(), "6".to_string()),
             (TOPAGENT_TIMEOUT_SECS_KEY.to_string(), "100".to_string()),
