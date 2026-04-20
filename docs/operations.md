@@ -188,7 +188,7 @@ The workspace is the root directory the agent operates in. All file paths are re
 | Telegram (`topagent setup`) | Interactive prompt with default, or `--workspace` |
 | Foreground Telegram (`topagent telegram`) | Current directory, or `--workspace` |
 
-The workspace must exist and be a directory. The agent creates a `.topagent/` subdirectory inside it for plans, lessons, tools, memory files, and chat transcripts.
+The workspace must exist and be a directory. The agent creates a `.topagent/` subdirectory inside it for lessons, tools, memory files, and chat transcripts.
 
 ### .topagent/ directory
 
@@ -197,7 +197,6 @@ workspace/.topagent/
   USER.md                    # operator model (stable user preferences)
   MEMORY.md                  # thin workspace memory index (always loaded)
   topics/                    # compact durable topic notes (lazy loaded)
-  plans/                     # manual saved plans (markdown)
   lessons/                   # saved lesson notes (markdown)
   procedures/                # governed reusable procedures (markdown)
   trajectories/              # local saved trajectory records (JSON)
@@ -262,7 +261,7 @@ If `sandbox` is omitted, TopAgent rejects the external-tool config. Generated to
 
 #### 3. Lazy durable workspace artifacts
 
-`workspace/.topagent/topics/*.md`, `workspace/.topagent/lessons/*.md`, `workspace/.topagent/procedures/*.md`, `workspace/.topagent/plans/*.md`
+`workspace/.topagent/topics/*.md`, `workspace/.topagent/lessons/*.md`, `workspace/.topagent/procedures/*.md`
 
 - Store compact durable notes by concern
 - Loaded only when the current task matches the topic
@@ -317,7 +316,7 @@ If memory conflicts with the current repo, runtime, config, or service state, th
 - Clears any in-memory running state for that chat
 - Does **not** remove `USER.md`
 - Does **not** remove `MEMORY.md`
-- Does **not** remove topic files, plans, lessons, procedures, trajectories, or tools
+- Does **not** remove topic files, lessons, procedures, trajectories, or tools
 
 This keeps reset semantics simple and aligned with the current product shape.
 
@@ -334,9 +333,9 @@ TopAgent keeps memory lightweight with a bounded consolidation step:
 - topic loading and transcript loading both cap how much can enter prompt context
 - the always-loaded index stays bounded; durable details remain in topic files or archived artifacts
 
-### Plans and lessons
+### Lessons
 
-Plans and lessons are saved under `.topagent/plans/` and `.topagent/lessons/` respectively. These persist across runs and are not affected by `/reset`.
+Lessons are saved under `.topagent/lessons/`. They persist across runs and are not affected by `/reset`.
 
 ### Config
 

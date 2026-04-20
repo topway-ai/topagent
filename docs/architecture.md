@@ -117,10 +117,13 @@ CLI parses args
         - /start, /help -> reply with config summary
         - /stop -> cancel running task for that chat
         - /reset -> clear persisted transcript for that chat
-        - text -> start_message:
+         - /approvals -> list pending approvals for this chat
+         - /approve <id> -> approve a pending action
+         - /deny <id> -> deny a pending action
+         - text -> start_message:
           a. load `.topagent/MEMORY.md` (always)
           b. load matching `.topagent/procedures/*.md` files only if relevant, capped to a small subset
-          c. load matching `.topagent/topics/*.md`, `.topagent/lessons/*.md`, or manual `.topagent/plans/*.md` artifacts only if relevant
+          c. load matching `.topagent/topics/*.md`, `.topagent/lessons/*.md` artifacts only if relevant
           d. search the saved Telegram transcript and extract targeted snippets only if useful
           e. build a fresh agent run with the operator model plus that memory briefing and the merged trust context
           f. append the filtered user-visible transcript to disk
@@ -193,7 +196,6 @@ TopAgent uses five local learning layers:
    - `workspace/.topagent/topics/*.md` for compact notes by concern (`architecture`, `security`, `runtime`, etc.)
    - `workspace/.topagent/lessons/*.md` for distilled facts, pitfalls, and rules
    - `workspace/.topagent/procedures/*.md` for workspace-local reusable playbooks with explicit reuse/revision/supersession metadata
-   - `workspace/.topagent/plans/*.md` for manual saved plans
    - retrieval is narrow: only a small relevant subset is loaded, and superseded procedures are ignored
 4. **Raw transcript evidence**: `workspace/.topagent/telegram-history/chat-<chat_id>.json`
    - searchable per-chat transcript
@@ -206,7 +208,7 @@ TopAgent uses five local learning layers:
    - saved locally first, then reviewed and exported explicitly into `workspace/.topagent/exports/trajectories/`
     - stay off the prompt hot path unless exported or reviewed manually
 
-`/reset` deletes only the per-chat transcript file. It does not touch `MEMORY.md`, topics, lessons, procedures, plans, or trajectories.
+`/reset` deletes only the per-chat transcript file. It does not touch `MEMORY.md`, topics, lessons, procedures, or trajectories.
 
 Curated consolidation keeps the index practical:
 
@@ -240,4 +242,4 @@ Curated consolidation keeps the index practical:
 5. Agent executes plan steps, updating status as it goes
 6. If the agent fails to plan within budget (10 steps or 5 blocked attempts), the system generates a fallback plan automatically
 
-Plans can still be saved manually to `.topagent/plans/` when the task-specific checklist itself matters. Verified-task promotion now uses lessons for facts and pitfalls, procedures for reusable workflows, and trajectories for compact export records.
+Plans can still be saved manually when the task-specific checklist itself matters. Verified-task promotion now uses lessons for facts and pitfalls, procedures for reusable workflows, and trajectories for compact export records.

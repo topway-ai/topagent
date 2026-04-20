@@ -148,15 +148,9 @@ impl WorkspaceMemory {
         let mut candidates = orientation
             .index_entries
             .iter()
-            .filter(|entry| !is_retired_plan_entry(entry))
             .cloned()
             .map(MemoryCandidate::from_manual_entry)
             .collect::<Vec<_>>();
-        report.pruned_entries += orientation
-            .index_entries
-            .iter()
-            .filter(|entry| is_retired_plan_entry(entry))
-            .count();
 
         let lesson_candidates = orientation
             .lesson_files
@@ -184,10 +178,6 @@ impl WorkspaceMemory {
 
         Ok(candidates)
     }
-}
-
-fn is_retired_plan_entry(entry: &MemoryIndexEntry) -> bool {
-    normalize_memory_file(&entry.file).starts_with("plans/")
 }
 
 impl MemoryIndexEntry {

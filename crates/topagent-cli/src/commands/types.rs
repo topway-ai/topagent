@@ -169,7 +169,7 @@ pub(crate) enum ServiceCommands {
 
 #[derive(Subcommand)]
 pub(crate) enum ModelCommands {
-    /// Show the configured model.
+    /// Show the configured default and effective model.
     Status,
     /// Set the configured model and restart the service when installed.
     Set { model_id: String },

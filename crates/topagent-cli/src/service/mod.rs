@@ -1,8 +1,12 @@
+mod detect;
 mod install;
 mod lifecycle;
 pub mod managed_env;
 mod model;
 mod state;
+mod systemd;
+mod uninstall;
+mod unit;
 mod upgrade;
 
 use anyhow::Result;
@@ -14,18 +18,14 @@ pub(crate) use install::run_install;
 pub(crate) use lifecycle::{run_status, run_uninstall};
 pub(crate) use upgrade::run_upgrade;
 
-pub(crate) fn run_service_command(
-    command: ServiceCommands,
-    params: CliParams,
-    purge: bool,
-) -> Result<()> {
+pub(crate) fn run_service_command(command: ServiceCommands, params: CliParams) -> Result<()> {
     match command {
         ServiceCommands::Install { token } => install::run_service_install(token, params),
         ServiceCommands::Status => lifecycle::run_service_status(params),
         ServiceCommands::Start => lifecycle::run_service_start(),
         ServiceCommands::Stop => lifecycle::run_service_stop(),
         ServiceCommands::Restart => lifecycle::run_service_restart(),
-        ServiceCommands::Uninstall { .. } => lifecycle::run_service_uninstall(purge),
+        ServiceCommands::Uninstall { purge } => lifecycle::run_service_uninstall(purge),
     }
 }
 

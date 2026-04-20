@@ -25,11 +25,10 @@ use crate::openrouter_models::{
 };
 use crate::operational_paths::service_paths;
 
-use super::lifecycle::{
-    ServiceConfigApplyAction, detect_install_root, ensure_systemd_user_available,
-    install_service_with_config,
-};
+use super::detect::detect_install_root;
+use super::lifecycle::{ServiceConfigApplyAction, install_service_with_config};
 use super::managed_env::trim_nonempty;
+use super::systemd::ensure_systemd_user_available;
 
 const CUSTOM_MODEL_OPTION_LABEL: &str = "Custom model ID (type manually)";
 

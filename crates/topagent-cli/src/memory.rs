@@ -1579,22 +1579,6 @@ path = "src/lib.rs"
     }
 
     #[test]
-    fn test_consolidate_drops_index_entries_pointing_at_retired_plans_dir() {
-        let temp = TempDir::new().unwrap();
-        write_memory_index(
-            temp.path(),
-            "# TopAgent Memory Index\n\n- topic: release flow | file: plans/1700000200-release-flow.md | status: verified | note: legacy plan entry\n",
-        );
-
-        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
-        memory.consolidate_memory_if_needed().unwrap();
-        let rewritten = fs::read_to_string(temp.path().join(MEMORY_INDEX_RELATIVE_PATH)).unwrap();
-
-        assert!(!rewritten.contains("plans/1700000200-release-flow.md"));
-        assert!(!rewritten.contains("topic: release flow"));
-    }
-
-    #[test]
     fn test_consolidate_prunes_curated_lessons_to_policy_limit() {
         let temp = TempDir::new().unwrap();
         write_memory_index(temp.path(), "# TopAgent Memory Index\n\n");

@@ -6,7 +6,7 @@ Supports two LLM providers through one shared OpenAI-compatible transport seam:
 - **OpenRouter** (default) — default model: `minimax/minimax-m2.7`
 - **Opencode** — default model: `glm-5.1`
 
-Provider is selected explicitly during setup or via `--model`.
+Provider is selected explicitly during setup.
 
 ## Install
 
@@ -58,11 +58,11 @@ Then it:
 
 Then open a private chat with your bot and send a message.
 
-TopAgent keeps Telegram memory in three layers:
+TopAgent keeps Telegram memory in five learning layers:
 
 - a small operator model at `workspace/.topagent/USER.md` for stable collaboration preferences, loaded separately and capped tightly
 - a tiny always-loaded workspace index at `workspace/.topagent/MEMORY.md`
-- compact durable notes under `workspace/.topagent/topics/`, plus archived lessons and reusable procedures under `workspace/.topagent/lessons/` and `workspace/.topagent/procedures/`, loaded only when relevant
+- compact durable notes under `workspace/.topagent/topics/`, plus distilled lessons and reusable procedures under `workspace/.topagent/lessons/` and `workspace/.topagent/procedures/`, loaded only when relevant
 - a per-chat raw transcript under `workspace/.topagent/telegram-history/`, used as searchable evidence rather than replayed wholesale
 
 For strong verified runs, TopAgent can also emit compact trajectory artifacts under `workspace/.topagent/trajectories/`. These are structured export records for later eval or training work, not prompt memory, and they stay local until reviewed and exported explicitly.
@@ -97,17 +97,22 @@ topagent model pick # pick the configured model interactively
 topagent model list # show cached top models
 topagent model refresh # refresh cached top models
 topagent memory status       # show operator/workspace learning artifact status
+topagent memory lint         # lint USER.md and MEMORY.md for size and content policy issues
+topagent memory recall "..." # dry-run memory retrieval for an instruction
 topagent procedure list      # list live procedures
 topagent procedure show <id> # show one procedure
 topagent procedure prune     # remove superseded and disabled procedures
+topagent procedure disable <id> # disable a procedure without deleting it
 topagent trajectory list     # list saved trajectories
 topagent trajectory show <id> # show one trajectory
 topagent trajectory review <id> # mark a trajectory ready for export
 topagent trajectory export <id> # export a reviewed trajectory
 topagent telegram              # run the Telegram bot in the foreground
+topagent service install     # install service without the full interactive flow
 topagent service start       # start the background service
 topagent service stop        # stop the background service
 topagent service restart     # restart the background service
+topagent service uninstall   # remove service and config, keep binary
 topagent checkpoint status   # show the latest workspace checkpoint
 topagent checkpoint diff     # preview what restore would change
 topagent checkpoint restore  # restore the latest checkpoint and clear Telegram transcripts
@@ -115,7 +120,9 @@ topagent config inspect      # show resolved provider, model, key presence, work
 topagent run status          # show execution-session state and recovery readiness
 topagent doctor              # run health diagnostics on setup, config, workspace, and tools
 topagent upgrade             # download and install the latest GitHub release binary
+topagent upgrade --use-cargo # build and install from source via cargo instead of a release binary
 topagent uninstall           # remove service, config, and installed binary
+topagent uninstall --purge   # also remove workspace .topagent/ data and model cache
 ```
 
 `topagent setup` is the obvious full setup path. `topagent install` remains available as the same command. Re-running setup keeps the same managed config file and restarts the background service with updated values; operator-entered secrets (API keys, bot token, allowed username, bound user ID) are preserved when you accept the existing prompt defaults, and the env file is rewritten in a single atomic emit rather than overwritten twice. After setup, use `topagent model set` or `topagent model pick` to change the configured default model without re-running full setup. Model changes preserve the persisted provider; changing provider requires re-running `topagent setup`.
@@ -147,7 +154,6 @@ Workspace memory is separate from `TOPAGENT.md`:
 - `.topagent/topics/` holds compact durable notes by concern
 - `.topagent/lessons/` holds distilled facts, pitfalls, and rules from verified work
 - `.topagent/procedures/` holds reusable workspace-local playbooks distilled from strong verified runs, revised through proven reuse, and loaded lazily in small batches
-- `.topagent/plans/` holds manual saved plans; auto-promotion no longer uses plans as the reusable workflow artifact
 - `.topagent/trajectories/` holds compact structured execution traces from high-quality verified runs; they are reviewable export artifacts, not hot-path prompt memory
 - `.topagent/exports/trajectories/` holds reviewed trajectory export packages
 - `.topagent/telegram-history/` stores searchable per-chat transcript evidence
@@ -188,7 +194,6 @@ Verification may be attempted as a bounded best-effort follow-through when files
 
 ## Documentation
 
-- [Overview](docs/overview.md) -- what TopAgent is, design goals, capabilities, limitations
 - [Architecture](docs/architecture.md) -- crate structure, modules, runtime flows
 - [Operations](docs/operations.md) -- install, service lifecycle, persistence, troubleshooting
 - [Review Rules](REVIEW_RULES.md) -- short LLM preflight and post-change checks before meaningful code changes

@@ -11,7 +11,7 @@ use crate::service::{
 use crate::telegram::run_telegram;
 
 use super::checkpoint_cli::run_checkpoint_command;
-use super::types::{Commands, ConfigCommands, RunCommands, ServiceCommands, ToolAuthoringMode};
+use super::types::{Commands, ConfigCommands, RunCommands, ToolAuthoringMode};
 use super::{run_config_inspect, run_one_shot, run_session_status};
 
 pub(crate) fn dispatch(
@@ -36,10 +36,7 @@ pub(crate) fn dispatch(
         },
         Some(Commands::Upgrade { use_cargo }) => run_upgrade(use_cargo),
         Some(Commands::Uninstall { purge }) => run_uninstall(purge),
-        Some(Commands::Service { command }) => {
-            let purge = matches!(command, ServiceCommands::Uninstall { purge: true });
-            run_service_command(command, params, purge)
-        }
+        Some(Commands::Service { command }) => run_service_command(command, params),
         Some(Commands::Telegram { token }) => run_telegram(token, params),
         None => {
             let instruction = instruction.ok_or_else(|| {
