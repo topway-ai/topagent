@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 use crate::checkpoint::run_checkpoint_command;
 use crate::commands::{run_config_inspect, run_one_shot, run_session_status};
-use crate::config::CliParams;
+use crate::config::defaults::CliParams;
 use crate::doctor::run_doctor;
 use crate::learning::{
     run_memory_command, run_observation_command, run_procedure_command, run_trajectory_command,

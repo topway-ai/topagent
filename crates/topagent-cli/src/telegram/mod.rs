@@ -3,7 +3,9 @@ use topagent_core::channel::telegram::TelegramInlineKeyboardMarkup;
 use topagent_core::{context::ExecutionContext, TelegramAdapter, POLL_TIMEOUT_SECS};
 use tracing::{debug, error, info, warn};
 
-use crate::config::{load_persisted_telegram_defaults, resolve_telegram_mode_config, CliParams};
+use crate::config::defaults::CliParams;
+use crate::config::defaults::load_persisted_telegram_defaults;
+use crate::config::runtime::resolve_telegram_mode_config;
 use crate::operational_paths::managed_service_env_path;
 use crate::telegram::admission::{decide_inbound_admission, InboundAdmission};
 use crate::telegram::approval::{format_approval_resolution, parse_approval_callback_data};

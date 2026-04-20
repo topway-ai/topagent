@@ -3,7 +3,7 @@ use std::path::Path;
 use topagent_core::WorkspaceCheckpointStore;
 
 pub(crate) fn run_session_status(workspace_override: Option<std::path::PathBuf>) -> Result<()> {
-    let workspace = crate::config::resolve_workspace_path(workspace_override)?;
+    let workspace = crate::config::workspace::resolve_workspace_path(workspace_override)?;
     print!("{}", render_session_status(&workspace));
     Ok(())
 }

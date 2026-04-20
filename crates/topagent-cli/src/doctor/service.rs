@@ -1,6 +1,8 @@
-use crate::config::{
-    provider_or_default, resolve_runtime_model_selection, CliParams, ModelResolutionSource,
-    SelectedProvider, TOPAGENT_MODEL_KEY, TOPAGENT_PROVIDER_KEY, TOPAGENT_SERVICE_MANAGED_KEY,
+use crate::config::defaults::{
+    CliParams, TOPAGENT_MODEL_KEY, TOPAGENT_PROVIDER_KEY, TOPAGENT_SERVICE_MANAGED_KEY,
+};
+use crate::config::model_selection::{
+    provider_or_default, resolve_runtime_model_selection, ModelResolutionSource, SelectedProvider,
 };
 use crate::doctor::types::{CheckLevel, CheckResult};
 use crate::managed_files::{is_topagent_managed_file, read_managed_env_metadata};
@@ -268,7 +270,7 @@ fn check_service_install(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::CliParams;
+    use crate::config::defaults::CliParams;
     use crate::operational_paths::service_paths;
 
     #[test]

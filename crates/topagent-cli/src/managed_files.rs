@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::config::TOPAGENT_SERVICE_MANAGED_KEY;
+use crate::config::defaults::TOPAGENT_SERVICE_MANAGED_KEY;
 
 pub(crate) const TOPAGENT_MANAGED_HEADER: &str =
     "# Managed by TopAgent. Safe to remove with `topagent uninstall`.";

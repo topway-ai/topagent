@@ -2,13 +2,14 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::config::{
-    TelegramModeConfig, OPENCODE_API_KEY_KEY, OPENROUTER_API_KEY_KEY,
-    TELEGRAM_ALLOWED_DM_USERNAME_KEY, TELEGRAM_BOT_TOKEN_KEY, TELEGRAM_BOUND_DM_USER_ID_KEY,
-    TOPAGENT_MAX_RETRIES_KEY, TOPAGENT_MAX_STEPS_KEY, TOPAGENT_MODEL_KEY, TOPAGENT_PROVIDER_KEY,
+use crate::config::defaults::{
+    OPENCODE_API_KEY_KEY, OPENROUTER_API_KEY_KEY, TELEGRAM_ALLOWED_DM_USERNAME_KEY,
+    TELEGRAM_BOT_TOKEN_KEY, TELEGRAM_BOUND_DM_USER_ID_KEY, TOPAGENT_MAX_RETRIES_KEY,
+    TOPAGENT_MAX_STEPS_KEY, TOPAGENT_MODEL_KEY, TOPAGENT_PROVIDER_KEY,
     TOPAGENT_SERVICE_MANAGED_KEY, TOPAGENT_TIMEOUT_SECS_KEY, TOPAGENT_TOOL_AUTHORING_KEY,
     TOPAGENT_WORKSPACE_KEY,
 };
+use crate::config::runtime::TelegramModeConfig;
 use crate::managed_files::{write_managed_file, TOPAGENT_MANAGED_HEADER};
 
 pub(super) fn render_service_env_file(config: &TelegramModeConfig) -> Result<String> {
@@ -170,7 +171,9 @@ mod tests {
 
     #[test]
     fn test_render_service_env_file_round_trips_operator_config_in_one_write() {
-        use crate::config::{SelectedProvider, TelegramModeConfig, TelegramModeDefaults};
+        use crate::config::model_selection::SelectedProvider;
+        use crate::config::defaults::TelegramModeDefaults;
+        use crate::config::runtime::TelegramModeConfig;
         use std::path::PathBuf;
         use topagent_core::{model::ModelRoute, ProviderKind, RuntimeOptions};
 
@@ -228,7 +231,8 @@ mod tests {
 
     #[test]
     fn test_render_service_env_file_omits_optional_lines_when_unset() {
-        use crate::config::{SelectedProvider, TelegramModeConfig};
+        use crate::config::model_selection::SelectedProvider;
+        use crate::config::runtime::TelegramModeConfig;
         use std::path::PathBuf;
         use topagent_core::{model::ModelRoute, ProviderKind, RuntimeOptions};
 

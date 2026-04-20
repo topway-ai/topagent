@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
-use crate::config::TELEGRAM_SERVICE_UNIT_NAME;
+use crate::config::defaults::TELEGRAM_SERVICE_UNIT_NAME;
 
 const TELEGRAM_SERVICE_ENV_DIR: &str = "topagent/services";
 const TELEGRAM_SERVICE_ENV_FILE: &str = "topagent-telegram.env";

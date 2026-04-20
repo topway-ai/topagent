@@ -10,7 +10,7 @@ use topagent_core::{
 };
 use tracing::{error, info, warn};
 
-use crate::config::TELEGRAM_BOUND_DM_USER_ID_KEY;
+use crate::config::defaults::TELEGRAM_BOUND_DM_USER_ID_KEY;
 use crate::managed_files::read_managed_env_metadata;
 use crate::memory::{promote_verified_task, PromotionContext, WorkspaceMemory};
 use crate::progress::LiveProgress;
@@ -585,7 +585,7 @@ pub(crate) fn current_model_label_for_help(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{TELEGRAM_ALLOWED_DM_USERNAME_KEY, TOPAGENT_SERVICE_MANAGED_KEY};
+    use crate::config::defaults::{TELEGRAM_ALLOWED_DM_USERNAME_KEY, TOPAGENT_SERVICE_MANAGED_KEY};
     use crate::memory::procedures::{save_procedure, ProcedureDraft};
     use crate::memory::{MEMORY_PROCEDURES_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR};
     use crate::telegram::history::{persist_agent_history_to_store, ChatHistoryStore};
@@ -1426,7 +1426,7 @@ mod tests {
         manager.bind_dm_user_id(777);
 
         let values = read_managed_env_metadata(&env_path).unwrap();
-        let defaults = crate::config::TelegramModeDefaults::from_metadata(&values);
+        let defaults = crate::config::defaults::TelegramModeDefaults::from_metadata(&values);
 
         assert_eq!(
             defaults.allowed_dm_username.as_deref(),
@@ -1551,8 +1551,8 @@ mod tests {
 
     #[test]
     fn test_run_telegram_uses_config_admission_fields_not_defaults() {
-        use crate::config::{
-            TelegramModeDefaults, TELEGRAM_ALLOWED_DM_USERNAME_KEY, TELEGRAM_BOUND_DM_USER_ID_KEY,
+        use crate::config::defaults::{
+            TELEGRAM_ALLOWED_DM_USERNAME_KEY, TELEGRAM_BOUND_DM_USER_ID_KEY, TelegramModeDefaults,
         };
         use std::collections::HashMap;
 
@@ -1561,7 +1561,7 @@ mod tests {
             ("OPENROUTER_API_KEY".to_string(), "k".to_string()),
             ("TELEGRAM_BOT_TOKEN".to_string(), "1:t".to_string()),
             (
-                crate::config::TOPAGENT_WORKSPACE_KEY.to_string(),
+                crate::config::defaults::TOPAGENT_WORKSPACE_KEY.to_string(),
                 workspace.path().display().to_string(),
             ),
             (
@@ -1574,7 +1574,7 @@ mod tests {
         assert_eq!(defaults.allowed_dm_username.as_deref(), Some("operator"));
         assert_eq!(defaults.bound_dm_user_id, Some(99));
 
-        let params = crate::config::CliParams {
+        let params = crate::config::defaults::CliParams {
             api_key: None,
             opencode_api_key: None,
             model: None,
@@ -1585,7 +1585,8 @@ mod tests {
             generated_tool_authoring: None,
         };
         let config =
-            crate::config::resolve_telegram_mode_config(None, params, defaults.clone()).unwrap();
+            crate::config::runtime::resolve_telegram_mode_config(None, params, defaults.clone())
+                .unwrap();
 
         assert_eq!(config.allowed_dm_username, defaults.allowed_dm_username);
         assert_eq!(config.bound_dm_user_id, defaults.bound_dm_user_id);

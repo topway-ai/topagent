@@ -11,7 +11,9 @@ use topagent_core::{
 };
 use tracing::{error, info, warn};
 
-use crate::config::{load_persisted_telegram_defaults, resolve_one_shot_config, CliParams};
+use crate::config::defaults::CliParams;
+use crate::config::defaults::load_persisted_telegram_defaults;
+use crate::config::runtime::resolve_one_shot_config;
 use crate::memory::{promote_verified_task, PromotionContext};
 use crate::progress::LiveProgress;
 use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};

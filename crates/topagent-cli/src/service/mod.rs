@@ -7,7 +7,7 @@ mod upgrade;
 
 use anyhow::Result;
 
-use crate::config::CliParams;
+use crate::config::defaults::CliParams;
 
 pub(crate) use install::run_install;
 pub(crate) use lifecycle::{run_status, run_uninstall};

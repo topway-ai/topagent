@@ -1,6 +1,8 @@
 use anyhow::Result;
 
-use crate::config::{load_persisted_telegram_defaults, resolve_contract_summary, CliParams, ResolvedContractSummary};
+use crate::config::defaults::CliParams;
+use crate::config::defaults::load_persisted_telegram_defaults;
+use crate::config::summary::{resolve_contract_summary, ResolvedContractSummary};
 
 pub(crate) fn run_config_inspect(params: CliParams) -> Result<()> {
     let defaults = load_persisted_telegram_defaults().unwrap_or_default();
@@ -80,7 +82,8 @@ pub(crate) fn render_contract_summary(summary: &ResolvedContractSummary) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{TelegramModeDefaults, TOPAGENT_WORKSPACE_KEY};
+    use crate::config::defaults::TOPAGENT_WORKSPACE_KEY;
+    use crate::config::defaults::TelegramModeDefaults;
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -101,7 +104,7 @@ mod tests {
                 workspace.path().display().to_string(),
             ),
             (
-                crate::config::TELEGRAM_ALLOWED_DM_USERNAME_KEY.to_string(),
+                crate::config::defaults::TELEGRAM_ALLOWED_DM_USERNAME_KEY.to_string(),
                 "operator".to_string(),
             ),
         ]);
@@ -141,7 +144,7 @@ mod tests {
                 workspace.path().display().to_string(),
             ),
             (
-                crate::config::TOPAGENT_MODEL_KEY.to_string(),
+                crate::config::defaults::TOPAGENT_MODEL_KEY.to_string(),
                 "persisted/model".to_string(),
             ),
         ]);
@@ -175,7 +178,7 @@ mod tests {
                 workspace.path().display().to_string(),
             ),
             (
-                crate::config::TELEGRAM_ALLOWED_DM_USERNAME_KEY.to_string(),
+                crate::config::defaults::TELEGRAM_ALLOWED_DM_USERNAME_KEY.to_string(),
                 "alice".to_string(),
             ),
         ]);
@@ -199,7 +202,7 @@ mod tests {
 
         let mut values_bound = values_unbound.clone();
         values_bound.insert(
-            crate::config::TELEGRAM_BOUND_DM_USER_ID_KEY.to_string(),
+            crate::config::defaults::TELEGRAM_BOUND_DM_USER_ID_KEY.to_string(),
             "424242".to_string(),
         );
         let defaults_bound = TelegramModeDefaults::from_metadata(&values_bound);

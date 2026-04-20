@@ -6,7 +6,8 @@ mod workspace;
 
 pub(crate) use types::{CheckLevel, CheckResult};
 
-use crate::config::{resolve_workspace_path, CliParams};
+use crate::config::defaults::CliParams;
+use crate::config::workspace::resolve_workspace_path;
 use render::print_report;
 use service::check_service_config;
 use workspace::{

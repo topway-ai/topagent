@@ -5,7 +5,7 @@ use topagent_core::{
     load_operator_profile, migrate_legacy_operator_preferences, user_profile_path,
 };
 
-use crate::config::resolve_workspace_path;
+use crate::config::workspace::resolve_workspace_path;
 use crate::memory::{
     disable_procedure, mark_trajectory_ready, observation, parse_saved_procedure,
     parse_saved_trajectory, write_exported_trajectory, ProcedureStatus, TrajectoryReviewState,

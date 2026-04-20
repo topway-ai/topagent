@@ -1,7 +1,13 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
-use crate::config::{SelectedProvider, *};
+use crate::config::defaults::{
+    CliParams, OPENROUTER_API_KEY_KEY, TOPAGENT_MODEL_KEY, TOPAGENT_PROVIDER_KEY,
+};
+use crate::config::model_selection::{
+    current_configured_model, provider_or_default, resolve_model_choice, ModelResolutionSource,
+    SelectedProvider,
+};
 use crate::managed_files::{assert_managed_or_absent, read_managed_env_metadata};
 use crate::openrouter_models::{
     fetch_openrouter_top_models, humanize_age, load_cached_openrouter_models,

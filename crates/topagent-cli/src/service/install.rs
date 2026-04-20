@@ -4,7 +4,18 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
-use crate::config::*;
+use crate::config::defaults::{
+    CliParams, TelegramModeDefaults, OPENCODE_API_KEY_KEY, OPENROUTER_API_KEY_KEY,
+    TELEGRAM_BOT_TOKEN_KEY, TOPAGENT_WORKSPACE_KEY,
+};
+use crate::config::keys::{require_opencode_api_key, require_openrouter_api_key, require_telegram_token};
+use crate::config::model_selection::{
+    build_route_from_resolved, canonicalize_allowed_username, current_configured_model,
+    resolve_model_choice, SelectedProvider,
+};
+use crate::config::runtime::{
+    build_runtime_options_with_defaults, resolve_telegram_mode_config, TelegramModeConfig,
+};
 use crate::managed_files::{assert_managed_or_absent, read_managed_env_metadata};
 use crate::openrouter_models::{
     discover_install_openrouter_models, humanize_age, openrouter_model_cache_path,
@@ -17,7 +28,6 @@ use super::lifecycle::{
     ServiceConfigApplyAction,
 };
 use super::managed_env::trim_nonempty;
-use crate::config::{OPENCODE_API_KEY_KEY, OPENROUTER_API_KEY_KEY, TELEGRAM_BOT_TOKEN_KEY};
 
 const CUSTOM_MODEL_OPTION_LABEL: &str = "Custom model ID (type manually)";
 

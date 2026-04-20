@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use topagent_core::{WorkspaceCheckpointRestoreReport, WorkspaceCheckpointStore};
 
-use crate::config::resolve_workspace_path;
+use crate::config::workspace::resolve_workspace_path;
 use crate::telegram::clear_workspace_telegram_history;
 
 pub(crate) fn run_checkpoint_command(

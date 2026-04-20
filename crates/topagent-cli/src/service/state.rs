@@ -2,9 +2,9 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::config::{
+use crate::config::defaults::{TOPAGENT_PROVIDER_KEY, TOPAGENT_WORKSPACE_KEY};
+use crate::config::model_selection::{
     provider_or_default, resolve_runtime_model_selection, RuntimeModelSelection, SelectedProvider,
-    TOPAGENT_PROVIDER_KEY, TOPAGENT_WORKSPACE_KEY,
 };
 use crate::managed_files::{is_topagent_managed_file, read_managed_env_metadata};
 use crate::operational_paths::{service_paths, ServicePaths};

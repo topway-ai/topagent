@@ -2,8 +2,16 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use crate::config::*;
-use crate::managed_files::*;
+use crate::config::defaults::{
+    CliParams, parse_env_bool, TELEGRAM_SERVICE_UNIT_NAME, TOPAGENT_TOOL_AUTHORING_KEY,
+    TOPAGENT_WORKSPACE_KEY,
+};
+use crate::config::runtime::TelegramModeConfig;
+use crate::managed_files::{
+    assert_managed_or_absent, ensure_service_setup_present, is_topagent_managed_file,
+    read_managed_env_metadata, remove_managed_env_file, remove_managed_file, write_managed_file,
+    TOPAGENT_MANAGED_HEADER,
+};
 use crate::operational_paths::{resolve_config_home, service_paths, ServicePaths};
 
 use super::managed_env::render_service_env_file;
