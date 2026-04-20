@@ -1,5 +1,7 @@
 # Operations
 
+Command surface is authoritative in `topagent --help`; this document explains intent, usage, and persistence semantics, not flag syntax.
+
 ## Installation methods
 
 ### Release binary (recommended)
@@ -111,13 +113,13 @@ topagent uninstall           # remove service, config, and installed binary
 
 ### Model management
 
-`topagent model status` reads the same managed env file that powers `topagent status`, then reports both the configured default model and the effective model for the current invocation. The effective provider is determined by the model ID.
+`topagent model status` reads the same managed env file that powers `topagent status`, then reports both the configured default model and the effective model for the current invocation. The effective provider is determined by the persisted `TOPAGENT_PROVIDER` selection (set explicitly during setup), defaulting to OpenRouter only for configs that predate the provider field.
 
-`topagent model set <model-id>` updates only `TOPAGENT_MODEL` inside the managed env file, preserves the other managed values, and automatically restarts the Telegram service when it is installed. Both OpenRouter and Opencode models are supported.
+`topagent model set <model-id>` updates only `TOPAGENT_MODEL` inside the managed env file, preserves the other managed values (including the provider), and automatically restarts the Telegram service when it is installed. To change the provider, re-run `topagent setup`.
 
-`topagent model pick` uses the same provider model discovery and fallback logic as setup: live top-model lookup first, then cached models, then the curated starter list, with a manual custom-model entry path.
+`topagent model pick` uses the same provider-scoped model discovery and fallback logic as setup: live top-model lookup first, then cached models, then the curated starter list, with a manual custom-model entry path.
 
-`topagent model list` shows the cached provider starter list and marks the current configured model when it appears in that cache.
+`topagent model list` shows the cached top OpenRouter models and marks the current configured model when it appears in that cache.
 
 `topagent model refresh` fetches the current top provider models and stores them in `~/.config/topagent/cache/openrouter-models.json`. If live refresh fails and a cache already exists, TopAgent keeps the stale cache and tells you so.
 

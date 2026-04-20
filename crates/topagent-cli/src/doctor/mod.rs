@@ -15,7 +15,7 @@ use workspace::{
     check_workspace_layout,
 };
 
-// Expose lint functions for the `memory lint` command used in learning.rs.
+// Expose lint functions for the `memory lint` command used in memory_cli.
 pub(crate) use lint::{lint_memory_md_content, lint_user_md_content};
 
 pub(crate) fn run_doctor(params: CliParams) -> anyhow::Result<()> {

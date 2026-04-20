@@ -55,11 +55,11 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 | Module | Responsibility |
 |--------|---------------|
 | `main` | Entry point: parses CLI args, converts to params, dispatches to command handlers |
-| `commands` | CLI command types, dispatch, and rendering; `commands/types` owns all clap definitions, `commands/dispatch` owns the match dispatch, and per-domain modules (`memory_cli`, `procedure_cli`, `trajectory_cli`, `checkpoint_cli`) own CLI rendering for their domain |
+| `commands` | CLI command types, dispatch, and rendering; `commands/types` owns all clap definitions, `commands/dispatch` owns the top-level match, per-domain modules (`memory_cli`, `procedure_cli`, `trajectory_cli`, `checkpoint_cli`) own CLI rendering, `config` and `run` own their subcommand handlers, `oneshot` owns the one-shot runner, and `artifact_util` shares file-list and path-resolution helpers |
 | `config` | CliParams struct, parameter validation, route/options construction |
 | `operational_paths` | Shared config-home, service unit, and managed env path ownership for the operational control plane |
 | `run_setup` | Shared agent/provider/context assembly for one-shot CLI and Telegram runs |
-| `telegram` | Telegram polling loop, ChatSessionManager, per-chat transcript persistence; internal `telegram/history` owns transcript I/O, `telegram/approval` owns callback data and keyboard rendering |
+| `telegram` | Telegram polling and per-chat management; `runtime` owns the polling loop, `session` owns per-chat running state and transcript store, `router` dispatches messages and callback queries, `commands` handles slash-command logic, `history` owns transcript I/O, `approval` handles callback data and keyboard rendering, `admission` gates DM access, and `delivery` sends messages |
 | `memory` | Workspace memory facade; `memory/briefing` handles bounded prompt briefing, `memory/promotion` handles verified-task governance, and sibling modules keep procedures, trajectories, and consolidation file-backed and narrow |
 | `service/` | Operational control plane split by ownership: `install` handles setup and model prompts, `model` handles persisted model changes, `state` owns shared status/config reads, `lifecycle` owns systemd/status/uninstall, and `managed_env` owns the single managed env truth |
 | `managed_files` | Managed file guards, env file I/O, safe file removal |

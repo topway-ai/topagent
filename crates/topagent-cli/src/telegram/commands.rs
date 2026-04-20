@@ -1,5 +1,41 @@
 use crate::telegram::session::ChatSessionManager;
 
+pub(crate) struct BotCommand {
+    pub name: &'static str,
+    pub description: &'static str,
+}
+
+pub(crate) const BOT_COMMANDS: &[BotCommand] = &[
+    BotCommand {
+        name: "/start",
+        description: "show configuration and help",
+    },
+    BotCommand {
+        name: "/help",
+        description: "show this message",
+    },
+    BotCommand {
+        name: "/stop",
+        description: "stop the current task",
+    },
+    BotCommand {
+        name: "/approvals",
+        description: "list pending approvals for this chat",
+    },
+    BotCommand {
+        name: "/approve <id>",
+        description: "approve a pending action",
+    },
+    BotCommand {
+        name: "/deny <id>",
+        description: "deny a pending action",
+    },
+    BotCommand {
+        name: "/reset",
+        description: "clear this chat's saved transcript",
+    },
+];
+
 pub(super) fn handle_help(
     workspace_label: &str,
     model_label: &str,
@@ -7,6 +43,10 @@ pub(super) fn handle_help(
     dm_access: &str,
 ) -> String {
     let tool_authoring = if tool_authoring_enabled { "on" } else { "off" };
+    let mut commands_section = String::from("Commands:\n");
+    for cmd in BOT_COMMANDS {
+        commands_section.push_str(&format!("{} - {}\n", cmd.name, cmd.description));
+    }
     format!(
         "TopAgent\n\n\
          Workspace: {}\n\
@@ -14,16 +54,10 @@ pub(super) fn handle_help(
          Tool authoring: {}\n\
          DM access: {}\n\
          Mode: private text chats only\n\n\
-         Commands:\n\
-         /help - show this message\n\
-         /stop - stop the current task\n\
-         /approvals - list pending approvals for this chat\n\
-         /approve <id> - approve a pending action\n\
-         /deny <id> - deny a pending action\n\
-         /reset - clear this chat's saved transcript\n\n\
-         Approval requests include Approve/Deny buttons; slash commands remain available.\n\n\
+         {}\
+         \nApproval requests include Approve/Deny buttons; slash commands remain available.\n\n\
          Send a plain text message to start a task.",
-        workspace_label, model_label, tool_authoring, dm_access
+        workspace_label, model_label, tool_authoring, dm_access, commands_section
     )
 }
 
@@ -76,16 +110,55 @@ mod tests {
         assert!(reply.contains("Model: gpt-4o"));
         assert!(reply.contains("Tool authoring: on"));
         assert!(reply.contains("DM access: unbound"));
-        assert!(reply.contains("/stop"));
-        assert!(reply.contains("/approvals"));
-        assert!(reply.contains("/approve"));
-        assert!(reply.contains("/deny"));
-        assert!(reply.contains("/reset"));
+        for cmd in BOT_COMMANDS {
+            assert!(
+                reply.contains(cmd.name),
+                "help text missing command {}",
+                cmd.name
+            );
+        }
     }
 
     #[test]
     fn test_handle_help_tool_authoring_off() {
         let reply = handle_help("/ws", "model", false, "bound");
         assert!(reply.contains("Tool authoring: off"));
+    }
+
+    #[test]
+    fn test_bot_commands_table_matches_router() {
+        let routed = [
+            "/start",
+            "/help",
+            "/stop",
+            "/approvals",
+            "/approve",
+            "/deny",
+            "/reset",
+        ];
+        for name in &routed {
+            let bare = name.trim_start_matches('/');
+            let found = BOT_COMMANDS
+                .iter()
+                .any(|cmd| cmd.name.trim_start_matches('/') == bare || cmd.name.starts_with(name));
+            assert!(
+                found,
+                "router handles {} but it is not in BOT_COMMANDS",
+                name
+            );
+        }
+        for cmd in BOT_COMMANDS {
+            let bare = cmd
+                .name
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .trim_start_matches('/');
+            assert!(
+                routed.contains(&format!("/{}", bare).as_str()),
+                "BOT_COMMANDS contains {} but router does not route it",
+                cmd.name,
+            );
+        }
     }
 }

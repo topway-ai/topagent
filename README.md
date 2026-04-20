@@ -92,10 +92,10 @@ TopAgent also keeps a narrow trust boundary for external content:
 ```bash
 topagent status # show setup and service health
 topagent model status # show the configured default and effective model
-topagent model set <id> # change the configured model
+topagent model set <id> # change the configured model (does not change provider)
 topagent model pick # pick the configured model interactively
-topagent model list # show cached starter models
-topagent model refresh # refresh cached starter models
+topagent model list # show cached top models
+topagent model refresh # refresh cached top models
 topagent memory status       # show operator/workspace learning artifact status
 topagent procedure list      # list live procedures
 topagent procedure show <id> # show one procedure
@@ -118,7 +118,7 @@ topagent upgrade             # download and install the latest GitHub release bi
 topagent uninstall           # remove service, config, and installed binary
 ```
 
-`topagent setup` is the obvious full setup path. `topagent install` remains available as the same command. Re-running setup keeps the same managed config file and restarts the background service with updated values; operator-entered secrets (API keys, bot token, allowed username, bound user ID) are preserved when you accept the existing prompt defaults, and the env file is rewritten in a single atomic emit rather than overwritten twice. After setup, use `topagent model set` or `topagent model pick` to change the configured default model without re-running full setup.
+`topagent setup` is the obvious full setup path. `topagent install` remains available as the same command. Re-running setup keeps the same managed config file and restarts the background service with updated values; operator-entered secrets (API keys, bot token, allowed username, bound user ID) are preserved when you accept the existing prompt defaults, and the env file is rewritten in a single atomic emit rather than overwritten twice. After setup, use `topagent model set` or `topagent model pick` to change the configured default model without re-running full setup. Model changes preserve the persisted provider; changing provider requires re-running `topagent setup`.
 
 See [docs/operations.md](docs/operations.md) for full operational details.
 
@@ -128,7 +128,7 @@ See [docs/operations.md](docs/operations.md) for full operational details.
 |-----------------------|----------------|------------------------------------|
 | `--api-key` | `$OPENROUTER_API_KEY` | API key for the selected provider (or use `--opencode-api-key` for Opencode) |
 | `--opencode-api-key` | `$OPENCODE_API_KEY` | Opencode API key |
-| `--model` | `minimax/minimax-m2.7` | Model identifier (provider is determined by model selection) |
+| `--model` | `minimax/minimax-m2.7` | Model identifier; provider uses the persisted selection or OpenRouter default |
 | `--workspace` | current directory (one-shot) or auto-created (install) | Workspace path |
 | `--max-steps` | `50` | Maximum agent loop iterations |
 | `--max-retries` | `10` | Maximum provider retry attempts |

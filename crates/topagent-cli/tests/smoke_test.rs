@@ -608,12 +608,12 @@ fn test_cli_docs_consistency_no_removed_commands_in_readme() {
 }
 
 #[test]
-fn test_telegram_bot_command_table_matches_router() {
+fn test_readme_bot_commands_table_agrees_with_bot_commands_truth() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
     let readme = std::fs::read_to_string(repo_root.join("README.md")).unwrap();
 
-    let bot_commands = [
+    let bot_command_names = [
         "/start",
         "/help",
         "/stop",
@@ -622,11 +622,13 @@ fn test_telegram_bot_command_table_matches_router() {
         "/deny",
         "/reset",
     ];
-    for cmd in &bot_commands {
+
+    for name in &bot_command_names {
         assert!(
-            readme.contains(cmd),
-            "README.md Bot commands table is missing `{}`",
-            cmd
+            readme.contains(name),
+            "README.md Bot commands table is missing `{}` \
+             (must match BOT_COMMANDS in telegram/commands.rs)",
+            name
         );
     }
 }
