@@ -11,11 +11,12 @@ mod progress;
 mod run_setup;
 mod service;
 mod telegram;
+mod workspace_state;
 
 use anyhow::Result;
 use clap::Parser;
 
-use crate::commands::{Cli, cli_to_params, dispatch};
+use crate::commands::{cli_to_params, dispatch, Cli};
 
 fn main() -> Result<()> {
     init_tracing();

@@ -182,6 +182,8 @@ Generated tools use the same workspace sandbox policy as bash. Workspace externa
 
 ### Memory and persistence flow
 
+TopAgent uses a versioned `.topagent/workspace-state.json` marker for workspace schema ownership. Schema version `1` recognizes the current workspace-state model and migrates old `topics/` and `lessons/` files into `notes/`; old `plans/` move to `exports/legacy-plans/` as evidence/export artifacts, never prompt memory.
+
 TopAgent uses three prompt-memory layers, plus procedures (governed reuse) and trajectories (export artifacts) as separate categories:
 
 1. **Operator model**: `workspace/.topagent/USER.md`
@@ -196,7 +198,7 @@ TopAgent uses three prompt-memory layers, plus procedures (governed reuse) and t
    - compact durable notes, loaded only when relevant
    - `topagent memory status` shows count as "Notes: N note(s)"
 
-**Procedures** (`workspace/.topagent/procedures/*.md`) are reusable playbooks with explicit reuse/revision/supersession metadata, not prompt memory. They load lazily when relevant, and superseded procedures are ignored.
+**Procedures** (`workspace/.topagent/procedures/*.md`) are reusable playbooks with explicit reuse/revision/supersession metadata. They are not always-loaded memory; active procedures load lazily when relevant, and superseded procedures are ignored.
 
 **Trajectory records** (`workspace/.topagent/trajectories/*.json`) are compact structured records from strong verified runs. They carry provenance labels, stay off the prompt hot path by default, and are exported via explicit review.
 

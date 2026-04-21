@@ -9,8 +9,8 @@ pub(super) fn handle_help(
 ) -> String {
     let tool_authoring = if tool_authoring_enabled { "on" } else { "off" };
     let mut commands_section = String::from("Commands:\n");
-    for (name, description) in TELEGRAM_COMMANDS {
-        commands_section.push_str(&format!("{} - {}\n", name, description));
+    for spec in TELEGRAM_COMMANDS {
+        commands_section.push_str(&format!("{} - {}\n", spec.usage(), spec.description));
     }
     format!(
         "{PRODUCT_NAME}\n\n\
@@ -75,8 +75,12 @@ mod tests {
         assert!(reply.contains("Model: gpt-4o"));
         assert!(reply.contains("Tool authoring: on"));
         assert!(reply.contains("DM access: unbound"));
-        for (name, _description) in TELEGRAM_COMMANDS {
-            assert!(reply.contains(name), "help text missing command {}", name);
+        for spec in TELEGRAM_COMMANDS {
+            assert!(
+                reply.contains(spec.command),
+                "help text missing command {}",
+                spec.command
+            );
         }
     }
 
@@ -101,23 +105,19 @@ mod tests {
             let bare = name.trim_start_matches('/');
             let found = TELEGRAM_COMMANDS
                 .iter()
-                .any(|(cmd, _)| cmd.trim_start_matches('/').starts_with(bare));
+                .any(|spec| spec.command.trim_start_matches('/').starts_with(bare));
             assert!(
                 found,
                 "router handles {} but it is not in TELEGRAM_COMMANDS",
                 name
             );
         }
-        for (cmd, _description) in TELEGRAM_COMMANDS {
-            let bare = cmd
-                .split_whitespace()
-                .next()
-                .unwrap()
-                .trim_start_matches('/');
+        for spec in TELEGRAM_COMMANDS {
+            let bare = spec.command.trim_start_matches('/');
             assert!(
                 routed.contains(&format!("/{}", bare).as_str()),
                 "TELEGRAM_COMMANDS contains {} but router does not route it",
-                cmd,
+                spec.command,
             );
         }
     }

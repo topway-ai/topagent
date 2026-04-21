@@ -32,11 +32,11 @@ fn test_durable_promotion_policy_respects_low_trust_and_corroboration() {
     let trust = low_trust_context();
 
     assert_eq!(
-        contract.durable_promotion_block_reason(DurablePromotionKind::Lesson, &trust, true),
+        contract.durable_promotion_block_reason(DurablePromotionKind::Note, &trust, true),
         None
     );
     assert!(contract
-        .durable_promotion_block_reason(DurablePromotionKind::Lesson, &trust, false)
+        .durable_promotion_block_reason(DurablePromotionKind::Note, &trust, false)
         .unwrap()
         .contains("trusted workspace corroboration"));
     assert!(contract

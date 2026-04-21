@@ -1,21 +1,21 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 #[cfg(test)]
 use std::fs;
 use std::path::{Path, PathBuf};
-use topagent_core::{
-    load_operator_profile, migrate_legacy_operator_preferences, user_profile_path,
-};
+use topagent_core::{load_operator_profile, user_profile_path};
 
 use super::artifact_util;
 use super::surface::PRODUCT_NAME;
 use super::types::{MemoryCommands, TrajectoryCommands};
 use crate::config::workspace::resolve_workspace_path;
 use crate::memory::{
-    MEMORY_INDEX_RELATIVE_PATH, MEMORY_MD_SIZE_ERROR, MEMORY_MD_SIZE_WARN,
-    MEMORY_NOTES_RELATIVE_DIR, MEMORY_PROCEDURES_RELATIVE_DIR,
-    MEMORY_TRAJECTORIES_RELATIVE_DIR, ProcedureStatus, TRAJECTORY_EXPORTS_RELATIVE_DIR,
-    TrajectoryReviewState, USER_MD_SIZE_ERROR, USER_MD_SIZE_WARN, WorkspaceMemory,
-    parse_saved_procedure, parse_saved_trajectory,
+    parse_saved_procedure, parse_saved_trajectory, ProcedureStatus, TrajectoryReviewState,
+    WorkspaceMemory, MEMORY_INDEX_RELATIVE_PATH, MEMORY_MD_SIZE_ERROR, MEMORY_MD_SIZE_WARN,
+    MEMORY_NOTES_RELATIVE_DIR, MEMORY_PROCEDURES_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR,
+    TRAJECTORY_EXPORTS_RELATIVE_DIR, USER_MD_SIZE_ERROR, USER_MD_SIZE_WARN,
+};
+use crate::workspace_state::{
+    ensure_workspace_state, inspect_workspace_state, CURRENT_WORKSPACE_SCHEMA_VERSION,
 };
 
 pub(crate) fn run_memory_command(
@@ -23,7 +23,7 @@ pub(crate) fn run_memory_command(
     workspace: Option<PathBuf>,
 ) -> Result<()> {
     let workspace = resolve_workspace_path(workspace)?;
-    migrate_profile_if_needed(&workspace)?;
+    ensure_workspace_state(&workspace)?;
     match command {
         MemoryCommands::Status => print!("{}", render_memory_status(&workspace)?),
         MemoryCommands::Lint => print!("{}", render_memory_lint(&workspace)?),
@@ -53,13 +53,10 @@ fn run_trajectory_command(command: TrajectoryCommands, workspace: &Path) -> Resu
     Ok(())
 }
 
-fn migrate_profile_if_needed(workspace: &Path) -> Result<()> {
-    migrate_legacy_operator_preferences(workspace).map_err(|err| anyhow!(err.to_string()))?;
-    Ok(())
-}
-
 fn render_memory_status(workspace: &Path) -> Result<String> {
+    ensure_workspace_state(workspace)?;
     let memory = WorkspaceMemory::new(workspace.to_path_buf());
+    let state = inspect_workspace_state(workspace);
     let operator_profile =
         load_operator_profile(workspace).map_err(|err| anyhow!(err.to_string()))?;
     let index_entries = memory.index_entry_count().unwrap_or_default();
@@ -105,6 +102,15 @@ fn render_memory_status(workspace: &Path) -> Result<String> {
     let mut output = String::new();
     output.push_str(&format!("{PRODUCT_NAME} memory status\n"));
     output.push_str(&format!("Workspace: {}\n", workspace.display()));
+    output.push_str(&format!(
+        "Workspace schema: v{} ({})\n",
+        state
+            .schema_version
+            .unwrap_or(CURRENT_WORKSPACE_SCHEMA_VERSION),
+        workspace
+            .join(crate::workspace_state::WORKSPACE_STATE_RELATIVE_PATH)
+            .display()
+    ));
     output.push_str(&format!(
         "Operator model: {} preference(s) ({})\n",
         operator_profile.preferences.len(),
@@ -405,7 +411,7 @@ fn resolve_trajectory_path(workspace: &Path, id: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::procedures::{ProcedureDraft, save_procedure};
+    use crate::memory::procedures::{save_procedure, ProcedureDraft};
     use tempfile::TempDir;
 
     #[test]
@@ -638,7 +644,7 @@ mod tests {
             pitfalls: vec!["Do not skip verification.".to_string()],
             verification: "cargo test".to_string(),
             source_task: Some("deploy rollback".to_string()),
-            source_lesson: None,
+            source_note: None,
             source_trajectory: None,
             supersedes: None,
         };

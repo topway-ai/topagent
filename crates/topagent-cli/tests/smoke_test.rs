@@ -240,6 +240,19 @@ fn test_cli_status_appears_in_help() {
 }
 
 #[test]
+fn test_cli_status_reports_lifecycle_sources_of_truth() {
+    let (_isolated, mut cmd) = isolated_topagent_command();
+    cmd.arg("status")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Lifecycle sources of truth:"))
+        .stdout(predicates::str::contains("topagent config inspect"))
+        .stdout(predicates::str::contains("topagent status"))
+        .stdout(predicates::str::contains("topagent run status"))
+        .stdout(predicates::str::contains("topagent memory status"));
+}
+
+#[test]
 fn test_cli_service_appears_in_help() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
     cmd.arg("--help")
@@ -411,6 +424,63 @@ fn test_cli_memory_status_reports_learning_layers_for_fresh_workspace() {
 }
 
 #[test]
+fn test_cli_memory_status_initializes_workspace_state_schema() {
+    let temp = TempDir::new().unwrap();
+    let (_isolated, mut cmd) = isolated_topagent_command();
+    cmd.arg("--workspace")
+        .arg(temp.path())
+        .args(["memory", "status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Workspace schema: v1"));
+
+    assert!(temp.path().join(".topagent/workspace-state.json").is_file());
+    assert!(temp.path().join(".topagent/MEMORY.md").is_file());
+    assert!(temp.path().join(".topagent/notes").is_dir());
+    assert!(temp.path().join(".topagent/procedures").is_dir());
+    assert!(temp.path().join(".topagent/trajectories").is_dir());
+    assert!(temp.path().join(".topagent/exports/trajectories").is_dir());
+}
+
+#[test]
+fn test_cli_memory_status_migrates_legacy_workspace_layout() {
+    let temp = TempDir::new().unwrap();
+    let topagent = temp.path().join(".topagent");
+    std::fs::create_dir_all(topagent.join("topics")).unwrap();
+    std::fs::create_dir_all(topagent.join("lessons")).unwrap();
+    std::fs::create_dir_all(topagent.join("plans")).unwrap();
+    std::fs::write(topagent.join("topics/runtime.md"), "# Runtime\n").unwrap();
+    std::fs::write(topagent.join("lessons/deploy.md"), "# Deploy\n").unwrap();
+    std::fs::write(topagent.join("plans/transient.md"), "# Temporary plan\n").unwrap();
+    std::fs::write(
+        topagent.join("MEMORY.md"),
+        "# TopAgent Memory Index\n\n- topic: runtime | file: topics/runtime.md | status: verified | note: service\n- topic: deploy | file: lessons/deploy.md | status: verified | note: release\n",
+    )
+    .unwrap();
+
+    let (_isolated, mut cmd) = isolated_topagent_command();
+    cmd.arg("--workspace")
+        .arg(temp.path())
+        .args(["memory", "status"])
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Workspace schema: v1"));
+
+    assert!(topagent.join("notes/runtime.md").is_file());
+    assert!(topagent.join("notes/deploy.md").is_file());
+    assert!(topagent.join("exports/legacy-plans/transient.md").is_file());
+    assert!(!topagent.join("topics/runtime.md").exists());
+    assert!(!topagent.join("lessons/deploy.md").exists());
+    assert!(!topagent.join("plans/transient.md").exists());
+
+    let index = std::fs::read_to_string(topagent.join("MEMORY.md")).unwrap();
+    assert!(index.contains("file: notes/runtime.md"));
+    assert!(index.contains("file: notes/deploy.md"));
+    assert!(!index.contains("file: topics/"));
+    assert!(!index.contains("file: lessons/"));
+}
+
+#[test]
 fn test_cli_run_status_reports_no_checkpoint_for_fresh_workspace() {
     let temp = TempDir::new().unwrap();
     let (_isolated, mut cmd) = isolated_topagent_command();
@@ -559,6 +629,55 @@ fn test_operations_docs_cover_checkpoint_management() {
 }
 
 #[test]
+fn test_operations_docs_cover_workspace_state_schema_and_migration() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let operations = std::fs::read_to_string(repo_root.join("docs/operations.md")).unwrap();
+    let readme = std::fs::read_to_string(repo_root.join("README.md")).unwrap();
+
+    for required in [
+        "workspace-state.json",
+        "schema version `1`",
+        ".topagent/topics",
+        ".topagent/lessons",
+        ".topagent/exports/legacy-plans",
+        "Hot-path prompt memory",
+        "Evidence/export only",
+        "Transport evidence",
+    ] {
+        assert!(
+            operations.contains(required),
+            "operations.md missing workspace-state contract phrase `{required}`"
+        );
+    }
+
+    assert!(readme.contains(".topagent/workspace-state.json"));
+    assert!(readme.contains(".topagent/exports/legacy-plans/"));
+    assert!(readme.contains("migrated into `.topagent/notes/`"));
+}
+
+#[test]
+fn test_operations_docs_cover_lifecycle_sources_of_truth() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let operations = std::fs::read_to_string(repo_root.join("docs/operations.md")).unwrap();
+
+    for required in [
+        "Runtime contract: `topagent config inspect`",
+        "Install/service health: `topagent status`",
+        "Run recovery: `topagent run status`",
+        "Workspace learning: `topagent memory status`",
+        "Changing the configured model with `topagent model set <model-id>`",
+        "re-run `topagent setup`",
+    ] {
+        assert!(
+            operations.contains(required),
+            "operations.md missing lifecycle contract phrase `{required}`"
+        );
+    }
+}
+
+#[test]
 fn test_readme_and_architecture_document_governed_learning_layers() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
@@ -695,34 +814,42 @@ fn test_cli_docs_consistency_no_stale_checkpoint_in_readme() {
 
 #[test]
 fn test_telegram_commands_agree_with_router() {
-    // Verify that TELEGRAM_COMMANDS in surface.rs matches the actual router
-    // dispatch in telegram/commands.rs. This prevents drift between the
-    // help text and the actual bot behavior.
-    use std::path::Path;
+    // Verify that TELEGRAM_COMMANDS in surface.rs is routed through the typed
+    // parser instead of duplicated string checks.
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
 
-    let surface = std::fs::read_to_string(
-        repo_root.join("crates/topagent-cli/src/commands/surface.rs"),
-    )
-    .unwrap();
-    let commands = std::fs::read_to_string(
-        repo_root.join("crates/topagent-cli/src/telegram/commands.rs"),
-    )
-    .unwrap();
+    let surface =
+        std::fs::read_to_string(repo_root.join("crates/topagent-cli/src/commands/surface.rs"))
+            .unwrap();
+    let router =
+        std::fs::read_to_string(repo_root.join("crates/topagent-cli/src/telegram/router.rs"))
+            .unwrap();
 
-    // Every command name in TELEGRAM_COMMANDS must appear in the router
-    let command_names = ["/start", "/help", "/stop", "/approvals", "/approve", "/deny", "/reset"];
+    let command_names = [
+        "/start",
+        "/help",
+        "/stop",
+        "/approvals",
+        "/approve",
+        "/deny",
+        "/reset",
+    ];
     for name in &command_names {
         assert!(
             surface.contains(name),
             "TELEGRAM_COMMANDS in surface.rs is missing `{name}`"
         );
-        assert!(
-            commands.contains(name),
-            "router in telegram/commands.rs is missing `{name}`"
-        );
     }
+    assert!(router.contains("parse_telegram_command"));
+    assert!(router.contains("TelegramCommandKind::Start"));
+    assert!(router.contains("TelegramCommandKind::Help"));
+    assert!(router.contains("TelegramCommandKind::Stop"));
+    assert!(router.contains("TelegramCommandKind::Approvals"));
+    assert!(router.contains("TelegramCommandKind::Approve"));
+    assert!(router.contains("TelegramCommandKind::Deny"));
+    assert!(router.contains("TelegramCommandKind::Reset"));
+    assert!(router.contains("Unsupported command"));
 }
 
 #[test]

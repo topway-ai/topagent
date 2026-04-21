@@ -1,19 +1,19 @@
 use anyhow::{Context, Result};
 use std::path::{Component, Path, PathBuf};
 use topagent_core::{
-    BehaviorContract, InfluenceMode, Message, PreferenceCategory, Role, RunTrustContext,
-    SourceKind, SourceLabel, load_operator_profile,
+    load_operator_profile, BehaviorContract, InfluenceMode, Message, PreferenceCategory, Role,
+    RunTrustContext, SourceKind, SourceLabel,
 };
 use tracing::warn;
 
 use super::memory_consolidation::{
-    MemoryIndexEntry, MemoryIndexEntryKind, parse_saved_lesson, render_saved_lesson_excerpt,
+    parse_saved_note, render_saved_note_excerpt, MemoryIndexEntry, MemoryIndexEntryKind,
 };
-use super::procedures::{ProcedureStatus, parse_saved_procedure, render_saved_procedure_excerpt};
+use super::procedures::{parse_saved_procedure, render_saved_procedure_excerpt, ProcedureStatus};
 use super::{
-    MEMORY_ROOT_DIR, MemoryPrompt, MemoryPromptStats, WorkspaceMemory, allowed_memory_prefix,
-    compact_text_line, display_memory_file, limit_text_block, looks_like_recall_query,
-    memory_contract, normalize_memory_file, score_text_relevance, tokenize,
+    allowed_memory_prefix, compact_text_line, display_memory_file, limit_text_block,
+    looks_like_recall_query, memory_contract, normalize_memory_file, score_text_relevance,
+    tokenize, MemoryPrompt, MemoryPromptStats, WorkspaceMemory, MEMORY_ROOT_DIR,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -419,8 +419,8 @@ fn render_memory_file_excerpt(
 ) -> Result<String> {
     match entry.kind() {
         MemoryIndexEntryKind::Note => {
-            if let Some(parsed) = parse_saved_lesson(path)? {
-                return Ok(render_saved_lesson_excerpt(contract, &parsed));
+            if let Some(parsed) = parse_saved_note(path)? {
+                return Ok(render_saved_note_excerpt(contract, &parsed));
             }
         }
         MemoryIndexEntryKind::Procedure => {

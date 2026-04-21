@@ -33,13 +33,13 @@ impl crate::tools::Tool for SaveNoteTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "save_note".to_string(),
-            description: "Save a lesson learned note for future reference. Use sparingly - only for genuinely useful lessons that improve future work.".to_string(),
+            description: "Save a concise workspace note for future reference. Use sparingly - only for durable facts, pitfalls, or reuse guidance that improve future work.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "title": {
                         "type": "string",
-                        "description": "A short descriptive title for this lesson"
+                        "description": "A short descriptive title for this note"
                     },
                     "what_changed": {
                         "type": "string",
@@ -133,7 +133,7 @@ mod tests {
         let tool = SaveNoteTool::new();
 
         let args = serde_json::json!({
-            "title": "Test Lesson",
+            "title": "Test Note",
             "what_changed": "Implemented new feature",
             "what_learned": "Testing is important"
         });
@@ -142,7 +142,7 @@ mod tests {
         assert!(result.is_ok(), "save_note failed: {:?}", result);
         let output = result.unwrap();
         assert!(output.contains(".topagent/notes/"));
-        assert!(output.contains("Test Lesson"));
+        assert!(output.contains("Test Note"));
         assert!(output.contains("Implemented new feature"));
         assert!(output.contains("Testing is important"));
     }
@@ -158,7 +158,7 @@ mod tests {
         let tool = SaveNoteTool::new();
 
         let args = serde_json::json!({
-            "title": "Full Lesson",
+            "title": "Full Note",
             "what_changed": "Made changes",
             "what_learned": "Learned stuff",
             "reuse_next_time": "Do this again",
@@ -185,7 +185,7 @@ mod tests {
         let tool = SaveNoteTool::new();
 
         let args = serde_json::json!({
-            "title": "Minimal Lesson",
+            "title": "Minimal Note",
             "what_changed": "Changed one thing",
             "what_learned": "Learned one thing"
         });
@@ -193,7 +193,7 @@ mod tests {
         let result = tool.execute(args, &ctx);
         assert!(result.is_ok());
         let output = result.unwrap();
-        assert!(output.contains("Minimal Lesson"));
+        assert!(output.contains("Minimal Note"));
         assert!(!output.contains("Reuse Next Time"));
     }
 }

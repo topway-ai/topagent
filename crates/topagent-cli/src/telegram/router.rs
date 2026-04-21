@@ -1,10 +1,11 @@
 use topagent_core::channel::telegram::{
     TelegramCallbackQuery, TelegramInlineKeyboardMarkup, TelegramMessage,
 };
-use topagent_core::{SecretRegistry, TelegramAdapter, context::ExecutionContext};
+use topagent_core::{context::ExecutionContext, SecretRegistry, TelegramAdapter};
 use tracing::{info, warn};
 
-use crate::telegram::admission::{InboundAdmission, decide_inbound_admission};
+use crate::commands::surface::{parse_telegram_command, TelegramCommandKind};
+use crate::telegram::admission::{decide_inbound_admission, InboundAdmission};
 use crate::telegram::approval::{format_approval_resolution, parse_approval_callback_data};
 use crate::telegram::commands::{
     handle_approvals, handle_approve, handle_deny, handle_help, handle_reset, handle_stop,
@@ -151,44 +152,33 @@ pub(super) fn route_message(
 
     info!("received from chat {}: {}", chat_id, text);
 
-    if text == "/start" || text == "/help" {
-        let reply = handle_help(
-            workspace_label,
-            &session_manager.model_label_for_help(),
-            session_manager.tool_authoring_enabled(),
-            &session_manager.dm_access_label(),
+    if let Some(command) = parse_telegram_command(text) {
+        let reply = match command.kind {
+            TelegramCommandKind::Start | TelegramCommandKind::Help => handle_help(
+                workspace_label,
+                &session_manager.model_label_for_help(),
+                session_manager.tool_authoring_enabled(),
+                &session_manager.dm_access_label(),
+            ),
+            TelegramCommandKind::Stop => handle_stop(session_manager, chat_id),
+            TelegramCommandKind::Approvals => handle_approvals(session_manager, chat_id),
+            TelegramCommandKind::Approve => {
+                handle_approve(session_manager, chat_id, command.argument)
+            }
+            TelegramCommandKind::Deny => handle_deny(session_manager, chat_id, command.argument),
+            TelegramCommandKind::Reset => handle_reset(session_manager, chat_id),
+        };
+        send_telegram(adapter, chat_id, vec![reply], None);
+        return;
+    }
+
+    if text.starts_with('/') {
+        send_telegram(
+            adapter,
+            chat_id,
+            vec!["Unsupported command. Send /help to see available commands.".into()],
+            None,
         );
-        send_telegram(adapter, chat_id, vec![reply], None);
-        return;
-    }
-
-    if text == "/stop" {
-        let reply = handle_stop(session_manager, chat_id);
-        send_telegram(adapter, chat_id, vec![reply], None);
-        return;
-    }
-
-    if text == "/approvals" {
-        let reply = handle_approvals(session_manager, chat_id);
-        send_telegram(adapter, chat_id, vec![reply], None);
-        return;
-    }
-
-    if let Some(argument) = text.strip_prefix("/approve") {
-        let reply = handle_approve(session_manager, chat_id, argument);
-        send_telegram(adapter, chat_id, vec![reply], None);
-        return;
-    }
-
-    if let Some(argument) = text.strip_prefix("/deny") {
-        let reply = handle_deny(session_manager, chat_id, argument);
-        send_telegram(adapter, chat_id, vec![reply], None);
-        return;
-    }
-
-    if text == "/reset" {
-        let reply = handle_reset(session_manager, chat_id);
-        send_telegram(adapter, chat_id, vec![reply], None);
         return;
     }
 

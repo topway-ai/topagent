@@ -6,21 +6,20 @@ use crate::doctor::lint::{
 };
 use crate::doctor::types::{CheckLevel, CheckResult};
 use crate::memory::{
-    MEMORY_INDEX_RELATIVE_PATH, MEMORY_MD_SIZE_ERROR, MEMORY_MD_SIZE_WARN,
-    MEMORY_NOTES_RELATIVE_DIR, MEMORY_PROCEDURES_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR,
-    USER_MD_SIZE_ERROR, USER_MD_SIZE_WARN,
+    MEMORY_INDEX_RELATIVE_PATH, MEMORY_MD_SIZE_ERROR, MEMORY_MD_SIZE_WARN, USER_MD_SIZE_ERROR,
+    USER_MD_SIZE_WARN,
 };
-
-pub(crate) const HOOKS_MANIFEST_RELATIVE_PATH: &str = ".topagent/hooks.toml";
-pub(crate) const EXTERNAL_TOOLS_RELATIVE_PATH: &str = ".topagent/external-tools.json";
-pub(crate) const TOOLS_DIR_RELATIVE_PATH: &str = ".topagent/tools";
+pub(crate) use crate::workspace_state::{
+    EXTERNAL_TOOLS_RELATIVE_PATH, HOOKS_MANIFEST_RELATIVE_PATH, TOOLS_DIR_RELATIVE_PATH,
+};
+use crate::workspace_state::{inspect_workspace_state, WORKSPACE_STATE_RELATIVE_PATH};
 
 const MEMORY_MD_MAX_ENTRIES: usize = 24;
 const MEMORY_MD_MAX_NOTE_CHARS: usize = 120;
 
 pub(crate) fn check_workspace_layout(workspace: &Path, checks: &mut Vec<CheckResult>) {
-    let topagent_dir = workspace.join(".topagent");
-    if !topagent_dir.exists() {
+    let state = inspect_workspace_state(workspace);
+    if !state.topagent_exists {
         checks.push(CheckResult {
             name: "workspace layout",
             level: CheckLevel::Error,
@@ -32,33 +31,51 @@ pub(crate) fn check_workspace_layout(workspace: &Path, checks: &mut Vec<CheckRes
         return;
     }
 
-    let required_dirs = [
-        MEMORY_NOTES_RELATIVE_DIR,
-        MEMORY_PROCEDURES_RELATIVE_DIR,
-        MEMORY_TRAJECTORIES_RELATIVE_DIR,
-    ];
-
-    let mut missing = Vec::new();
-    for dir_rel in &required_dirs {
-        let dir = workspace.join(dir_rel);
-        if !dir.is_dir() {
-            missing.push(dir_rel.to_string());
-        }
+    if let Some(err) = state.schema_error {
+        checks.push(CheckResult {
+            name: "workspace layout",
+            level: CheckLevel::Error,
+            detail: format!("workspace schema marker is unreadable: {}", err),
+            hint: Some(format!("inspect {}", WORKSPACE_STATE_RELATIVE_PATH)),
+        });
+        return;
     }
 
-    if missing.is_empty() {
+    if state.missing_required_paths.is_empty() && state.legacy_paths.is_empty() {
         checks.push(CheckResult {
             name: "workspace layout",
             level: CheckLevel::Ok,
-            detail: "all expected subdirectories present".to_string(),
+            detail: format!(
+                "schema v{} with all expected workspace-state paths present",
+                state
+                    .schema_version
+                    .map(|version| version.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            ),
             hint: None,
         });
     } else {
+        let mut details = Vec::new();
+        if !state.missing_required_paths.is_empty() {
+            details.push(format!(
+                "missing required paths: {}",
+                state.missing_required_paths.join(", ")
+            ));
+        }
+        if !state.legacy_paths.is_empty() {
+            details.push(format!(
+                "legacy paths pending migration: {}",
+                state.legacy_paths.join(", ")
+            ));
+        }
         checks.push(CheckResult {
             name: "workspace layout",
             level: CheckLevel::Warning,
-            detail: format!("missing directories: {}", missing.join(", ")),
-            hint: Some("run a task to auto-create missing layout directories".to_string()),
+            detail: details.join("; "),
+            hint: Some(
+                "run a task or `topagent memory status` to apply bounded workspace-state migration"
+                    .to_string(),
+            ),
         });
     }
 }
@@ -473,9 +490,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let ws = temp.path();
 
-        std::fs::create_dir_all(ws.join(".topagent/notes")).unwrap();
-        std::fs::create_dir_all(ws.join(".topagent/procedures")).unwrap();
-        std::fs::create_dir_all(ws.join(".topagent/trajectories")).unwrap();
+        crate::workspace_state::ensure_workspace_state(ws).unwrap();
 
         std::fs::write(
             ws.join(MEMORY_INDEX_RELATIVE_PATH),
@@ -499,11 +514,9 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let mut checks = Vec::new();
         check_workspace_layout(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Error && c.name == "workspace layout")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Error && c.name == "workspace layout"));
     }
 
     #[test]
@@ -512,11 +525,9 @@ mod tests {
         std::fs::create_dir_all(temp.path().join(".topagent")).unwrap();
         let mut checks = Vec::new();
         check_workspace_layout(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Warning && c.name == "workspace layout")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Warning && c.name == "workspace layout"));
     }
 
     #[test]
@@ -529,11 +540,9 @@ mod tests {
         .unwrap();
         let mut checks = Vec::new();
         check_hooks_manifest(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Error && c.name == "hooks manifest")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Error && c.name == "hooks manifest"));
     }
 
     #[test]
@@ -546,11 +555,9 @@ mod tests {
         .unwrap();
         let mut checks = Vec::new();
         check_external_tools(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Error && c.name == "external tools")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Error && c.name == "external tools"));
     }
 
     #[test]
@@ -578,11 +585,9 @@ mod tests {
         .unwrap();
         let mut checks = Vec::new();
         check_external_tools(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Ok && c.name == "external tools")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Ok && c.name == "external tools"));
     }
 
     #[test]
@@ -609,11 +614,9 @@ mod tests {
         std::fs::write(temp.path().join(MEMORY_INDEX_RELATIVE_PATH), &big_content).unwrap();
         let mut checks = Vec::new();
         check_memory_md(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Warning && c.name == "MEMORY.md")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Warning && c.name == "MEMORY.md"));
     }
 
     #[test]
@@ -656,11 +659,9 @@ mod tests {
         std::fs::write(user_profile_path(temp.path()), &content).unwrap();
         let mut checks = Vec::new();
         check_user_md(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Warning && c.name == "USER.md")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Warning && c.name == "USER.md"));
     }
 
     #[test]
@@ -673,11 +674,9 @@ mod tests {
         .unwrap();
         let mut checks = Vec::new();
         check_user_md(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.name == "USER.md" && c.detail.contains("parse error"))
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.name == "USER.md" && c.detail.contains("parse error")));
     }
 
     #[test]
@@ -693,11 +692,9 @@ label = "test hook""#,
         .unwrap();
         let mut checks = Vec::new();
         check_hooks_manifest(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Ok && c.name == "hooks manifest")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Ok && c.name == "hooks manifest"));
     }
 
     #[test]
@@ -713,11 +710,9 @@ label = "test hook""#,
 
         let mut checks = Vec::new();
         check_generated_tools(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Warning && c.name == "generated tools")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Warning && c.name == "generated tools"));
     }
 
     #[test]
@@ -725,11 +720,9 @@ label = "test hook""#,
         let temp = healthy_workspace();
         let mut checks = Vec::new();
         check_generated_tools(temp.path(), &mut checks);
-        assert!(
-            checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Ok && c.name == "generated tools")
-        );
+        assert!(checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Ok && c.name == "generated tools"));
     }
 
     #[test]
@@ -760,11 +753,9 @@ label = "test hook""#,
 
         let mut layout_checks = Vec::new();
         check_workspace_layout(temp.path(), &mut layout_checks);
-        assert!(
-            layout_checks
-                .iter()
-                .any(|c| c.level == CheckLevel::Warning && c.name == "workspace layout")
-        );
+        assert!(layout_checks
+            .iter()
+            .any(|c| c.level == CheckLevel::Warning && c.name == "workspace layout"));
         let detail = layout_checks
             .iter()
             .find(|c| c.name == "workspace layout")

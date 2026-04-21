@@ -6,9 +6,9 @@ use topagent_core::{RunTrustContext, SourceLabel, TaskMode, ToolTraceStep, Verif
 use super::{slugify, unix_timestamp_secs};
 
 use crate::managed_files::write_managed_file;
+pub(crate) use crate::workspace_state::TRAJECTORY_EXPORTS_RELATIVE_DIR;
 
 const TRAJECTORY_VERSION: u32 = 1;
-pub(crate) const TRAJECTORY_EXPORTS_RELATIVE_DIR: &str = ".topagent/exports/trajectories";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct TrajectoryArtifact {
@@ -101,7 +101,11 @@ pub(crate) fn save_trajectory(
         .with_context(|| format!("failed to create {}", trajectories_dir.display()))?;
 
     let timestamp = unix_timestamp_secs();
-    let id = format!("trj-{}-{}", timestamp, slugify(&draft.task_intent, "trajectory"));
+    let id = format!(
+        "trj-{}-{}",
+        timestamp,
+        slugify(&draft.task_intent, "trajectory")
+    );
     let filename = format!("{id}.json");
     let path = trajectories_dir.join(&filename);
 

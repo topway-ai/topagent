@@ -196,7 +196,7 @@ impl RunTrustContext {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DurablePromotionKind {
-    Lesson,
+    Note,
     Procedure,
     OperatorPreference,
     TrajectoryReview,
@@ -206,7 +206,7 @@ pub enum DurablePromotionKind {
 impl DurablePromotionKind {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Lesson => "lesson",
+            Self::Note => "note",
             Self::Procedure => "procedure",
             Self::OperatorPreference => "operator preference",
             Self::TrajectoryReview => "trajectory review",

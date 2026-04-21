@@ -1066,15 +1066,15 @@ path = "src/lib.rs"
                         "what_learned": "Pending approvals must remain visible",
                     }),
                 ),
-                assistant_message("saved lesson"),
+                assistant_message("saved note"),
             ])),
             default_tools().into_inner(),
             RuntimeOptions::default(),
         );
 
-        let result = agent.run(&ctx, "save a lesson about approvals").unwrap();
+        let result = agent.run(&ctx, "save a note about approvals").unwrap();
 
-        assert_eq!(result, "saved lesson");
+        assert_eq!(result, "saved note");
         assert!(agent.durable_memory_written_this_run());
     }
 

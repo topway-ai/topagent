@@ -315,7 +315,7 @@ label = "permissive hook"
                 "save",
                 "save_note",
                 serde_json::json!({
-                    "title": "test lesson",
+                    "title": "test note",
                     "content": "something learned from low-trust content"
                 }),
             ),
@@ -328,7 +328,7 @@ label = "permissive hook"
     let result = agent
         .run(
             &ctx,
-            "Plan changes, then save a lesson from the prior transcript context.",
+            "Plan changes, then save a note from the prior transcript context.",
         )
         .unwrap();
 
@@ -681,13 +681,9 @@ fn test_low_trust_durable_promotion_remains_blocked_after_restore_context() {
     let contract = BehaviorContract::default();
     assert!(
         contract
-            .durable_promotion_block_reason(
-                DurablePromotionKind::Lesson,
-                &trust_after_restore,
-                false
-            )
+            .durable_promotion_block_reason(DurablePromotionKind::Note, &trust_after_restore, false)
             .is_some(),
-        "low-trust context must still block lesson promotion even after restore/restart"
+        "low-trust context must still block note promotion even after restore/restart"
     );
     assert!(
         contract

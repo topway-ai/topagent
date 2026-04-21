@@ -6,13 +6,13 @@ use topagent_core::{
 };
 
 use super::procedures::{
-    ProcedureDraft, ProcedureRevisionAction, evaluate_procedure_revision,
-    find_matching_active_procedure, find_matching_loaded_procedure, mark_procedure_superseded,
-    procedure_revision_quality_gate, record_procedure_reuse, revise_procedure, save_procedure,
-    set_procedure_source_trajectory,
+    evaluate_procedure_revision, find_matching_active_procedure, find_matching_loaded_procedure,
+    mark_procedure_superseded, procedure_revision_quality_gate, record_procedure_reuse,
+    revise_procedure, save_procedure, set_procedure_source_trajectory, ProcedureDraft,
+    ProcedureRevisionAction,
 };
-use super::trajectories::{TrajectoryDraft, save_trajectory};
-use super::{WorkspaceMemory, compact_text_line, memory_contract};
+use super::trajectories::{save_trajectory, TrajectoryDraft};
+use super::{compact_text_line, memory_contract, WorkspaceMemory};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct TaskPromotionReport {
@@ -25,14 +25,14 @@ pub(crate) struct TaskPromotionReport {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct PromotionDecision {
-    lesson: bool,
+    note: bool,
     procedure: bool,
     trajectory: bool,
 }
 
 impl PromotionDecision {
     fn is_empty(&self) -> bool {
-        !self.lesson && !self.procedure && !self.trajectory
+        !self.note && !self.procedure && !self.trajectory
     }
 }
 
@@ -78,9 +78,9 @@ pub(crate) fn promote_verified_task(pc: &PromotionContext) -> Result<TaskPromoti
     let tool_ctx = ToolContext::new(ctx, options);
     let mut report = TaskPromotionReport::default();
 
-    if decision.lesson {
+    if decision.note {
         if let Some(reason) = contract.durable_promotion_block_reason(
-            DurablePromotionKind::Lesson,
+            DurablePromotionKind::Note,
             &trust_context,
             corroborated_by_trusted_local,
         ) {
@@ -340,7 +340,7 @@ fn build_distilled_what_learned(
     }
 }
 
-fn build_lesson_title(instruction: &str, task_result: &TaskResult) -> String {
+fn build_note_title(instruction: &str, task_result: &TaskResult) -> String {
     let changed_files = summarize_changed_files(task_result.files_changed());
     if task_result
         .verification_commands()
@@ -399,23 +399,23 @@ fn evaluate_promotion(
     let multi_step_plan = plan.items().len() >= 2;
     let multi_file = task_result.files_changed().len() >= 2;
     let repeated_verification = task_result.verification_commands().len() >= 2;
-    let lesson = multi_step_plan || multi_file || repeated_verification;
-    let procedure = lesson && multi_step_plan && task_result.tool_trace().len() >= 3;
+    let note = multi_step_plan || multi_file || repeated_verification;
+    let procedure = note && multi_step_plan && task_result.tool_trace().len() >= 3;
     let trajectory = procedure
         && (plan.items().len() >= 3 || multi_file || repeated_verification)
         && task_result.evidence.workspace_warnings.is_empty();
 
     PromotionDecision {
-        lesson,
+        note,
         procedure,
         trajectory,
     }
 }
 
 fn build_note_args(instruction: &str, task_result: &TaskResult) -> Result<SaveNoteArgs> {
-    let lesson_title = build_lesson_title(instruction, task_result);
-    if lesson_title.is_empty() {
-        return Err(anyhow::anyhow!("lesson title is empty after normalization"));
+    let note_title = build_note_title(instruction, task_result);
+    if note_title.is_empty() {
+        return Err(anyhow::anyhow!("note title is empty after normalization"));
     }
 
     let changed_files = summarize_changed_files(task_result.files_changed());
@@ -438,7 +438,7 @@ fn build_note_args(instruction: &str, task_result: &TaskResult) -> Result<SaveNo
         .any(|command| !command.succeeded);
 
     Ok(SaveNoteArgs {
-        title: lesson_title,
+        title: note_title,
         what_changed: build_distilled_what_changed(&task_result.outcome_summary, &changed_files),
         what_learned: build_distilled_what_learned(
             &changed_files,
@@ -456,7 +456,7 @@ fn build_procedure_draft(
     instruction: &str,
     task_result: &TaskResult,
     plan: &Plan,
-    source_lesson: Option<&str>,
+    source_note: Option<&str>,
     source_trajectory: Option<&str>,
     supersedes: Option<String>,
 ) -> Result<ProcedureDraft> {
@@ -524,7 +524,7 @@ fn build_procedure_draft(
         pitfalls,
         verification,
         source_task: Some(compact_text_line(&normalize_task_text(instruction), 160)),
-        source_lesson: source_lesson.map(ToString::to_string),
+        source_note: source_note.map(ToString::to_string),
         source_trajectory: source_trajectory.map(ToString::to_string),
         supersedes,
     })
@@ -551,8 +551,8 @@ fn extract_saved_artifact_path(output: &str, prefix: &str) -> Option<String> {
 #[cfg(test)]
 mod scenario_tests {
     use crate::memory::procedures::{
-        ParsedProcedure, ProcedureDraft, ProcedureRevisionAction, ProcedureStatus,
-        evaluate_procedure_revision, procedure_revision_quality_gate,
+        evaluate_procedure_revision, procedure_revision_quality_gate, ParsedProcedure,
+        ProcedureDraft, ProcedureRevisionAction, ProcedureStatus,
     };
     use std::path::PathBuf;
 
@@ -571,7 +571,7 @@ mod scenario_tests {
             revision_count: 0,
             last_verified_reuse_at: None,
             source_task: None,
-            source_lesson: None,
+            source_note: None,
             source_trajectory: None,
             supersedes: None,
             superseded_by: None,
@@ -593,7 +593,7 @@ mod scenario_tests {
             pitfalls: vec!["Do not skip verification.".to_string()],
             verification: "cargo test".to_string(),
             source_task: Some("deploy".to_string()),
-            source_lesson: None,
+            source_note: None,
             source_trajectory: None,
             supersedes: None,
         }
@@ -633,7 +633,7 @@ mod scenario_tests {
             pitfalls: vec!["Do not skip verification.".to_string()],
             verification: "cargo test -p other".to_string(),
             source_task: None,
-            source_lesson: None,
+            source_note: None,
             source_trajectory: None,
             supersedes: None,
         };

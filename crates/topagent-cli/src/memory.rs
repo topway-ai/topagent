@@ -5,28 +5,26 @@ mod promotion;
 pub(crate) mod trajectories;
 
 pub(crate) use self::procedures::{
-    ParsedProcedure, ProcedureStatus, disable_procedure, parse_saved_procedure,
+    disable_procedure, parse_saved_procedure, ParsedProcedure, ProcedureStatus,
 };
-pub(crate) use self::promotion::{PromotionContext, promote_verified_task};
+pub(crate) use self::promotion::{promote_verified_task, PromotionContext};
 pub(crate) use self::trajectories::{
-    TRAJECTORY_EXPORTS_RELATIVE_DIR, TrajectoryReviewState,
     export_trajectory as write_exported_trajectory, mark_trajectory_ready, parse_saved_trajectory,
+    TrajectoryReviewState, TRAJECTORY_EXPORTS_RELATIVE_DIR,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use topagent_core::{
-    BehaviorContract, Message, RunTrustContext, migrate_legacy_operator_preferences,
+use topagent_core::{BehaviorContract, Message, RunTrustContext};
+
+use crate::workspace_state::ensure_workspace_state;
+
+pub(crate) use crate::workspace_state::{
+    MEMORY_INDEX_RELATIVE_PATH, MEMORY_NOTES_RELATIVE_DIR, MEMORY_PROCEDURES_RELATIVE_DIR,
+    MEMORY_TRAJECTORIES_RELATIVE_DIR, TELEGRAM_HISTORY_RELATIVE_DIR,
 };
 
-use crate::managed_files::write_managed_file;
-
-const MEMORY_ROOT_DIR: &str = ".topagent";
-pub(crate) const MEMORY_INDEX_RELATIVE_PATH: &str = ".topagent/MEMORY.md";
-pub(crate) const MEMORY_NOTES_RELATIVE_DIR: &str = ".topagent/notes";
-pub(crate) const MEMORY_PROCEDURES_RELATIVE_DIR: &str = ".topagent/procedures";
-pub(crate) const MEMORY_TRAJECTORIES_RELATIVE_DIR: &str = ".topagent/trajectories";
-pub(crate) const TELEGRAM_HISTORY_RELATIVE_DIR: &str = ".topagent/telegram-history";
+const MEMORY_ROOT_DIR: &str = crate::workspace_state::TOPAGENT_DIR;
 
 // Shared diagnostic size thresholds used by doctor and memory lint.
 pub(crate) const USER_MD_SIZE_WARN: usize = 2048;
@@ -87,44 +85,8 @@ const STOP_WORDS: &[&str] = &[
     "your",
 ];
 
-fn migrate_legacy_notes_layout(workspace_root: &Path) -> Result<()> {
-    let root = workspace_root.join(MEMORY_ROOT_DIR);
-    let legacy_topics = root.join("topics");
-    let legacy_lessons = root.join("lessons");
-    let notes_dir = root.join("notes");
-
-    if !notes_dir.exists() {
-        std::fs::create_dir_all(&notes_dir)
-            .with_context(|| format!("failed to create {}", notes_dir.display()))?;
-    }
-
-    for legacy_dir in &[&legacy_topics, &legacy_lessons] {
-        if legacy_dir.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(legacy_dir) {
-                for entry in entries.flatten() {
-                    let src = entry.path();
-                    if src.is_file() {
-                        let dest = notes_dir.join(entry.file_name());
-                        if !dest.exists() {
-                            std::fs::copy(&src, &dest).with_context(|| {
-                                format!("failed to migrate {} to {}", src.display(), dest.display())
-                            })?;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
 fn memory_contract() -> BehaviorContract {
     BehaviorContract::default()
-}
-
-fn memory_index_template() -> String {
-    memory_contract().render_memory_index_template()
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -172,25 +134,7 @@ impl WorkspaceMemory {
     }
 
     pub(crate) fn ensure_layout(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.notes_dir)
-            .with_context(|| format!("failed to create {}", self.notes_dir.display()))?;
-        std::fs::create_dir_all(&self.procedures_dir)
-            .with_context(|| format!("failed to create {}", self.procedures_dir.display()))?;
-        std::fs::create_dir_all(&self.trajectories_dir)
-            .with_context(|| format!("failed to create {}", self.trajectories_dir.display()))?;
-        migrate_legacy_notes_layout(&self.workspace_root)?;
-        migrate_legacy_operator_preferences(&self.workspace_root)
-            .map_err(|err| anyhow::anyhow!(err.to_string()))?;
-
-        if !self.index_path.exists() {
-            if let Some(parent) = self.index_path.parent() {
-                std::fs::create_dir_all(parent)
-                    .with_context(|| format!("failed to create {}", parent.display()))?;
-            }
-            let template = memory_index_template();
-            write_managed_file(&self.index_path, &template, false)?;
-        }
-
+        ensure_workspace_state(&self.workspace_root)?;
         Ok(())
     }
 
@@ -375,16 +319,16 @@ pub(super) fn unix_timestamp_secs() -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use super::procedures::{ProcedureDraft, save_procedure};
+    use super::procedures::{save_procedure, ProcedureDraft};
     use super::promotion::{PromotionContext, TaskPromotionReport};
     use super::*;
     use std::fs;
     use tempfile::TempDir;
     use topagent_core::{
-        Agent, ExecutionContext, InfluenceMode, Message, Plan, ProviderResponse, Role,
-        RunTrustContext, RuntimeOptions, ScriptedProvider, SecretRegistry, SourceKind, SourceLabel,
-        TaskMode, TaskResult, ToolTraceStep, VerificationCommand, WorkspaceCheckpointStore,
-        tools::default_tools,
+        tools::default_tools, Agent, ExecutionContext, InfluenceMode, Message, Plan,
+        ProviderResponse, Role, RunTrustContext, RuntimeOptions, ScriptedProvider, SecretRegistry,
+        SourceKind, SourceLabel, TaskMode, TaskResult, ToolTraceStep, VerificationCommand,
+        WorkspaceCheckpointStore,
     };
 
     fn write_memory_index(workspace: &Path, body: &str) {
@@ -393,7 +337,7 @@ mod tests {
         fs::write(path, body).unwrap();
     }
 
-    fn write_lesson(workspace: &Path, name: &str, body: &str) {
+    fn write_saved_note(workspace: &Path, name: &str, body: &str) {
         let path = workspace.join(MEMORY_NOTES_RELATIVE_DIR).join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, body).unwrap();
@@ -727,21 +671,17 @@ path = "src/lib.rs"
             )
             .unwrap();
 
-        assert!(
-            prompt
-                .operator_prompt
-                .as_deref()
-                .unwrap()
-                .contains("concise final answers")
-        );
+        assert!(prompt
+            .operator_prompt
+            .as_deref()
+            .unwrap()
+            .contains("concise final answers"));
         assert!(prompt.prompt.as_deref().unwrap().contains("# Architecture"));
-        assert!(
-            !prompt
-                .prompt
-                .as_deref()
-                .unwrap()
-                .contains("concise final answers")
-        );
+        assert!(!prompt
+            .prompt
+            .as_deref()
+            .unwrap()
+            .contains("concise final answers"));
     }
 
     #[test]
@@ -761,13 +701,11 @@ path = "src/lib.rs"
             .unwrap();
 
         assert!(prompt.trust_context.has_low_trust_action_influence());
-        assert!(
-            prompt
-                .trust_context
-                .low_trust_action_summary(2)
-                .unwrap_or_default()
-                .contains("prior transcript")
-        );
+        assert!(prompt
+            .trust_context
+            .low_trust_action_summary(2)
+            .unwrap_or_default()
+            .contains("prior transcript"));
     }
 
     #[test]
@@ -799,13 +737,11 @@ path = "src/lib.rs"
                 <= memory_contract().memory.max_transcript_prompt_bytes
         );
         assert_eq!(prompt.trust_context.low_trust_sources().len(), 1);
-        assert!(
-            prompt
-                .trust_context
-                .low_trust_action_summary(2)
-                .unwrap_or_default()
-                .contains("prior transcript")
-        );
+        assert!(prompt
+            .trust_context
+            .low_trust_action_summary(2)
+            .unwrap_or_default()
+            .contains("prior transcript"));
     }
 
     #[test]
@@ -887,7 +823,7 @@ path = "src/lib.rs"
                 pitfalls: vec!["Do not drop pending approvals.".to_string()],
                 verification: "cargo test -p topagent-core approval".to_string(),
                 source_task: Some("approval mailbox compaction".to_string()),
-                source_lesson: None,
+                source_note: None,
                 source_trajectory: None,
                 supersedes: None,
             },
@@ -902,7 +838,7 @@ path = "src/lib.rs"
                 pitfalls: vec!["Do not keep stale transcript state.".to_string()],
                 verification: "cargo test -p topagent-cli telegram".to_string(),
                 source_task: Some("approval mailbox restore".to_string()),
-                source_lesson: None,
+                source_note: None,
                 source_trajectory: None,
                 supersedes: None,
             },
@@ -928,7 +864,7 @@ path = "src/lib.rs"
                     pitfalls: vec!["Do not conflate with approval flow.".to_string()],
                     verification: "cargo test -p topagent-cli".to_string(),
                     source_task: Some("irrelevant ui polish".to_string()),
-                    source_lesson: None,
+                    source_note: None,
                     source_trajectory: None,
                     supersedes: None,
                 },
@@ -941,11 +877,11 @@ path = "src/lib.rs"
                 "{\"task_intent\":\"ignored trajectory\"}",
             )
             .unwrap();
-            write_lesson(
+            write_saved_note(
                 temp.path(),
-                &format!("1700003000-lesson-{idx}.md"),
+                &format!("1700003000-note-{idx}.md"),
                 &format!(
-                    "# Irrelevant Lesson {idx}\n\n**Saved:** <t:{}>\n\n---\n\n## What Changed\n\nUpdated an unrelated visual theme.\n\n## What Was Learned\n\nKeep decorative banner tweaks separate from backend workflows.\n\n---\n*Saved by topagent*\n",
+                    "# Irrelevant Note {idx}\n\n**Saved:** <t:{}>\n\n---\n\n## What Changed\n\nUpdated an unrelated visual theme.\n\n## What Was Learned\n\nKeep decorative banner tweaks separate from backend workflows.\n\n---\n*Saved by topagent*\n",
                     1700003000 + idx
                 ),
             );
@@ -964,17 +900,15 @@ path = "src/lib.rs"
         assert!(
             grown.stats.index_prompt_bytes <= memory_contract().memory.max_index_prompt_bytes + 80
         );
-        assert!(
-            !grown
-                .prompt
-                .as_deref()
-                .unwrap_or_default()
-                .contains("ignored trajectory")
-        );
+        assert!(!grown
+            .prompt
+            .as_deref()
+            .unwrap_or_default()
+            .contains("ignored trajectory"));
     }
 
     #[test]
-    fn test_promote_verified_task_creates_lesson_procedure_and_trajectory() {
+    fn test_promote_verified_task_creates_note_procedure_and_trajectory() {
         let temp = TempDir::new().unwrap();
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
         let ctx = ExecutionContext::new(temp.path().to_path_buf());
@@ -1001,7 +935,7 @@ path = "src/lib.rs"
         let trajectory_path = temp.path().join(report.trajectory_file.unwrap());
         let memory_index =
             fs::read_to_string(temp.path().join(MEMORY_INDEX_RELATIVE_PATH)).unwrap();
-        let lesson = fs::read_to_string(&note_path).unwrap();
+        let note = fs::read_to_string(&note_path).unwrap();
         let procedure = fs::read_to_string(&procedure_path).unwrap();
         let trajectory = fs::read_to_string(&trajectory_path).unwrap();
 
@@ -1010,10 +944,10 @@ path = "src/lib.rs"
         assert!(trajectory_path.is_file());
         assert!(memory_index.contains("file: notes/"));
         assert!(memory_index.contains("file: procedures/"));
-        assert!(lesson.starts_with("# "));
+        assert!(note.starts_with("# "));
         assert!(procedure.contains("## Steps"));
         assert!(procedure.contains("**Source Trajectory:** .topagent/trajectories/"));
-        assert_ne!(lesson.lines().next(), procedure.lines().next());
+        assert_ne!(note.lines().next(), procedure.lines().next());
         assert!(trajectory.contains("\"tool_sequence\""));
         assert!(trajectory.contains("\"verification\""));
         assert!(trajectory.contains("\"stored_outputs\": false"));
@@ -1046,12 +980,10 @@ path = "src/lib.rs"
         assert!(report.note_file.is_some());
         assert!(report.procedure_file.is_none());
         assert!(report.trajectory_file.is_some());
-        assert!(
-            report
-                .notes
-                .iter()
-                .any(|note| note.contains("Procedure promotion blocked"))
-        );
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("Procedure promotion blocked")));
     }
 
     #[test]
@@ -1191,12 +1123,10 @@ path = "src/lib.rs"
         assert_eq!(reused.status, ProcedureStatus::Active);
         assert_eq!(reused.reuse_count, 1);
         assert_eq!(reused.revision_count, 0);
-        assert!(
-            prompt
-                .stats
-                .loaded_procedure_files
-                .contains(&first_procedure)
-        );
+        assert!(prompt
+            .stats
+            .loaded_procedure_files
+            .contains(&first_procedure));
     }
 
     #[test]
@@ -1249,12 +1179,10 @@ path = "src/lib.rs"
         assert_eq!(refined.status, ProcedureStatus::Active);
         assert_eq!(refined.reuse_count, 4);
         assert_eq!(refined.revision_count, 1);
-        assert!(
-            refined
-                .steps
-                .iter()
-                .any(|step| step.contains("Clear stale transcript state"))
-        );
+        assert!(refined
+            .steps
+            .iter()
+            .any(|step| step.contains("Clear stale transcript state")));
     }
 
     #[test]
@@ -1337,7 +1265,7 @@ path = "src/lib.rs"
                 pitfalls: vec!["Do not drop pending approvals.".to_string()],
                 verification: "cargo test -p topagent-core approval".to_string(),
                 source_task: Some("approval mailbox compaction".to_string()),
-                source_lesson: None,
+                source_note: None,
                 source_trajectory: None,
                 supersedes: None,
             },
@@ -1352,7 +1280,7 @@ path = "src/lib.rs"
                 pitfalls: vec!["Do not keep stale transcript state.".to_string()],
                 verification: "cargo test -p topagent-cli telegram".to_string(),
                 source_task: Some("approval mailbox restore".to_string()),
-                source_lesson: None,
+                source_note: None,
                 source_trajectory: None,
                 supersedes: None,
             },
@@ -1364,7 +1292,7 @@ path = "src/lib.rs"
                 pitfalls: vec!["Do not add fluff.".to_string()],
                 verification: "cargo test -p topagent-cli".to_string(),
                 source_task: Some("operator response tone".to_string()),
-                source_lesson: None,
+                source_note: None,
                 source_trajectory: None,
                 supersedes: None,
             },
@@ -1379,24 +1307,18 @@ path = "src/lib.rs"
             .build_prompt("repair approval mailbox compaction and restore flow", None)
             .unwrap();
         assert_eq!(prompt.stats.loaded_items.len(), 2);
-        assert!(
-            prompt
-                .stats
-                .loaded_items
-                .contains(&"Approval mailbox compaction playbook".to_string())
-        );
-        assert!(
-            prompt
-                .stats
-                .loaded_items
-                .contains(&"Approval mailbox restore flow".to_string())
-        );
-        assert!(
-            !prompt
-                .stats
-                .loaded_items
-                .contains(&"Operator response tone guide".to_string())
-        );
+        assert!(prompt
+            .stats
+            .loaded_items
+            .contains(&"Approval mailbox compaction playbook".to_string()));
+        assert!(prompt
+            .stats
+            .loaded_items
+            .contains(&"Approval mailbox restore flow".to_string()));
+        assert!(!prompt
+            .stats
+            .loaded_items
+            .contains(&"Operator response tone guide".to_string()));
     }
 
     #[test]
@@ -1442,7 +1364,7 @@ path = "src/lib.rs"
             pitfalls: vec!["Do not drop pending approvals.".to_string()],
             verification: "cargo test -p topagent-core approval".to_string(),
             source_task: Some("approval mailbox compaction".to_string()),
-            source_lesson: None,
+            source_note: None,
             source_trajectory: None,
             supersedes: None,
         };
@@ -1518,7 +1440,7 @@ path = "src/lib.rs"
             .stats
             .provenance_notes
             .iter()
-            .filter(|n| n.starts_with("lesson |") || n.starts_with("note |"))
+            .filter(|n| n.starts_with("note |"))
             .collect();
         assert!(!note_entries.is_empty());
         let note = note_entries[0];
@@ -1542,7 +1464,7 @@ path = "src/lib.rs"
                 pitfalls: vec!["Pitfall one.".to_string()],
                 verification: "cargo test".to_string(),
                 source_task: Some(format!("playbook {}", i)),
-                source_lesson: None,
+                source_note: None,
                 source_trajectory: None,
                 supersedes: None,
             };
@@ -1580,23 +1502,23 @@ path = "src/lib.rs"
         })
         .unwrap();
 
-        let lesson = fs::read_to_string(temp.path().join(report.note_file.unwrap())).unwrap();
+        let note = fs::read_to_string(temp.path().join(report.note_file.unwrap())).unwrap();
         let procedure =
             fs::read_to_string(temp.path().join(report.procedure_file.unwrap())).unwrap();
         let trajectory =
             fs::read_to_string(temp.path().join(report.trajectory_file.unwrap())).unwrap();
 
-        assert!(!lesson.contains("super-secret-output-value"));
+        assert!(!note.contains("super-secret-output-value"));
         assert!(!procedure.contains("super-secret-output-value"));
         assert!(!trajectory.contains("super-secret-output-value"));
         assert!(trajectory.contains("[REDACTED]") || !trajectory.contains("first pass failed"));
     }
 
     #[test]
-    fn test_consolidate_promotes_saved_lesson_with_absolute_date() {
+    fn test_consolidate_promotes_saved_note_with_absolute_date() {
         let temp = TempDir::new().unwrap();
         write_memory_index(temp.path(), "# TopAgent Memory Index\n\n");
-        write_lesson(
+        write_saved_note(
             temp.path(),
             "1700000000-approval-mailbox.md",
             "# Approval Mailbox\n\n**Saved:** <t:1700000000>\n\n---\n\n## What Changed\n\nAdded mailbox persistence within a live run.\n\n## What Was Learned\n\nPending approvals must stay visible after compaction.\n\n## Reuse Next Time\n\nKeep the mailbox as the canonical approval artifact.\n\n---\n*Saved by topagent*\n",
@@ -1633,17 +1555,17 @@ path = "src/lib.rs"
     }
 
     #[test]
-    fn test_consolidate_prunes_curated_lessons_to_policy_limit() {
+    fn test_consolidate_prunes_curated_notes_to_policy_limit() {
         let temp = TempDir::new().unwrap();
         write_memory_index(temp.path(), "# TopAgent Memory Index\n\n");
 
         for idx in 0..(memory_contract().memory.max_curated_notes + 2) {
             let timestamp = 1700001000 + idx as i64;
-            write_lesson(
+            write_saved_note(
                 temp.path(),
-                &format!("{timestamp}-lesson-{idx}.md"),
+                &format!("{timestamp}-note-{idx}.md"),
                 &format!(
-                    "# Lesson {idx}\n\n**Saved:** <t:{timestamp}>\n\n---\n\n## What Changed\n\nUpdated item {idx}.\n\n## What Was Learned\n\nLesson {idx} remains useful for future runs.\n\n---\n*Saved by topagent*\n"
+                    "# Note {idx}\n\n**Saved:** <t:{timestamp}>\n\n---\n\n## What Changed\n\nUpdated item {idx}.\n\n## What Was Learned\n\nNote {idx} remains useful for future runs.\n\n---\n*Saved by topagent*\n"
                 ),
             );
         }
@@ -1705,21 +1627,17 @@ path = "src/lib.rs"
         .unwrap();
 
         assert!(task_result.final_verification_passed());
-        assert!(
-            task_result
-                .source_labels()
-                .iter()
-                .any(|label| label.kind == SourceKind::TranscriptPrior)
-        );
+        assert!(task_result
+            .source_labels()
+            .iter()
+            .any(|label| label.kind == SourceKind::TranscriptPrior));
         assert!(report.note_file.is_some());
         assert!(report.procedure_file.is_none());
         assert!(report.trajectory_file.is_some());
-        assert!(
-            report
-                .notes
-                .iter()
-                .any(|note| note.contains("Procedure promotion blocked"))
-        );
+        assert!(report
+            .notes
+            .iter()
+            .any(|note| note.contains("Procedure promotion blocked")));
     }
 
     #[test]
@@ -1745,26 +1663,22 @@ path = "src/lib.rs"
             .run(&write_ctx, "update src/lib.rs and verify")
             .unwrap();
         assert!(first_result.contains("verified update"));
-        assert!(
-            checkpoint_store
-                .latest_status()
-                .unwrap()
-                .expect("checkpoint should exist")
-                .captured_paths
-                .iter()
-                .any(|path| path == "src/lib.rs")
-        );
+        assert!(checkpoint_store
+            .latest_status()
+            .unwrap()
+            .expect("checkpoint should exist")
+            .captured_paths
+            .iter()
+            .any(|path| path == "src/lib.rs"));
 
         let restore_report = checkpoint_store
             .restore_latest()
             .unwrap()
             .expect("restore should succeed");
-        assert!(
-            restore_report
-                .restored_files
-                .iter()
-                .any(|path| path == "src/lib.rs")
-        );
+        assert!(restore_report
+            .restored_files
+            .iter()
+            .any(|path| path == "src/lib.rs"));
         assert_eq!(
             fs::read_to_string(temp.path().join("src/lib.rs")).unwrap(),
             "pub fn answer() -> u32 {\n    42\n}\n"

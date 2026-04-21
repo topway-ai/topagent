@@ -191,18 +191,20 @@ The workspace is the root directory the agent operates in. All file paths are re
 | Telegram (`topagent setup`) | Interactive prompt with default, or `--workspace` |
 | Foreground Telegram (`topagent telegram`) | Current directory, or `--workspace` |
 
-The workspace must exist and be a directory. The agent creates a `.topagent/` subdirectory inside it for notes, tools, memory files, and chat transcripts.
+The workspace must exist and be a directory. The agent creates a `.topagent/` subdirectory inside it for the versioned workspace-state marker, notes, tools, memory files, recovery artifacts, and chat transcript evidence.
 
 ### .topagent/ directory
 
 ```
 workspace/.topagent/
+  workspace-state.json       # schema marker for the supported workspace-state model
   USER.md                    # operator model (stable user preferences)
   MEMORY.md                  # thin workspace memory index (always loaded)
   notes/                     # workspace notes (durable notes, lazy loaded)
   procedures/                # governed reusable procedures (markdown)
   trajectories/              # local saved trajectory records (JSON)
   exports/trajectories/      # reviewed trajectory export packages (JSON)
+  exports/legacy-plans/      # migrated old plans; evidence/export only
   checkpoints/               # automatic workspace checkpoints for restore
   tools/                     # generated custom tools (manifests + scripts)
   telegram-history/          # per-chat transcript evidence files (JSON)
@@ -211,6 +213,22 @@ workspace/.topagent/
 ```
 
 Created automatically as needed. Not removed by `topagent uninstall`.
+
+`workspace-state.json` currently stores schema version `1`. TopAgent refuses future schema versions it does not understand instead of guessing. Current setup and memory initialization apply a bounded migration:
+
+- old `.topagent/topics/*.md` and `.topagent/lessons/*.md` files become `.topagent/notes/*.md`
+- old topic/lesson references in `MEMORY.md` are rewritten to `notes/...`
+- old operator preference topic files become `.topagent/USER.md`
+- old `.topagent/plans/*` files move to `.topagent/exports/legacy-plans/` and are not prompt memory
+
+The supported state model is intentionally split by role:
+
+- Hot-path prompt memory: `USER.md` and `MEMORY.md`
+- Lazy prompt context: relevant `notes/` and active `procedures/`, both capped
+- Evidence/export only: `trajectories/`, `exports/trajectories/`, and migrated `exports/legacy-plans/`
+- Run recovery state: `checkpoints/`
+- Transport evidence: `telegram-history/`
+- Workspace runtime/tool config: `hooks.toml`, `external-tools.json`, and `tools/`
 
 If a generated tool has an invalid manifest, is missing `script.sh`, is missing its stored script hash, or its current `script.sh` no longer matches the verified hash, TopAgent keeps the artifact on disk but reports it as a workspace warning instead of silently loading it.
 
@@ -541,7 +559,7 @@ Commands that install, configure, upgrade, or remove the TopAgent service. These
 
 ### Diagnostics and inspection
 
-Commands that read and display state without side effects (except `run restore`). These are safe to run at any time.
+Commands that read and display state without side effects unless noted. `topagent memory status` may apply the bounded workspace-state migration described above; `topagent run restore` mutates files by design.
 
 | Command | When to use |
 |---------|-------------|
@@ -569,3 +587,12 @@ Commands that inspect and govern the workspace's durable learning artifacts. The
 | `topagent procedure show` | Inspect one procedure's raw content |
 | `topagent procedure prune` | Remove superseded and disabled procedures |
 | `topagent procedure disable` | Disable a noisy procedure without deleting it |
+
+The source-of-truth commands are:
+
+- Runtime contract: `topagent config inspect` owns provider, effective model, API key presence, workspace, Telegram admission, and runtime options.
+- Install/service health: `topagent status` owns setup presence, managed service files, service enabled/running state, and configured default model.
+- Run recovery: `topagent run status` owns latest checkpoint, transcript count, and restore guidance.
+- Workspace learning: `topagent memory status` owns workspace schema, operator model, memory index, notes, procedures, trajectories, and exports.
+
+Changing the configured model with `topagent model set <model-id>` updates the managed env file's model value, preserves the provider and other managed values, and restarts the Telegram service only if it is installed. Changing provider remains a setup flow: re-run `topagent setup`.

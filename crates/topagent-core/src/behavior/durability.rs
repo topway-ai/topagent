@@ -94,9 +94,9 @@ impl MemoryPolicy {
         let summary = trust_context.low_trust_action_summary(2)?;
 
         match kind {
-            DurablePromotionKind::Lesson if corroborated_by_trusted_local => None,
-            DurablePromotionKind::Lesson => Some(format!(
-                "Lesson promotion blocked: source evidence came from low-trust content ({summary}) without trusted workspace corroboration."
+            DurablePromotionKind::Note if corroborated_by_trusted_local => None,
+            DurablePromotionKind::Note => Some(format!(
+                "Note promotion blocked: source evidence came from low-trust content ({summary}) without trusted workspace corroboration."
             )),
             DurablePromotionKind::Procedure => Some(format!(
                 "Procedure promotion blocked: low-trust content ({summary}) cannot become a reusable procedure automatically."

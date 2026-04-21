@@ -1,14 +1,14 @@
 use anyhow::{Context, Result};
 
-use crate::commands::surface::PRODUCT_NAME;
+use crate::commands::surface::{LIFECYCLE_LANES, PRODUCT_NAME};
 use crate::config::defaults::{
-    CliParams, TELEGRAM_SERVICE_UNIT_NAME, TOPAGENT_TOOL_AUTHORING_KEY, parse_env_bool,
+    parse_env_bool, CliParams, TELEGRAM_SERVICE_UNIT_NAME, TOPAGENT_TOOL_AUTHORING_KEY,
 };
 use crate::config::runtime::TelegramModeConfig;
 use crate::managed_files::{
     assert_managed_or_absent, ensure_service_setup_present, write_managed_file,
 };
-use crate::operational_paths::{ServicePaths, service_paths};
+use crate::operational_paths::{service_paths, ServicePaths};
 
 use super::detect::resolve_current_exe;
 use super::managed_env::render_service_env_file;
@@ -137,7 +137,10 @@ fn run_service_lifecycle(
     ensure_systemd_user_available()?;
     let paths = service_paths()?;
     ensure_service_setup_present(&paths.unit_path, &paths.env_path)?;
-    run_systemctl_user_checked(args, &format!("{} the {PRODUCT_NAME} Telegram service", action))?;
+    run_systemctl_user_checked(
+        args,
+        &format!("{} the {PRODUCT_NAME} Telegram service", action),
+    )?;
 
     println!("{PRODUCT_NAME} service {}.", completed_state);
     println!("Service: {}", TELEGRAM_SERVICE_UNIT_NAME);
@@ -202,6 +205,13 @@ fn render_status(params: CliParams) -> Result<()> {
     ) {
         println!("Tool authoring: {}", if enabled { "on" } else { "off" });
     }
+    println!("Lifecycle sources of truth:");
+    for lane in LIFECYCLE_LANES {
+        println!(
+            "  {}: {} ({})",
+            lane.name, lane.source_of_truth_command, lane.owns
+        );
+    }
 
     if service_installed {
         if let Some(status) = &snapshot {
@@ -249,5 +259,9 @@ fn is_enabled_state(state: Option<&str>) -> bool {
 }
 
 fn yes_no(value: bool) -> &'static str {
-    if value { "yes" } else { "no" }
+    if value {
+        "yes"
+    } else {
+        "no"
+    }
 }

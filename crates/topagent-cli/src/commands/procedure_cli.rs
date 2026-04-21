@@ -171,7 +171,7 @@ mod tests {
             pitfalls: vec!["Do not drop pending approvals.".to_string()],
             verification: "cargo test -p topagent-cli".to_string(),
             source_task: Some(title.to_string()),
-            source_lesson: None,
+            source_note: None,
             source_trajectory: None,
             supersedes: None,
         }

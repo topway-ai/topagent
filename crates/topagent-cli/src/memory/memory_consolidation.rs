@@ -1,7 +1,7 @@
 use super::{
-    AUTO_PROMOTED_TAG, WorkspaceMemory, compact_note, compact_text_line, display_memory_file,
-    limit_text_block, memory_contract, normalize_memory_file, procedures::ParsedProcedure,
-    procedures::ProcedureStatus, procedures::parse_saved_procedure,
+    compact_note, compact_text_line, display_memory_file, limit_text_block, memory_contract,
+    normalize_memory_file, procedures::parse_saved_procedure, procedures::ParsedProcedure,
+    procedures::ProcedureStatus, WorkspaceMemory, AUTO_PROMOTED_TAG,
 };
 use anyhow::{Context, Result};
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -50,7 +50,7 @@ enum DurableMemoryCategory {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MemorySourceKind {
     ManualIndex,
-    SavedLesson,
+    SavedNote,
     SavedProcedure,
 }
 
@@ -66,12 +66,12 @@ struct MemoryCandidate {
 struct MemoryOrientation {
     prelude_lines: Vec<String>,
     index_entries: Vec<MemoryIndexEntry>,
-    lesson_files: Vec<PathBuf>,
+    note_files: Vec<PathBuf>,
     procedure_files: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ParsedLesson {
+pub(super) struct ParsedNote {
     filename: String,
     title: String,
     saved_at: Option<i64>,
@@ -132,7 +132,7 @@ impl WorkspaceMemory {
             }
         }
 
-        orientation.lesson_files = list_markdown_files(&self.notes_dir)?;
+        orientation.note_files = list_markdown_files(&self.notes_dir)?;
         orientation.procedure_files = list_markdown_files(&self.procedures_dir)?;
         Ok(orientation)
     }
@@ -149,17 +149,17 @@ impl WorkspaceMemory {
             .map(MemoryCandidate::from_manual_entry)
             .collect::<Vec<_>>();
 
-        let lesson_candidates = orientation
-            .lesson_files
+        let note_candidates = orientation
+            .note_files
             .iter()
-            .filter_map(|path| parse_saved_lesson(path).transpose())
+            .filter_map(|path| parse_saved_note(path).transpose())
             .collect::<Result<Vec<_>>>()?
             .into_iter()
-            .map(|lesson| {
-                report.normalized_dates += usize::from(lesson.saved_at.is_some());
-                MemoryCandidate::from_saved_lesson(&memory_contract(), lesson)
+            .map(|note| {
+                report.normalized_dates += usize::from(note.saved_at.is_some());
+                MemoryCandidate::from_saved_note(&memory_contract(), note)
             });
-        candidates.extend(lesson_candidates);
+        candidates.extend(note_candidates);
 
         let procedure_candidates = orientation
             .procedure_files
@@ -198,26 +198,26 @@ impl MemoryCandidate {
         }
     }
 
-    fn from_saved_lesson(contract: &BehaviorContract, lesson: ParsedLesson) -> Self {
-        let date = lesson.saved_at.and_then(format_saved_date);
+    fn from_saved_note(contract: &BehaviorContract, note_file: ParsedNote) -> Self {
+        let date = note_file.saved_at.and_then(format_saved_date);
         let tags = derived_tags(
             &[
-                lesson.title.as_str(),
-                lesson.what_learned.as_str(),
-                lesson.reuse_next_time.as_deref().unwrap_or_default(),
-                lesson.avoid_next_time.as_deref().unwrap_or_default(),
+                note_file.title.as_str(),
+                note_file.what_learned.as_str(),
+                note_file.reuse_next_time.as_deref().unwrap_or_default(),
+                note_file.avoid_next_time.as_deref().unwrap_or_default(),
             ],
-            &["lesson", "reusable", AUTO_PROMOTED_TAG],
+            &["note", AUTO_PROMOTED_TAG],
         );
         let note = compact_note(
             &[
                 date.map(|value| format!("saved {value}")),
-                Some(compact_text_line(&lesson.what_learned, 80)),
-                lesson
+                Some(compact_text_line(&note_file.what_learned, 80)),
+                note_file
                     .reuse_next_time
                     .as_ref()
                     .map(|value| format!("reuse: {}", compact_text_line(value, 48))),
-                lesson
+                note_file
                     .avoid_next_time
                     .as_ref()
                     .map(|value| format!("avoid: {}", compact_text_line(value, 48))),
@@ -227,15 +227,15 @@ impl MemoryCandidate {
 
         Self {
             entry: MemoryIndexEntry {
-                topic: lesson.title,
-                file: format!("notes/{}", lesson.filename),
+                topic: note_file.title,
+                file: format!("notes/{}", note_file.filename),
                 status: "verified".to_string(),
                 tags,
                 note,
             },
             category: DurableMemoryCategory::DurableNote,
-            source: MemorySourceKind::SavedLesson,
-            saved_at: lesson.saved_at,
+            source: MemorySourceKind::SavedNote,
+            saved_at: note_file.saved_at,
         }
     }
 
@@ -353,10 +353,9 @@ fn canonical_entry_key(entry: &MemoryIndexEntry) -> String {
 
 fn merge_group_key(candidate: &MemoryCandidate) -> String {
     match candidate.source {
-        MemorySourceKind::SavedLesson => format!(
-            "lesson|{}",
-            candidate.entry.topic.trim().to_ascii_lowercase()
-        ),
+        MemorySourceKind::SavedNote => {
+            format!("note|{}", candidate.entry.topic.trim().to_ascii_lowercase())
+        }
         MemorySourceKind::SavedProcedure => format!(
             "procedure|{}",
             candidate.entry.topic.trim().to_ascii_lowercase()
@@ -394,10 +393,12 @@ fn classify_entry_category(entry: &MemoryIndexEntry) -> DurableMemoryCategory {
     let lower_topic = entry.topic.to_ascii_lowercase();
     if entry.file.starts_with("lessons/")
         || entry.file.starts_with("notes/")
-        || entry
-            .tags
-            .iter()
-            .any(|tag| matches!(tag.as_str(), "lesson" | "lessons" | "reusable"))
+        || entry.tags.iter().any(|tag| {
+            matches!(
+                tag.as_str(),
+                "note" | "notes" | "lesson" | "lessons" | "reusable"
+            )
+        })
     {
         return DurableMemoryCategory::DurableNote;
     }
@@ -432,7 +433,7 @@ fn candidate_priority(candidate: &MemoryCandidate) -> (usize, usize, usize, i64,
     };
     let source = match candidate.source {
         MemorySourceKind::ManualIndex => 3,
-        MemorySourceKind::SavedLesson => 2,
+        MemorySourceKind::SavedNote => 2,
         MemorySourceKind::SavedProcedure => 2,
     };
     (
@@ -538,7 +539,7 @@ fn prune_candidates(
         }
 
         match candidate.source {
-            MemorySourceKind::SavedLesson if kept_notes >= contract.memory.max_curated_notes => {
+            MemorySourceKind::SavedNote if kept_notes >= contract.memory.max_curated_notes => {
                 report.pruned_entries += 1;
                 continue;
             }
@@ -552,7 +553,7 @@ fn prune_candidates(
         }
 
         match candidate.source {
-            MemorySourceKind::SavedLesson => kept_notes += 1,
+            MemorySourceKind::SavedNote => kept_notes += 1,
             MemorySourceKind::SavedProcedure => kept_procedures += 1,
             MemorySourceKind::ManualIndex => {}
         }
@@ -632,19 +633,19 @@ fn list_markdown_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-pub(super) fn parse_saved_lesson(path: &Path) -> Result<Option<ParsedLesson>> {
+pub(super) fn parse_saved_note(path: &Path) -> Result<Option<ParsedNote>> {
     if !path.exists() {
         return Ok(None);
     }
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read {}", path.display()))?;
-    let title = extract_heading(&raw).unwrap_or_else(|| file_stem_or_default(path, "Lesson"));
+    let title = extract_heading(&raw).unwrap_or_else(|| file_stem_or_default(path, "Note"));
     let what_learned = extract_markdown_section(&raw, "What Was Learned").unwrap_or_default();
     if what_learned.trim().is_empty() {
         return Ok(None);
     }
 
-    Ok(Some(ParsedLesson {
+    Ok(Some(ParsedNote {
         filename: file_name_or_default(path),
         title,
         saved_at: extract_saved_timestamp(&raw),
@@ -705,25 +706,22 @@ fn format_saved_date(timestamp: i64) -> Option<String> {
     ))
 }
 
-pub(super) fn render_saved_lesson_excerpt(
-    contract: &BehaviorContract,
-    lesson: &ParsedLesson,
-) -> String {
-    let mut excerpt = format!("# {}\n", lesson.title);
-    if let Some(saved_at) = lesson.saved_at.and_then(format_saved_date) {
+pub(super) fn render_saved_note_excerpt(contract: &BehaviorContract, note: &ParsedNote) -> String {
+    let mut excerpt = format!("# {}\n", note.title);
+    if let Some(saved_at) = note.saved_at.and_then(format_saved_date) {
         excerpt.push_str(&format!("Saved: {saved_at}\n"));
     }
     excerpt.push_str(&format!(
         "What was learned: {}\n",
-        compact_text_line(&lesson.what_learned, 240)
+        compact_text_line(&note.what_learned, 240)
     ));
-    if let Some(reuse) = &lesson.reuse_next_time {
+    if let Some(reuse) = &note.reuse_next_time {
         excerpt.push_str(&format!(
             "Reuse next time: {}\n",
             compact_text_line(reuse, 200)
         ));
     }
-    if let Some(avoid) = &lesson.avoid_next_time {
+    if let Some(avoid) = &note.avoid_next_time {
         excerpt.push_str(&format!(
             "Avoid next time: {}\n",
             compact_text_line(avoid, 200)
@@ -775,7 +773,7 @@ fn file_stem_or_default(path: &Path, default: &str) -> String {
 mod tests {
     use super::*;
     use crate::memory::{
-        MEMORY_INDEX_RELATIVE_PATH, MEMORY_PROCEDURES_RELATIVE_DIR, WorkspaceMemory,
+        WorkspaceMemory, MEMORY_INDEX_RELATIVE_PATH, MEMORY_PROCEDURES_RELATIVE_DIR,
     };
     use std::fs;
     use tempfile::TempDir;

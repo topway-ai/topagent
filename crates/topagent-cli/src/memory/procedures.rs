@@ -2,7 +2,10 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use topagent_core::BehaviorContract;
 
-use super::{WorkspaceMemory, artifact_filename, compact_text_line, score_text_relevance, slugify, unix_timestamp_secs};
+use super::{
+    artifact_filename, compact_text_line, score_text_relevance, slugify, unix_timestamp_secs,
+    WorkspaceMemory,
+};
 use crate::managed_files::write_managed_file;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,7 +48,7 @@ pub(crate) struct ParsedProcedure {
     pub(crate) revision_count: u32,
     pub(crate) last_verified_reuse_at: Option<i64>,
     pub(crate) source_task: Option<String>,
-    pub(crate) source_lesson: Option<String>,
+    pub(crate) source_note: Option<String>,
     pub(crate) source_trajectory: Option<String>,
     pub(crate) supersedes: Option<String>,
     pub(crate) superseded_by: Option<String>,
@@ -62,7 +65,7 @@ pub(crate) struct ProcedureDraft {
     pub(crate) pitfalls: Vec<String>,
     pub(crate) verification: String,
     pub(crate) source_task: Option<String>,
-    pub(crate) source_lesson: Option<String>,
+    pub(crate) source_note: Option<String>,
     pub(crate) source_trajectory: Option<String>,
     pub(crate) supersedes: Option<String>,
 }
@@ -98,7 +101,7 @@ pub(crate) fn save_procedure(
         revision_count: 0,
         last_verified_reuse_at: None,
         source_task: draft.source_task.clone(),
-        source_lesson: draft.source_lesson.clone(),
+        source_note: draft.source_note.clone(),
         source_trajectory: draft.source_trajectory.clone(),
         supersedes: draft.supersedes.clone(),
         superseded_by: None,
@@ -150,7 +153,8 @@ pub(crate) fn parse_saved_procedure(path: &Path) -> Result<Option<ParsedProcedur
             },
         ),
         source_task: parse_named_field(&raw, "**Source Task:**"),
-        source_lesson: parse_named_field(&raw, "**Source Lesson:**"),
+        source_note: parse_named_field(&raw, "**Source Note:**")
+            .or_else(|| parse_named_field(&raw, "**Source Lesson:**")),
         source_trajectory: parse_named_field(&raw, "**Source Trajectory:**"),
         supersedes: parse_named_field(&raw, "**Supersedes:**"),
         superseded_by: parse_named_field(&raw, "**Superseded By:**"),
@@ -176,7 +180,7 @@ pub(crate) fn mark_procedure_superseded(
 pub(crate) fn revise_procedure(
     path: &Path,
     draft: &ProcedureDraft,
-    source_lesson: Option<&str>,
+    source_note: Option<&str>,
     source_trajectory: Option<&str>,
 ) -> Result<Option<String>> {
     let Some(mut procedure) = parse_saved_procedure(path)? else {
@@ -193,8 +197,8 @@ pub(crate) fn revise_procedure(
     procedure.revision_count = procedure.revision_count.saturating_add(1);
     procedure.last_verified_reuse_at = Some(unix_timestamp_secs());
     procedure.source_task = draft.source_task.clone().or(procedure.source_task);
-    if let Some(source_lesson) = source_lesson {
-        procedure.source_lesson = Some(source_lesson.to_string());
+    if let Some(source_note) = source_note {
+        procedure.source_note = Some(source_note.to_string());
     }
     if let Some(source_trajectory) = source_trajectory {
         procedure.source_trajectory = Some(source_trajectory.to_string());
@@ -444,8 +448,8 @@ fn render_procedure_markdown(procedure: &ParsedProcedure) -> String {
     if let Some(source_task) = &procedure.source_task {
         content.push_str(&format!("**Source Task:** {}\n", source_task));
     }
-    if let Some(source_lesson) = &procedure.source_lesson {
-        content.push_str(&format!("**Source Lesson:** {}\n", source_lesson));
+    if let Some(source_note) = &procedure.source_note {
+        content.push_str(&format!("**Source Note:** {}\n", source_note));
     }
     if let Some(source_trajectory) = &procedure.source_trajectory {
         content.push_str(&format!("**Source Trajectory:** {}\n", source_trajectory));
@@ -609,7 +613,7 @@ mod tests {
             revision_count: 0,
             last_verified_reuse_at: None,
             source_task: None,
-            source_lesson: None,
+            source_note: None,
             source_trajectory: None,
             supersedes: None,
             superseded_by: None,
@@ -631,7 +635,7 @@ mod tests {
             pitfalls: vec!["Do not skip verification.".to_string()],
             verification: "cargo test".to_string(),
             source_task: None,
-            source_lesson: None,
+            source_note: None,
             source_trajectory: None,
             supersedes: None,
         }
@@ -646,7 +650,7 @@ mod tests {
             pitfalls: vec!["Do not skip verification.".to_string()],
             verification: "cargo test -p other".to_string(),
             source_task: None,
-            source_lesson: None,
+            source_note: None,
             source_trajectory: None,
             supersedes: None,
         }
@@ -721,7 +725,7 @@ mod tests {
             pitfalls: vec!["Do not skip verification.".to_string()],
             verification: "cargo test".to_string(),
             source_task: None,
-            source_lesson: None,
+            source_note: None,
             source_trajectory: None,
             supersedes: None,
         };

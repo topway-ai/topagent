@@ -210,38 +210,38 @@ fn test_restore_clears_checkpoint_itself() {
 }
 
 #[test]
-fn test_trust_sensitive_paths_remain_strict_for_lesson_promotion() {
+fn test_trust_sensitive_paths_remain_strict_for_note_promotion() {
     let contract = BehaviorContract::default();
 
     let low = low_trust_context();
     assert!(
         contract
-            .durable_promotion_block_reason(DurablePromotionKind::Lesson, &low, false)
+            .durable_promotion_block_reason(DurablePromotionKind::Note, &low, false)
             .is_some(),
-        "lesson promotion must be blocked under low trust without corroboration"
+        "note promotion must be blocked under low trust without corroboration"
     );
 
     let mixed = mixed_trust_context();
     assert!(
         contract
-            .durable_promotion_block_reason(DurablePromotionKind::Lesson, &mixed, false)
+            .durable_promotion_block_reason(DurablePromotionKind::Note, &mixed, false)
             .is_some(),
-        "lesson promotion must be blocked when low-trust influence is present without corroboration"
+        "note promotion must be blocked when low-trust influence is present without corroboration"
     );
 
     assert!(
         contract
-            .durable_promotion_block_reason(DurablePromotionKind::Lesson, &mixed, true)
+            .durable_promotion_block_reason(DurablePromotionKind::Note, &mixed, true)
             .is_none(),
-        "lesson promotion may proceed when low-trust is data-only and corroboration is present"
+        "note promotion may proceed when low-trust is data-only and corroboration is present"
     );
 
     let high = high_trust_context();
     assert!(
         contract
-            .durable_promotion_block_reason(DurablePromotionKind::Lesson, &high, false)
+            .durable_promotion_block_reason(DurablePromotionKind::Note, &high, false)
             .is_none(),
-        "lesson promotion should be allowed under high trust"
+        "note promotion should be allowed under high trust"
     );
 }
 
@@ -359,7 +359,7 @@ label = "permissive hook"
 
     assert!(
         contract
-            .durable_promotion_block_reason(DurablePromotionKind::Lesson, &low, false)
+            .durable_promotion_block_reason(DurablePromotionKind::Note, &low, false)
             .is_some(),
         "permissive hooks must not bypass durable promotion blocking under low trust"
     );
@@ -487,7 +487,7 @@ fn test_provenance_context_survives_merge() {
     let contract = BehaviorContract::default();
     assert!(
         contract
-            .durable_promotion_block_reason(DurablePromotionKind::Lesson, &ctx1, false)
+            .durable_promotion_block_reason(DurablePromotionKind::Note, &ctx1, false)
             .is_some(),
         "merged context with low-trust must still block promotions"
     );

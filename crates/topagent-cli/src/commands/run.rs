@@ -264,7 +264,6 @@ mod tests {
     fn test_restore_no_checkpoint_returns_error() {
         let temp = tempfile::TempDir::new().unwrap();
         let workspace = temp.path();
-        let store = WorkspaceCheckpointStore::new(workspace.to_path_buf());
 
         let result = restore_checkpoint_and_clear_transcripts(
             workspace,

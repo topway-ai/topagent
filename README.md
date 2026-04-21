@@ -149,14 +149,18 @@ Place a `TOPAGENT.md` file in your workspace root to give the agent project-spec
 Workspace memory is separate from `TOPAGENT.md`:
 
 - `TOPAGENT.md` is for always-on project instructions
+- `.topagent/workspace-state.json` marks the supported workspace-state schema (`schema_version: 1`)
 - `.topagent/USER.md` is for stable operator preferences and collaboration habits that should not be mixed into repo memory
 - `.topagent/MEMORY.md` is a tiny durable memory index
 - `.topagent/notes/` holds workspace notes — compact durable notes loaded only when relevant
 - `.topagent/procedures/` holds reusable workspace-local playbooks distilled from strong verified runs, revised through proven reuse, and loaded lazily in small batches
 - `.topagent/trajectories/` holds compact structured execution traces from high-quality verified runs; they are reviewable export artifacts, not hot-path prompt memory
 - `.topagent/exports/trajectories/` holds reviewed trajectory export packages
+- `.topagent/exports/legacy-plans/` holds migrated old plans as evidence/export artifacts, not memory
 - `.topagent/telegram-history/` stores searchable per-chat transcript evidence
 - `.topagent/checkpoints/` stores the most recent automatic workspace checkpoints for restore
+
+Old `.topagent/topics/` and `.topagent/lessons/` files are migrated into `.topagent/notes/`; old operator-preference topics are migrated into `USER.md`.
 
 TopAgent does not promote every successful task. Weak, trivial, failed, or ambiguous runs save nothing. It still does not provide a skills marketplace, subagents, online training, or multi-provider routing.
 
