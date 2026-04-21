@@ -108,12 +108,12 @@ pub(super) fn route_message(
             session_manager.bind_dm_user_id(user_id);
         }
         InboundAdmission::RejectedNonPrivate => {
-            send_telegram(&adapter, chat_id, vec!["This bot currently supports private chats only. Open a private chat with the bot and try again.".into()], None);
+            send_telegram(adapter, chat_id, vec!["This bot currently supports private chats only. Open a private chat with the bot and try again.".into()], None);
             return;
         }
         InboundAdmission::RejectedMissingIdentity => {
             send_telegram(
-                &adapter,
+                adapter,
                 chat_id,
                 vec!["Access denied. Cannot bind admission without a sender identity.".into()],
                 None,
@@ -122,7 +122,7 @@ pub(super) fn route_message(
         }
         InboundAdmission::Denied => {
             send_telegram(
-                &adapter,
+                adapter,
                 chat_id,
                 vec![
                     "Access denied. This bot is not authorized to accept messages from this chat."
@@ -136,7 +136,7 @@ pub(super) fn route_message(
 
     let Some(ref text) = msg.text else {
         send_telegram(
-            &adapter,
+            adapter,
             chat_id,
             vec!["This bot currently supports text messages only.".into()],
             None,
@@ -158,41 +158,41 @@ pub(super) fn route_message(
             session_manager.tool_authoring_enabled(),
             &session_manager.dm_access_label(),
         );
-        send_telegram(&adapter, chat_id, vec![reply], None);
+        send_telegram(adapter, chat_id, vec![reply], None);
         return;
     }
 
     if text == "/stop" {
         let reply = handle_stop(session_manager, chat_id);
-        send_telegram(&adapter, chat_id, vec![reply], None);
+        send_telegram(adapter, chat_id, vec![reply], None);
         return;
     }
 
     if text == "/approvals" {
         let reply = handle_approvals(session_manager, chat_id);
-        send_telegram(&adapter, chat_id, vec![reply], None);
+        send_telegram(adapter, chat_id, vec![reply], None);
         return;
     }
 
     if let Some(argument) = text.strip_prefix("/approve") {
         let reply = handle_approve(session_manager, chat_id, argument);
-        send_telegram(&adapter, chat_id, vec![reply], None);
+        send_telegram(adapter, chat_id, vec![reply], None);
         return;
     }
 
     if let Some(argument) = text.strip_prefix("/deny") {
         let reply = handle_deny(session_manager, chat_id, argument);
-        send_telegram(&adapter, chat_id, vec![reply], None);
+        send_telegram(adapter, chat_id, vec![reply], None);
         return;
     }
 
     if text == "/reset" {
         let reply = handle_reset(session_manager, chat_id);
-        send_telegram(&adapter, chat_id, vec![reply], None);
+        send_telegram(adapter, chat_id, vec![reply], None);
         return;
     }
 
     let response = session_manager.start_message(ctx, adapter, chat_id, text);
-    send_telegram(&adapter, chat_id, response, Some(secrets));
+    send_telegram(adapter, chat_id, response, Some(secrets));
     let _ = adapter.acknowledge(chat_id, message_id);
 }
