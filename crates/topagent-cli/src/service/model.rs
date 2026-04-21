@@ -95,7 +95,6 @@ fn run_model_set(model_id: String) -> Result<()> {
     }
 
     let paths = service_paths()?;
-    // Read persisted provider for display — model set does not change the provider.
     let env_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
     let persisted_provider = env_values
         .get(TOPAGENT_PROVIDER_KEY)
@@ -103,22 +102,7 @@ fn run_model_set(model_id: String) -> Result<()> {
     let provider = provider_or_default(persisted_provider);
     let report = update_configured_model(&paths, model_id, None)?;
 
-    println!("TopAgent model updated.");
-    println!("Previous model: {}", report.previous_model);
-    println!(
-        "Configured model: {} [{}]",
-        report.configured_model, provider
-    );
-    println!("Config file: {}", report.config_path.display());
-    println!(
-        "Service restart: {}",
-        if report.service_restarted {
-            "yes"
-        } else {
-            "not needed (service not installed)"
-        }
-    );
-
+    print_model_update_report(&report, provider.label());
     Ok(())
 }
 
@@ -188,15 +172,7 @@ fn run_model_pick(params: CliParams) -> Result<()> {
             .expect("interactive model selection should record a source")
             .label()
     );
-    println!("Config file: {}", report.config_path.display());
-    println!(
-        "Service restart: {}",
-        if report.service_restarted {
-            "yes"
-        } else {
-            "not needed (service not installed)"
-        }
-    );
+    print_model_update_report_trailer(&report);
 
     Ok(())
 }
@@ -324,4 +300,26 @@ fn update_configured_model(
         service_restarted,
         config_path: paths.env_path.clone(),
     })
+}
+
+fn print_model_update_report(report: &ModelUpdateReport, provider_label: &str) {
+    println!("TopAgent model updated.");
+    println!("Previous model: {}", report.previous_model);
+    println!(
+        "Configured model: {} [{}]",
+        report.configured_model, provider_label
+    );
+    print_model_update_report_trailer(report);
+}
+
+fn print_model_update_report_trailer(report: &ModelUpdateReport) {
+    println!("Config file: {}", report.config_path.display());
+    println!(
+        "Service restart: {}",
+        if report.service_restarted {
+            "yes"
+        } else {
+            "not needed (service not installed)"
+        }
+    );
 }

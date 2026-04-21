@@ -96,10 +96,6 @@ pub(crate) fn run_uninstall(purge: bool) -> Result<()> {
     uninstall_service_setup(true, purge)
 }
 
-pub(crate) fn run_service_status(params: CliParams) -> Result<()> {
-    render_status(params)
-}
-
 pub(crate) fn run_service_start() -> Result<()> {
     run_service_lifecycle(
         &["start", TELEGRAM_SERVICE_UNIT_NAME],

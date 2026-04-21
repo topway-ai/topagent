@@ -60,7 +60,7 @@ impl TelegramModeDefaults {
         Self {
             api_key: normalize_nonempty_string(values.get(OPENROUTER_API_KEY_KEY).cloned()),
             opencode_api_key: normalize_nonempty_string(values.get(OPENCODE_API_KEY_KEY).cloned()),
-            token: normalize_nonempty_string(values.get("TELEGRAM_BOT_TOKEN").cloned()),
+            token: normalize_nonempty_string(values.get(TELEGRAM_BOT_TOKEN_KEY).cloned()),
             workspace: values.get(TOPAGENT_WORKSPACE_KEY).map(PathBuf::from),
             model: normalize_nonempty_string(values.get(TOPAGENT_MODEL_KEY).cloned()),
             max_steps: parse_optional_usize(values.get(TOPAGENT_MAX_STEPS_KEY).map(String::as_str)),

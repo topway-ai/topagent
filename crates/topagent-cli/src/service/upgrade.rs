@@ -4,6 +4,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::config::defaults::TELEGRAM_SERVICE_UNIT_NAME;
+
 const RELEASE_BASE_URL: &str = "https://github.com/topway-ai/topagent/releases/latest/download";
 
 /// Supported release target for the current host. Returns `None` on unsupported
@@ -238,12 +240,7 @@ fn resolve_upgrade_target() -> Result<PathBuf> {
 
 fn service_is_active() -> bool {
     Command::new("systemctl")
-        .args([
-            "--user",
-            "is-active",
-            "--quiet",
-            "topagent-telegram.service",
-        ])
+        .args(["--user", "is-active", "--quiet", TELEGRAM_SERVICE_UNIT_NAME])
         .status()
         .map(|s| s.success())
         .unwrap_or(false)
@@ -251,13 +248,13 @@ fn service_is_active() -> bool {
 
 fn stop_service() {
     let _ = Command::new("systemctl")
-        .args(["--user", "stop", "topagent-telegram.service"])
+        .args(["--user", "stop", TELEGRAM_SERVICE_UNIT_NAME])
         .status();
 }
 
 fn restart_service() {
     let _ = Command::new("systemctl")
-        .args(["--user", "restart", "topagent-telegram.service"])
+        .args(["--user", "restart", TELEGRAM_SERVICE_UNIT_NAME])
         .status();
 }
 

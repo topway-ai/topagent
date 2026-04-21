@@ -96,8 +96,11 @@ fn render_memory_status(workspace: &Path) -> Result<String> {
         index_entries,
         workspace.join(MEMORY_INDEX_RELATIVE_PATH).display()
     ));
-    output.push_str(&format!("Topics: {}\n", topics.len()));
-    output.push_str(&format!("Lessons: {}\n", lessons.len()));
+    output.push_str(&format!(
+        "Notes: {} topic(s), {} lesson(s)\n",
+        topics.len(),
+        lessons.len()
+    ));
     output.push_str(&format!(
         "Procedures: {} active, {} superseded, {} disabled\n",
         active_procedures, superseded_procedures, disabled_procedures
@@ -342,8 +345,8 @@ mod tests {
 
         assert!(rendered.contains("Operator model: 1 preference(s)"));
         assert!(rendered.contains("Workspace index: 1 entries"));
-        assert!(rendered.contains("Topics: 1"));
-        assert!(rendered.contains("Lessons: 1"));
+        assert!(rendered.contains("Notes:"));
+        assert!(rendered.contains("1 topic(s)"));
     }
 
     #[test]

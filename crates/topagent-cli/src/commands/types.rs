@@ -1,6 +1,14 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 
+use crate::commands::surface::{
+    HELP_CONFIG_INSPECT, HELP_DOCTOR, HELP_MEMORY_LINT, HELP_MEMORY_RECALL, HELP_MEMORY_STATUS,
+    HELP_MODEL_LIST, HELP_MODEL_PICK, HELP_MODEL_REFRESH, HELP_MODEL_SET, HELP_MODEL_STATUS,
+    HELP_PROCEDURE_DISABLE, HELP_PROCEDURE_LIST, HELP_PROCEDURE_PRUNE, HELP_PROCEDURE_SHOW,
+    HELP_RUN_DIFF, HELP_RUN_RESTORE, HELP_RUN_STATUS, HELP_STATUS, HELP_TRAJECTORY_EXPORT,
+    HELP_TRAJECTORY_LIST, HELP_TRAJECTORY_REVIEW, HELP_TRAJECTORY_SHOW,
+};
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(crate) enum ToolAuthoringMode {
     On,
@@ -74,7 +82,7 @@ pub(crate) enum Commands {
     /// Set up and start the TopAgent Telegram background service.
     #[command(visible_alias = "setup")]
     Install,
-    /// Show TopAgent setup and service status.
+    #[command(about = HELP_STATUS)]
     Status,
     /// Run the Telegram bot in the foreground.
     Telegram {
@@ -106,19 +114,14 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: TrajectoryCommands,
     },
-    /// Inspect and restore the latest workspace checkpoint.
-    Checkpoint {
-        #[command(subcommand)]
-        command: CheckpointCommands,
-    },
-    /// Inspect the resolved runtime contract (provider, model, keys, workspace, options).
+    #[command(about = HELP_CONFIG_INSPECT)]
     Config {
         #[command(subcommand)]
         command: ConfigCommands,
     },
-    /// Run health diagnostics on TopAgent setup, config, workspace, and tools.
+    #[command(about = HELP_DOCTOR)]
     Doctor,
-    /// Inspect execution-session state: checkpoint, transcripts, and recovery readiness.
+    /// Inspect execution-session state or restore the latest workspace checkpoint.
     Run {
         #[command(subcommand)]
         command: RunCommands,
@@ -139,9 +142,12 @@ pub(crate) enum Commands {
 
 #[derive(Subcommand)]
 pub(crate) enum RunCommands {
-    /// Show execution-session state: checkpoint material, Telegram transcripts,
-    /// service active/inactive, and recovery readiness. Never prints secrets.
+    #[command(about = HELP_RUN_STATUS)]
     Status,
+    #[command(about = HELP_RUN_DIFF)]
+    Diff,
+    #[command(about = HELP_RUN_RESTORE)]
+    Restore,
 }
 
 #[derive(Subcommand)]
@@ -151,8 +157,6 @@ pub(crate) enum ServiceCommands {
         #[arg(long, help = "Telegram bot token (or TELEGRAM_BOT_TOKEN)")]
         token: Option<String>,
     },
-    /// Show Telegram service status.
-    Status,
     /// Start the installed Telegram background service.
     Start,
     /// Stop the installed Telegram background service.
@@ -169,35 +173,31 @@ pub(crate) enum ServiceCommands {
 
 #[derive(Subcommand)]
 pub(crate) enum ModelCommands {
-    /// Show the configured default and effective model.
+    #[command(about = HELP_MODEL_STATUS)]
     Status,
-    /// Set the configured model and restart the service when installed.
+    #[command(about = HELP_MODEL_SET)]
     Set { model_id: String },
-    /// Pick the configured model interactively.
+    #[command(about = HELP_MODEL_PICK)]
     Pick,
-    /// Show the cached model list.
+    #[command(about = HELP_MODEL_LIST)]
     List,
-    /// Refresh the cached model list.
+    #[command(about = HELP_MODEL_REFRESH)]
     Refresh,
 }
 
-#[derive(Subcommand)]
+/// Internal checkpoint subcommand type used by `run diff` and `run restore`.
 pub(crate) enum CheckpointCommands {
-    /// Show the latest workspace checkpoint.
-    Status,
-    /// Show the diff between the latest checkpoint and the current workspace.
     Diff,
-    /// Restore the latest checkpoint and clear persisted Telegram transcripts.
     Restore,
 }
 
 #[derive(Subcommand)]
 pub(crate) enum MemoryCommands {
-    /// Show workspace learning artifact status.
+    #[command(about = HELP_MEMORY_STATUS)]
     Status,
-    /// Lint USER.md and MEMORY.md for size, format, and content policy issues.
+    #[command(about = HELP_MEMORY_LINT)]
     Lint,
-    /// Dry-run memory retrieval for an instruction and show recall provenance.
+    #[command(about = HELP_MEMORY_RECALL)]
     Recall {
         #[arg(help = "Instruction to test recall for")]
         instruction: String,
@@ -206,16 +206,16 @@ pub(crate) enum MemoryCommands {
 
 #[derive(Subcommand)]
 pub(crate) enum ProcedureCommands {
-    /// List saved procedures.
+    #[command(about = HELP_PROCEDURE_LIST)]
     List {
         #[arg(long, help = "Include superseded and disabled procedures")]
         all: bool,
     },
-    /// Show one saved procedure.
+    #[command(about = HELP_PROCEDURE_SHOW)]
     Show { id: String },
-    /// Remove superseded and disabled procedures.
+    #[command(about = HELP_PROCEDURE_PRUNE)]
     Prune,
-    /// Mark a procedure disabled.
+    #[command(about = HELP_PROCEDURE_DISABLE)]
     Disable {
         id: String,
         #[arg(long, help = "Reason for disabling the procedure")]
@@ -225,13 +225,13 @@ pub(crate) enum ProcedureCommands {
 
 #[derive(Subcommand)]
 pub(crate) enum TrajectoryCommands {
-    /// List saved trajectories.
+    #[command(about = HELP_TRAJECTORY_LIST)]
     List,
-    /// Show one saved trajectory.
+    #[command(about = HELP_TRAJECTORY_SHOW)]
     Show { id: String },
-    /// Mark a trajectory ready for export after review.
+    #[command(about = HELP_TRAJECTORY_REVIEW)]
     Review { id: String },
-    /// Export a reviewed trajectory.
+    #[command(about = HELP_TRAJECTORY_EXPORT)]
     Export { id: String },
 }
 

@@ -55,7 +55,7 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 | Module | Responsibility |
 |--------|---------------|
 | `main` | Entry point: parses CLI args, converts to params, dispatches to command handlers |
-| `commands` | CLI command types, dispatch, and rendering; `commands/types` owns all clap definitions, `commands/dispatch` owns the top-level match, per-domain modules (`memory_cli`, `procedure_cli`, `trajectory_cli`, `checkpoint_cli`) own CLI rendering, `config` and `run` own their subcommand handlers, `oneshot` owns the one-shot runner, and `artifact_util` shares file-list and path-resolution helpers |
+| `commands` | CLI command types, dispatch, and rendering; `commands/types` owns all clap definitions, `commands/dispatch` owns the top-level match, per-domain modules (`memory_cli`, `procedure_cli`, `trajectory_cli`) own CLI rendering, `config` and `run` own their subcommand handlers (the `run` module dispatches checkpoint recovery subcommands: `run status`, `run diff`, `run restore`), `oneshot` owns the one-shot runner, and `artifact_util` shares file-list and path-resolution helpers |
 | `config` | CliParams struct, parameter validation, route/options construction |
 | `operational_paths` | Shared config-home, service unit, and managed env path ownership for the operational control plane |
 | `run_setup` | Shared agent/provider/context assembly for one-shot CLI and Telegram runs |
@@ -73,7 +73,7 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 CLI parses args
   -> resolve workspace, API key, model route
   -> build operator model briefing from .topagent/USER.md
-  -> build workspace memory briefing from .topagent/MEMORY.md + relevant procedures + relevant durable notes
+  -> build workspace memory briefing from .topagent/MEMORY.md + relevant procedures + relevant workspace notes (topics and lessons)
   -> classify run-level trust context from operator instruction + loaded memory/transcript sources
   -> create ExecutionContext with workspace + cancel token + operator model + workspace memory briefing + trust context
   -> read explicit tool-authoring mode from CLI/service config
@@ -95,7 +95,7 @@ CLI parses args
       -> for PlanAndExecute mode with files changed: append structured delivery summary with explicit verification status
    -> if the task was strongly verified, run the workspace promotion policy:
      - save nothing, or
-     - save/update a lesson, or
+     - save/update a note (topic or lesson), or
      - save/update a reusable procedure, or
      - emit a compact trajectory artifact, or
      - some narrow combination of the above
@@ -123,7 +123,7 @@ CLI parses args
          - text -> start_message:
           a. load `.topagent/MEMORY.md` (always)
           b. load matching `.topagent/procedures/*.md` files only if relevant, capped to a small subset
-          c. load matching `.topagent/topics/*.md`, `.topagent/lessons/*.md` artifacts only if relevant
+          c. load matching workspace notes (`.topagent/topics/*.md`, `.topagent/lessons/*.md`) only if relevant
           d. search the saved Telegram transcript and extract targeted snippets only if useful
           e. build a fresh agent run with the operator model plus that memory briefing and the merged trust context
           f. append the filtered user-visible transcript to disk
@@ -182,50 +182,45 @@ Generated tools use the same workspace sandbox policy as bash. Workspace externa
 
 ### Memory and persistence flow
 
-TopAgent uses five local learning layers:
+TopAgent uses three prompt-memory layers, plus procedures (governed reuse) and trajectories (export artifacts) as separate categories:
 
-1. **Operator Model**: `workspace/.topagent/USER.md`
+1. **Operator model**: `workspace/.topagent/USER.md`
    - stable operator preferences and collaboration habits only
    - loaded separately from workspace memory and capped tightly
    - not for repo facts, task state, or transcript recall
-2. **Always-loaded index**: `workspace/.topagent/MEMORY.md`
+2. **Workspace index**: `workspace/.topagent/MEMORY.md`
    - one-line entries only
    - cheap enough to load at task start
    - points to durable artifacts instead of embedding large notes
-3. **Lazy durable artifacts**:
-   - `workspace/.topagent/topics/*.md` for compact notes by concern (`architecture`, `security`, `runtime`, etc.)
-   - `workspace/.topagent/lessons/*.md` for distilled facts, pitfalls, and rules
-   - `workspace/.topagent/procedures/*.md` for workspace-local reusable playbooks with explicit reuse/revision/supersession metadata
-   - retrieval is narrow: only a small relevant subset is loaded, and superseded procedures are ignored
-4. **Raw transcript evidence**: `workspace/.topagent/telegram-history/chat-<chat_id>.json`
-   - searchable per-chat transcript
-   - stores user-visible text exchanges, not tool chatter
-   - never replayed in full by default; retrieval returns targeted snippets only
-5. **Trajectory records**: `workspace/.topagent/trajectories/*.json`
-   - compact structured records from strong verified runs
-   - include task intent, task mode, plan summary, key tool sequence, changed files, verification evidence, and linked lesson/procedure artifacts
-   - carry the run's compact provenance labels so later review/export can reject low-trust artifacts
-   - saved locally first, then reviewed and exported explicitly into `workspace/.topagent/exports/trajectories/`
-    - stay off the prompt hot path unless exported or reviewed manually
+3. **Workspace notes**: `workspace/.topagent/topics/*.md` and `workspace/.topagent/lessons/*.md`
+   - topics hold compact notes by concern (`architecture`, `security`, `runtime`, etc.)
+   - lessons hold distilled facts, pitfalls, and rules from verified work
+   - loaded only when relevant; `topagent memory status` shows counts as "Notes: N topic(s), M lesson(s)"
 
-`/reset` deletes only the per-chat transcript file. It does not touch `MEMORY.md`, topics, lessons, procedures, or trajectories.
+**Procedures** (`workspace/.topagent/procedures/*.md`) are reusable playbooks with explicit reuse/revision/supersession metadata, not prompt memory. They load lazily when relevant, and superseded procedures are ignored.
+
+**Trajectory records** (`workspace/.topagent/trajectories/*.json`) are compact structured records from strong verified runs. They carry provenance labels, stay off the prompt hot path by default, and are exported via explicit review.
+
+**Raw transcript evidence** (`workspace/.topagent/telegram-history/`) stores searchable per-chat text exchanges, never replayed wholesale.
+
+`/reset` deletes only the per-chat transcript file. It does not touch `MEMORY.md`, workspace notes (topics or lessons), procedures, or trajectories.
 
 Curated consolidation keeps the index practical:
 
-- strong verified tasks can promote into lessons or procedures when they have future value
+- strong verified tasks can promote into notes or procedures when they have future value
 - operator preferences live outside the workspace index, so repo memory and user memory do not share ownership
 - procedures prefer governed reuse: proven reuse can keep, refine, supersede, disable, or later prune a playbook instead of piling up duplicates
 - duplicate or conflicting durable entries are merged or pruned instead of accumulating forever
 - provenance is tracked at run boundaries rather than per token; the goal is explainable trust gating, not a full lineage graph
 - relative timestamps are normalized before durable promotion when TopAgent has enough evidence
-- missing or unreadable topic files are skipped during retrieval
+- missing or unreadable note files are skipped during retrieval
 - the index load path caps injected bytes so startup memory stays cheap
 - trajectory review/export stays explicit and local; saved artifacts do not become a second prompt-memory system
 
 ### Performance invariants
 
 - Always-loaded memory stays tiny and bounded. `USER.md` and `MEMORY.md` are capped briefings, not growing prompt dumps.
-- Lazy retrieval stays capped. Relevant procedures, durable notes, operator preferences, transcript snippets, and injected bytes all use fixed limits.
+- Lazy retrieval stays capped. Relevant procedures, workspace notes (topics and lessons), operator preferences, transcript snippets, and injected bytes all use fixed limits.
 - Transcript use stays targeted. Prior chat is searched for narrow snippets only and is never replayed wholesale into the prompt.
 - Procedures are a latency aid, not a ceremony layer. They are loaded sparsely, only when relevant, and superseded procedures stay off the hot path.
 - Trajectories are export artifacts, not prompt memory. Saving more trajectories must not make normal task startup heavier.
@@ -242,4 +237,4 @@ Curated consolidation keeps the index practical:
 5. Agent executes plan steps, updating status as it goes
 6. If the agent fails to plan within budget (10 steps or 5 blocked attempts), the system generates a fallback plan automatically
 
-Plans can still be saved manually when the task-specific checklist itself matters. Verified-task promotion now uses lessons for facts and pitfalls, procedures for reusable workflows, and trajectories for compact export records.
+Plans can still be saved manually when the task-specific checklist itself matters. Verified-task promotion now uses notes for facts and pitfalls, procedures for reusable workflows, and trajectories for compact export records.

@@ -58,14 +58,15 @@ Then it:
 
 Then open a private chat with your bot and send a message.
 
-TopAgent keeps Telegram memory in five learning layers:
+TopAgent uses three prompt-memory layers:
 
-- a small operator model at `workspace/.topagent/USER.md` for stable collaboration preferences, loaded separately and capped tightly
-- a tiny always-loaded workspace index at `workspace/.topagent/MEMORY.md`
-- compact durable notes under `workspace/.topagent/topics/`, plus distilled lessons and reusable procedures under `workspace/.topagent/lessons/` and `workspace/.topagent/procedures/`, loaded only when relevant
-- a per-chat raw transcript under `workspace/.topagent/telegram-history/`, used as searchable evidence rather than replayed wholesale
+1. **Operator model** — `workspace/.topagent/USER.md` stores stable collaboration preferences; loaded separately and capped tightly
+2. **Workspace index** — `workspace/.topagent/MEMORY.md` is a tiny always-loaded pointer index
+3. **Workspace notes** — `workspace/.topagent/topics/` and `workspace/.topagent/lessons/` hold compact durable notes (topics and lessons) loaded only when relevant
 
-For strong verified runs, TopAgent can also emit compact trajectory artifacts under `workspace/.topagent/trajectories/`. These are structured export records for later eval or training work, not prompt memory, and they stay local until reviewed and exported explicitly.
+Procedures (`workspace/.topagent/procedures/`) are reusable playbooks governed by proven reuse, not prompt memory. Trajectories (`workspace/.topagent/trajectories/`) are structured export records, not prompt memory. Both stay off the hot path by default.
+
+A per-chat raw transcript under `workspace/.topagent/telegram-history/` is searchable evidence, never replayed wholesale.
 
 TopAgent also keeps a narrow trust boundary for external content:
 
@@ -90,13 +91,13 @@ TopAgent also keeps a narrow trust boundary for external content:
 ### Service management
 
 ```bash
-topagent status # show setup and service health
+topagent status                # Is the service installed and running?
 topagent model status # show the configured default and effective model
-topagent model set <id> # change the configured model (does not change provider)
+topagent model set <id> # change the configured model (does not change provider; --model overrides for one-shot only)
 topagent model pick # pick the configured model interactively
 topagent model list # show cached top models
 topagent model refresh # refresh cached top models
-topagent memory status       # show operator/workspace learning artifact status
+topagent memory status       # show notes, procedures, and trajectory counts
 topagent memory lint         # lint USER.md and MEMORY.md for size and content policy issues
 topagent memory recall "..." # dry-run memory retrieval for an instruction
 topagent procedure list      # list live procedures
@@ -112,20 +113,19 @@ topagent service install     # install service without the full interactive flow
 topagent service start       # start the background service
 topagent service stop        # stop the background service
 topagent service restart     # restart the background service
-topagent service uninstall   # remove service and config, keep binary
-topagent checkpoint status   # show the latest workspace checkpoint
-topagent checkpoint diff     # preview what restore would change
-topagent checkpoint restore  # restore the latest checkpoint and clear Telegram transcripts
-topagent config inspect      # show resolved provider, model, key presence, workspace, and options
-topagent run status          # show execution-session state and recovery readiness
-topagent doctor              # run health diagnostics on setup, config, workspace, and tools
+topagent service uninstall   # stop service, remove unit+env files, keep binary
+topagent run diff            # preview what restore would change
+topagent run restore         # restore the latest checkpoint and clear Telegram transcripts
+topagent config inspect      # What provider/model/keys am I actually using?
+topagent run status          # What happened in my last run? (checkpoint, transcripts, recovery guidance)
+topagent doctor              # Is everything healthy? (deep diagnostics)
 topagent upgrade             # download and install the latest GitHub release binary
 topagent upgrade --use-cargo # build and install from source via cargo instead of a release binary
-topagent uninstall           # remove service, config, and installed binary
-topagent uninstall --purge   # also remove workspace .topagent/ data and model cache
+topagent uninstall           # stop service, remove unit+env files, optionally remove binary
+topagent uninstall --purge   # also remove .topagent/ workspace data and model cache (neither removes the workspace directory)
 ```
 
-`topagent setup` is the obvious full setup path. `topagent install` remains available as the same command. Re-running setup keeps the same managed config file and restarts the background service with updated values; operator-entered secrets (API keys, bot token, allowed username, bound user ID) are preserved when you accept the existing prompt defaults, and the env file is rewritten in a single atomic emit rather than overwritten twice. After setup, use `topagent model set` or `topagent model pick` to change the configured default model without re-running full setup. Model changes preserve the persisted provider; changing provider requires re-running `topagent setup`.
+`topagent setup` is the obvious full setup path. `topagent install` remains available as the same command. Re-running setup keeps the same managed config file and restarts the background service with updated values; operator-entered secrets (API keys, bot token, allowed username, bound user ID) are preserved when you accept the existing prompt defaults, and the env file is rewritten in a single atomic emit rather than overwritten twice. After setup, use `topagent model set` or `topagent model pick` to change the configured default model without re-running full setup. `model set` changes only the model, not the provider — to change provider, re-run `topagent setup`. The `--model` flag overrides the configured default for one-shot runs only, without changing the persisted config.
 
 See [docs/operations.md](docs/operations.md) for full operational details.
 
@@ -135,7 +135,7 @@ See [docs/operations.md](docs/operations.md) for full operational details.
 |-----------------------|----------------|------------------------------------|
 | `--api-key` | `$OPENROUTER_API_KEY` | API key for the selected provider (or use `--opencode-api-key` for Opencode) |
 | `--opencode-api-key` | `$OPENCODE_API_KEY` | Opencode API key |
-| `--model` | `minimax/minimax-m2.7` | Model identifier; provider uses the persisted selection or OpenRouter default |
+| `--model` | `minimax/minimax-m2.7` | Model identifier; overrides the configured default for one-shot only (use `model set` to persist) |
 | `--workspace` | current directory (one-shot) or auto-created (install) | Workspace path |
 | `--max-steps` | `50` | Maximum agent loop iterations |
 | `--max-retries` | `10` | Maximum provider retry attempts |
@@ -151,8 +151,7 @@ Workspace memory is separate from `TOPAGENT.md`:
 - `TOPAGENT.md` is for always-on project instructions
 - `.topagent/USER.md` is for stable operator preferences and collaboration habits that should not be mixed into repo memory
 - `.topagent/MEMORY.md` is a tiny durable memory index
-- `.topagent/topics/` holds compact durable notes by concern
-- `.topagent/lessons/` holds distilled facts, pitfalls, and rules from verified work
+- `.topagent/topics/` and `.topagent/lessons/` hold workspace notes — topics are compact notes by concern, lessons are distilled facts, pitfalls, and rules from verified work
 - `.topagent/procedures/` holds reusable workspace-local playbooks distilled from strong verified runs, revised through proven reuse, and loaded lazily in small batches
 - `.topagent/trajectories/` holds compact structured execution traces from high-quality verified runs; they are reviewable export artifacts, not hot-path prompt memory
 - `.topagent/exports/trajectories/` holds reviewed trajectory export packages

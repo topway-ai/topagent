@@ -1,6 +1,5 @@
 use anyhow::{Result, anyhow};
 use std::path::{Path, PathBuf};
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use topagent_core::{WorkspaceCheckpointRestoreReport, WorkspaceCheckpointStore};
 
 use super::types::CheckpointCommands;
@@ -15,45 +14,9 @@ pub(crate) fn run_checkpoint_command(
     let store = WorkspaceCheckpointStore::new(workspace.clone());
 
     match command {
-        CheckpointCommands::Status => render_checkpoint_status(&workspace, &store),
         CheckpointCommands::Diff => render_checkpoint_diff(&workspace, &store),
         CheckpointCommands::Restore => restore_checkpoint(&workspace, &store),
     }
-}
-
-fn render_checkpoint_status(workspace: &Path, store: &WorkspaceCheckpointStore) -> Result<()> {
-    println!("TopAgent checkpoint status");
-    println!("Workspace: {}", workspace.display());
-
-    let Some(status) = store.latest_status()? else {
-        println!("Checkpoint: none");
-        println!("No active workspace checkpoint found.");
-        return Ok(());
-    };
-
-    println!("Checkpoint: {}", status.id);
-    println!(
-        "Created: {}",
-        format_checkpoint_time(status.created_at_unix_millis)
-    );
-    println!("Capture events: {}", status.captures.len());
-    for capture in status.captures {
-        if let Some(detail) = capture.detail {
-            println!(
-                "- {}: {} ({})",
-                capture.source.label(),
-                capture.reason,
-                detail
-            );
-        } else {
-            println!("- {}: {}", capture.source.label(), capture.reason);
-        }
-    }
-    println!("Captured paths: {}", status.captured_paths.len());
-    for path in status.captured_paths {
-        println!("- {}", path);
-    }
-    Ok(())
 }
 
 fn render_checkpoint_diff(workspace: &Path, store: &WorkspaceCheckpointStore) -> Result<()> {
@@ -108,14 +71,6 @@ fn restore_checkpoint_and_clear_transcripts(
         .ok_or_else(|| anyhow!("No active workspace checkpoint found."))?;
     let cleared_transcripts = clear_workspace_telegram_history(workspace)?;
     Ok((report, cleared_transcripts))
-}
-
-fn format_checkpoint_time(created_at_unix_millis: u128) -> String {
-    let timestamp = i64::try_from(created_at_unix_millis / 1000).unwrap_or(i64::MAX);
-    OffsetDateTime::from_unix_timestamp(timestamp)
-        .ok()
-        .and_then(|dt| dt.format(&Rfc3339).ok())
-        .unwrap_or_else(|| created_at_unix_millis.to_string())
 }
 
 #[cfg(test)]

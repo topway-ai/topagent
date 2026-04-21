@@ -11,8 +11,10 @@ use crate::service::{
 use crate::telegram::run_telegram;
 
 use super::checkpoint_cli::run_checkpoint_command;
+use super::config::run_config_inspect;
+use super::oneshot::run_one_shot;
+use super::run::run_session_status;
 use super::types::{Commands, ConfigCommands, RunCommands, ToolAuthoringMode};
-use super::{run_config_inspect, run_one_shot, run_session_status};
 
 pub(crate) fn dispatch(
     command: Option<Commands>,
@@ -30,9 +32,14 @@ pub(crate) fn dispatch(
         Some(Commands::Memory { command }) => run_memory_command(command, params.workspace),
         Some(Commands::Procedure { command }) => run_procedure_command(command, params.workspace),
         Some(Commands::Trajectory { command }) => run_trajectory_command(command, params.workspace),
-        Some(Commands::Checkpoint { command }) => run_checkpoint_command(command, params.workspace),
         Some(Commands::Run { command }) => match command {
             RunCommands::Status => run_session_status(params.workspace),
+            RunCommands::Diff => {
+                run_checkpoint_command(super::types::CheckpointCommands::Diff, params.workspace)
+            }
+            RunCommands::Restore => {
+                run_checkpoint_command(super::types::CheckpointCommands::Restore, params.workspace)
+            }
         },
         Some(Commands::Upgrade { use_cargo }) => run_upgrade(use_cargo),
         Some(Commands::Uninstall { purge }) => run_uninstall(purge),

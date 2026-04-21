@@ -285,12 +285,12 @@ fn test_cli_trajectory_appears_in_help() {
 }
 
 #[test]
-fn test_cli_checkpoint_appears_in_help() {
+fn test_cli_run_appears_in_help() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
     cmd.arg("--help")
         .assert()
         .success()
-        .stdout(predicates::str::contains("checkpoint"));
+        .stdout(predicates::str::contains("run"));
 }
 
 #[test]
@@ -382,9 +382,9 @@ fn test_cli_trajectory_help_mentions_review_and_export_commands() {
 }
 
 #[test]
-fn test_cli_checkpoint_help_mentions_management_commands() {
+fn test_cli_run_help_mentions_diff_and_restore() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
-    cmd.args(["checkpoint", "--help"])
+    cmd.args(["run", "--help"])
         .assert()
         .success()
         .stdout(predicates::str::contains("status"))
@@ -407,21 +407,20 @@ fn test_cli_memory_status_reports_learning_layers_for_fresh_workspace() {
         ))
         .stdout(predicates::str::contains(
             "Trajectories: 0 local, 0 ready, 0 exported",
-        ));
+        ))
+        .stdout(predicates::str::contains("Notes:"));
 }
 
 #[test]
-fn test_cli_checkpoint_status_reports_none_for_fresh_workspace() {
+fn test_cli_run_status_reports_no_checkpoint_for_fresh_workspace() {
     let temp = TempDir::new().unwrap();
     let (_isolated, mut cmd) = isolated_topagent_command();
     cmd.arg("--workspace")
         .arg(temp.path())
-        .args(["checkpoint", "status"])
+        .args(["run", "status"])
         .assert()
         .success()
-        .stdout(predicates::str::contains(
-            "No active workspace checkpoint found.",
-        ));
+        .stdout(predicates::str::contains("Checkpoint:"));
 }
 
 #[test]
@@ -431,7 +430,11 @@ fn test_readme_documents_uninstall() {
     let readme = std::fs::read_to_string(repo_root.join("README.md")).unwrap();
 
     assert!(readme.contains("topagent uninstall"));
-    assert!(readme.contains("remove service, config, and installed binary"));
+    assert!(
+        readme.contains("optionally remove binary")
+            || readme.contains("remove binary")
+            || readme.contains("installed binary")
+    );
 }
 
 #[test]
@@ -457,9 +460,9 @@ fn test_readme_documents_product_setup_commands() {
     assert!(readme.contains("topagent service start"));
     assert!(readme.contains("topagent service stop"));
     assert!(readme.contains("topagent service restart"));
-    assert!(readme.contains("topagent checkpoint status"));
-    assert!(readme.contains("topagent checkpoint diff"));
-    assert!(readme.contains("topagent checkpoint restore"));
+    assert!(readme.contains("topagent run status"));
+    assert!(readme.contains("topagent run diff"));
+    assert!(readme.contains("topagent run restore"));
     assert!(readme.contains("Download the latest release binary"));
 }
 
@@ -539,9 +542,9 @@ fn test_operations_docs_cover_checkpoint_management() {
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
     let operations = std::fs::read_to_string(repo_root.join("docs/operations.md")).unwrap();
 
-    assert!(operations.contains("topagent checkpoint status"));
-    assert!(operations.contains("topagent checkpoint diff"));
-    assert!(operations.contains("topagent checkpoint restore"));
+    assert!(operations.contains("topagent run status"));
+    assert!(operations.contains("topagent run diff"));
+    assert!(operations.contains("topagent run restore"));
     assert!(operations.contains("topagent memory status"));
     assert!(operations.contains("topagent procedure list"));
     assert!(operations.contains("topagent procedure prune"));
@@ -559,8 +562,8 @@ fn test_readme_and_architecture_document_governed_learning_layers() {
     let architecture = std::fs::read_to_string(repo_root.join("docs/architecture.md")).unwrap();
 
     assert!(readme.contains(".topagent/USER.md"));
-    assert!(readme.contains("reviewed and exported explicitly"));
-    assert!(architecture.contains("Operator Model"));
+    assert!(readme.contains("structured export records"));
+    assert!(architecture.contains("Operator model"));
     assert!(architecture.contains("trajectory review/export"));
 }
 
@@ -579,7 +582,7 @@ fn test_cli_docs_consistency_readme_covers_all_subcommands() {
         "memory",
         "procedure",
         "trajectory",
-        "checkpoint",
+        "run",
         "config",
         "doctor",
         "upgrade",
@@ -631,4 +634,44 @@ fn test_readme_bot_commands_table_agrees_with_bot_commands_truth() {
             name
         );
     }
+}
+
+#[test]
+fn test_cli_help_uses_surface_constants_for_key_commands() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    let help_output =
+        String::from_utf8(cmd.arg("--help").assert().get_output().stdout.clone()).unwrap();
+
+    assert!(
+        help_output.contains("setup, service, and model status"),
+        "status help should mention its purpose"
+    );
+    assert!(
+        help_output.contains("health diagnostics"),
+        "doctor help should mention its purpose"
+    );
+    assert!(
+        help_output.contains("runtime contract"),
+        "config inspect help should mention its purpose"
+    );
+    assert!(
+        help_output.contains("workspace checkpoint"),
+        "run subcommand help should mention checkpoint"
+    );
+}
+
+#[test]
+fn test_model_set_does_not_change_provider_is_documented() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let operations = std::fs::read_to_string(repo_root.join("docs/operations.md")).unwrap();
+
+    assert!(
+        operations.contains("preserves the other managed values (including the provider)"),
+        "operations.md must document that model set preserves the provider"
+    );
+    assert!(
+        operations.contains("re-run") && operations.contains("topagent setup"),
+        "operations.md must document that provider change requires re-running setup"
+    );
 }

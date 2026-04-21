@@ -21,7 +21,6 @@ pub(crate) use upgrade::run_upgrade;
 pub(crate) fn run_service_command(command: ServiceCommands, params: CliParams) -> Result<()> {
     match command {
         ServiceCommands::Install { token } => install::run_service_install(token, params),
-        ServiceCommands::Status => lifecycle::run_service_status(params),
         ServiceCommands::Start => lifecycle::run_service_start(),
         ServiceCommands::Stop => lifecycle::run_service_stop(),
         ServiceCommands::Restart => lifecycle::run_service_restart(),
@@ -33,9 +32,6 @@ pub(crate) fn run_model_command(command: ModelCommands, params: CliParams) -> Re
     model::run_model_command(command, params)
 }
 
-/// Returns a human-readable systemd active-state label for the Telegram
-/// service (e.g. "active", "inactive", "failed"), or a descriptive fallback
-/// when systemd is unavailable or the probe fails. Used by `topagent run status`.
 pub(crate) fn query_service_active_state() -> String {
     use crate::operational_paths::service_paths;
 
