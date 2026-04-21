@@ -3,10 +3,11 @@ use std::path::PathBuf;
 
 use crate::commands::surface::{
     HELP_CONFIG_INSPECT, HELP_DOCTOR, HELP_MEMORY_LINT, HELP_MEMORY_RECALL, HELP_MEMORY_STATUS,
-    HELP_MODEL_LIST, HELP_MODEL_PICK, HELP_MODEL_REFRESH, HELP_MODEL_SET, HELP_MODEL_STATUS,
-    HELP_PROCEDURE_DISABLE, HELP_PROCEDURE_LIST, HELP_PROCEDURE_PRUNE, HELP_PROCEDURE_SHOW,
-    HELP_RUN_DIFF, HELP_RUN_RESTORE, HELP_RUN_STATUS, HELP_STATUS, HELP_TRAJECTORY_EXPORT,
-    HELP_TRAJECTORY_LIST, HELP_TRAJECTORY_REVIEW, HELP_TRAJECTORY_SHOW,
+    HELP_MEMORY_TRAJECTORY_EXPORT, HELP_MEMORY_TRAJECTORY_LIST, HELP_MEMORY_TRAJECTORY_REVIEW,
+    HELP_MEMORY_TRAJECTORY_SHOW, HELP_MODEL_LIST, HELP_MODEL_PICK, HELP_MODEL_REFRESH,
+    HELP_MODEL_SET, HELP_MODEL_STATUS, HELP_PROCEDURE_DISABLE, HELP_PROCEDURE_LIST,
+    HELP_PROCEDURE_PRUNE, HELP_PROCEDURE_SHOW, HELP_RUN_DIFF, HELP_RUN_RESTORE, HELP_RUN_STATUS,
+    HELP_STATUS,
 };
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -99,7 +100,7 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: ModelCommands,
     },
-    /// Inspect workspace memory layers.
+    /// Inspect workspace memory layers and trajectories.
     Memory {
         #[command(subcommand)]
         command: MemoryCommands,
@@ -108,11 +109,6 @@ pub(crate) enum Commands {
     Procedure {
         #[command(subcommand)]
         command: ProcedureCommands,
-    },
-    /// Inspect, review, and export saved trajectories.
-    Trajectory {
-        #[command(subcommand)]
-        command: TrajectoryCommands,
     },
     #[command(about = HELP_CONFIG_INSPECT)]
     Config {
@@ -185,12 +181,6 @@ pub(crate) enum ModelCommands {
     Refresh,
 }
 
-/// Internal checkpoint subcommand type used by `run diff` and `run restore`.
-pub(crate) enum CheckpointCommands {
-    Diff,
-    Restore,
-}
-
 #[derive(Subcommand)]
 pub(crate) enum MemoryCommands {
     #[command(about = HELP_MEMORY_STATUS)]
@@ -202,6 +192,9 @@ pub(crate) enum MemoryCommands {
         #[arg(help = "Instruction to test recall for")]
         instruction: String,
     },
+    /// Inspect, review, and export saved trajectories.
+    #[command(subcommand)]
+    Trajectory(TrajectoryCommands),
 }
 
 #[derive(Subcommand)]
@@ -225,13 +218,13 @@ pub(crate) enum ProcedureCommands {
 
 #[derive(Subcommand)]
 pub(crate) enum TrajectoryCommands {
-    #[command(about = HELP_TRAJECTORY_LIST)]
+    #[command(about = HELP_MEMORY_TRAJECTORY_LIST)]
     List,
-    #[command(about = HELP_TRAJECTORY_SHOW)]
+    #[command(about = HELP_MEMORY_TRAJECTORY_SHOW)]
     Show { id: String },
-    #[command(about = HELP_TRAJECTORY_REVIEW)]
+    #[command(about = HELP_MEMORY_TRAJECTORY_REVIEW)]
     Review { id: String },
-    #[command(about = HELP_TRAJECTORY_EXPORT)]
+    #[command(about = HELP_MEMORY_TRAJECTORY_EXPORT)]
     Export { id: String },
 }
 

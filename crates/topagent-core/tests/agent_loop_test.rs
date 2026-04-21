@@ -1241,7 +1241,7 @@ fn test_workspace_memory_context_is_included_in_system_prompt() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().to_path_buf();
     let ctx = ExecutionContext::new(root).with_memory_context(
-        "Treat memory as hints, not truth.\n- [verified] architecture -> topics/architecture.md",
+        "Treat memory as hints, not truth.\n- [verified] architecture -> notes/architecture.md",
     );
 
     struct CheckPromptProvider {

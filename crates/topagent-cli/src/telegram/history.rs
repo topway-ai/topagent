@@ -5,6 +5,7 @@ use topagent_core::Message;
 use tracing::{info, warn};
 
 use crate::managed_files::write_managed_file;
+use crate::memory::TELEGRAM_HISTORY_RELATIVE_DIR;
 
 const TELEGRAM_HISTORY_VERSION: u32 = 1;
 const MAX_PERSISTED_TRANSCRIPT_MESSAGES: usize = 100;
@@ -164,7 +165,7 @@ struct PersistedChatHistory {
 impl ChatHistoryStore {
     pub(crate) fn new(workspace_root: PathBuf) -> Self {
         Self {
-            history_dir: workspace_root.join(".topagent").join("telegram-history"),
+            history_dir: workspace_root.join(TELEGRAM_HISTORY_RELATIVE_DIR),
         }
     }
 

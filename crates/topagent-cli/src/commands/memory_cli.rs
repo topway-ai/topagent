@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 #[cfg(test)]
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -6,13 +6,16 @@ use topagent_core::{
     load_operator_profile, migrate_legacy_operator_preferences, user_profile_path,
 };
 
-use super::types::MemoryCommands;
+use super::artifact_util;
+use super::surface::PRODUCT_NAME;
+use super::types::{MemoryCommands, TrajectoryCommands};
 use crate::config::workspace::resolve_workspace_path;
 use crate::memory::{
-    MEMORY_INDEX_RELATIVE_PATH, MEMORY_LESSONS_RELATIVE_DIR, MEMORY_PROCEDURES_RELATIVE_DIR,
-    MEMORY_TOPICS_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR, ProcedureStatus,
-    TRAJECTORY_EXPORTS_RELATIVE_DIR, TrajectoryReviewState, WorkspaceMemory, parse_saved_procedure,
-    parse_saved_trajectory,
+    MEMORY_INDEX_RELATIVE_PATH, MEMORY_MD_SIZE_ERROR, MEMORY_MD_SIZE_WARN,
+    MEMORY_NOTES_RELATIVE_DIR, MEMORY_PROCEDURES_RELATIVE_DIR,
+    MEMORY_TRAJECTORIES_RELATIVE_DIR, ProcedureStatus, TRAJECTORY_EXPORTS_RELATIVE_DIR,
+    TrajectoryReviewState, USER_MD_SIZE_ERROR, USER_MD_SIZE_WARN, WorkspaceMemory,
+    parse_saved_procedure, parse_saved_trajectory,
 };
 
 pub(crate) fn run_memory_command(
@@ -26,6 +29,25 @@ pub(crate) fn run_memory_command(
         MemoryCommands::Lint => print!("{}", render_memory_lint(&workspace)?),
         MemoryCommands::Recall { instruction } => {
             print!("{}", render_memory_recall(&workspace, &instruction)?)
+        }
+        MemoryCommands::Trajectory(trajectory_cmd) => {
+            run_trajectory_command(trajectory_cmd, &workspace)?;
+        }
+    }
+    Ok(())
+}
+
+fn run_trajectory_command(command: TrajectoryCommands, workspace: &Path) -> Result<()> {
+    match command {
+        TrajectoryCommands::List => print!("{}", render_trajectory_list(workspace)?),
+        TrajectoryCommands::Show { id } => {
+            print!("{}", render_trajectory_show(workspace, &id)?)
+        }
+        TrajectoryCommands::Review { id } => {
+            print!("{}", review_trajectory(workspace, &id)?)
+        }
+        TrajectoryCommands::Export { id } => {
+            print!("{}", export_selected_trajectory(workspace, &id)?)
         }
     }
     Ok(())
@@ -42,10 +64,7 @@ fn render_memory_status(workspace: &Path) -> Result<String> {
         load_operator_profile(workspace).map_err(|err| anyhow!(err.to_string()))?;
     let index_entries = memory.index_entry_count().unwrap_or_default();
 
-    let topics =
-        super::artifact_util::list_files(&workspace.join(MEMORY_TOPICS_RELATIVE_DIR), "md")?;
-    let lessons =
-        super::artifact_util::list_files(&workspace.join(MEMORY_LESSONS_RELATIVE_DIR), "md")?;
+    let notes = super::artifact_util::list_files(&workspace.join(MEMORY_NOTES_RELATIVE_DIR), "md")?;
 
     let procedures =
         super::artifact_util::list_files(&workspace.join(MEMORY_PROCEDURES_RELATIVE_DIR), "md")?;
@@ -84,7 +103,7 @@ fn render_memory_status(workspace: &Path) -> Result<String> {
         super::artifact_util::list_files(&workspace.join(TRAJECTORY_EXPORTS_RELATIVE_DIR), "json")?;
 
     let mut output = String::new();
-    output.push_str("TopAgent memory status\n");
+    output.push_str(&format!("{PRODUCT_NAME} memory status\n"));
     output.push_str(&format!("Workspace: {}\n", workspace.display()));
     output.push_str(&format!(
         "Operator model: {} preference(s) ({})\n",
@@ -96,11 +115,7 @@ fn render_memory_status(workspace: &Path) -> Result<String> {
         index_entries,
         workspace.join(MEMORY_INDEX_RELATIVE_PATH).display()
     ));
-    output.push_str(&format!(
-        "Notes: {} topic(s), {} lesson(s)\n",
-        topics.len(),
-        lessons.len()
-    ));
+    output.push_str(&format!("Notes: {} note(s)\n", notes.len()));
     output.push_str(&format!(
         "Procedures: {} active, {} superseded, {} disabled\n",
         active_procedures, superseded_procedures, disabled_procedures
@@ -119,7 +134,7 @@ fn render_memory_status(workspace: &Path) -> Result<String> {
 
 fn render_memory_lint(workspace: &Path) -> Result<String> {
     let mut output = String::new();
-    output.push_str("TopAgent memory lint\n");
+    output.push_str(&format!("{PRODUCT_NAME} memory lint\n"));
     output.push_str(&format!("Workspace: {}\n", workspace.display()));
 
     let mut findings = Vec::new();
@@ -128,15 +143,17 @@ fn render_memory_lint(workspace: &Path) -> Result<String> {
     if user_path.exists() {
         match std::fs::read_to_string(&user_path) {
             Ok(raw) => {
-                if raw.len() > 4096 {
+                if raw.len() > USER_MD_SIZE_ERROR {
                     findings.push(format!(
-                        "ERROR USER.md: size {} bytes exceeds 4096 budget",
-                        raw.len()
+                        "ERROR USER.md: size {} bytes exceeds {} budget",
+                        raw.len(),
+                        USER_MD_SIZE_ERROR
                     ));
-                } else if raw.len() > 2048 {
+                } else if raw.len() > USER_MD_SIZE_WARN {
                     findings.push(format!(
-                        "WARNING USER.md: size {} bytes exceeds 2048 budget",
-                        raw.len()
+                        "WARNING USER.md: size {} bytes exceeds {} budget",
+                        raw.len(),
+                        USER_MD_SIZE_WARN
                     ));
                 }
                 for issue in crate::doctor::lint_user_md_content(&raw) {
@@ -169,15 +186,17 @@ fn render_memory_lint(workspace: &Path) -> Result<String> {
     if memory_path.exists() {
         match std::fs::read_to_string(&memory_path) {
             Ok(raw) => {
-                if raw.len() > 3000 {
+                if raw.len() > MEMORY_MD_SIZE_ERROR {
                     findings.push(format!(
-                        "ERROR MEMORY.md: size {} bytes exceeds 3000 budget",
-                        raw.len()
+                        "ERROR MEMORY.md: size {} bytes exceeds {} budget",
+                        raw.len(),
+                        MEMORY_MD_SIZE_ERROR
                     ));
-                } else if raw.len() > 1500 {
+                } else if raw.len() > MEMORY_MD_SIZE_WARN {
                     findings.push(format!(
-                        "WARNING MEMORY.md: size {} bytes exceeds 1500 budget",
-                        raw.len()
+                        "WARNING MEMORY.md: size {} bytes exceeds {} budget",
+                        raw.len(),
+                        MEMORY_MD_SIZE_WARN
                     ));
                 }
                 let entries: Vec<_> = raw
@@ -235,7 +254,7 @@ fn render_memory_recall(workspace: &Path, instruction: &str) -> Result<String> {
     let memory_prompt = memory.build_prompt(instruction, None)?;
 
     let mut output = String::new();
-    output.push_str("TopAgent memory recall\n");
+    output.push_str(&format!("{PRODUCT_NAME} memory recall\n"));
     output.push_str(&format!("Workspace: {}\n", workspace.display()));
     output.push_str(&format!("Instruction: {}\n", instruction));
     output.push('\n');
@@ -313,6 +332,76 @@ fn render_memory_recall(workspace: &Path, instruction: &str) -> Result<String> {
     Ok(output)
 }
 
+fn render_trajectory_list(workspace: &Path) -> Result<String> {
+    let mut output = String::new();
+    output.push_str(&format!("{PRODUCT_NAME} memory trajectory list\n"));
+    output.push_str(&format!("Workspace: {}\n", workspace.display()));
+
+    let mut paths =
+        artifact_util::list_files(&workspace.join(MEMORY_TRAJECTORIES_RELATIVE_DIR), "json")?;
+    paths.sort_by(|left, right| right.cmp(left));
+    if paths.is_empty() {
+        output.push_str("No saved trajectories found.\n");
+        return Ok(output);
+    }
+
+    for path in paths {
+        let Some(trajectory) = parse_saved_trajectory(&path)? else {
+            continue;
+        };
+        output.push_str(&format!(
+            "- {} | {} | {}\n",
+            path.file_name().unwrap().to_string_lossy(),
+            trajectory.governance.review_state.as_str(),
+            trajectory.task_intent
+        ));
+    }
+
+    Ok(output)
+}
+
+fn render_trajectory_show(workspace: &Path, id: &str) -> Result<String> {
+    let path = resolve_trajectory_path(workspace, id)?;
+    let body = std::fs::read_to_string(&path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(format!(
+        "{PRODUCT_NAME} memory trajectory show\nWorkspace: {}\nPath: {}\n\n{}",
+        workspace.display(),
+        path.display(),
+        body
+    ))
+}
+
+fn review_trajectory(workspace: &Path, id: &str) -> Result<String> {
+    let path = resolve_trajectory_path(workspace, id)?;
+    let saved = crate::memory::mark_trajectory_ready(&path)?
+        .ok_or_else(|| anyhow!("trajectory `{}` could not be marked ready", id))?;
+    Ok(format!(
+        "{PRODUCT_NAME} memory trajectory review\nWorkspace: {}\nReady for export: {}\n",
+        workspace.display(),
+        saved
+    ))
+}
+
+fn export_selected_trajectory(workspace: &Path, id: &str) -> Result<String> {
+    let path = resolve_trajectory_path(workspace, id)?;
+    let exported = crate::memory::write_exported_trajectory(workspace, &path)?
+        .ok_or_else(|| anyhow!("trajectory `{}` could not be exported", id))?;
+    Ok(format!(
+        "{PRODUCT_NAME} memory trajectory export\nWorkspace: {}\nExported: {}\n",
+        workspace.display(),
+        exported
+    ))
+}
+
+fn resolve_trajectory_path(workspace: &Path, id: &str) -> Result<PathBuf> {
+    artifact_util::resolve_unique_artifact_path(
+        &workspace.join(MEMORY_TRAJECTORIES_RELATIVE_DIR),
+        id,
+        "json",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,8 +411,7 @@ mod tests {
     #[test]
     fn test_render_memory_status_reports_user_and_workspace_layers() {
         let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/notes")).unwrap();
         fs::write(
             user_profile_path(temp.path()),
             "# Operator Model\n\n## concise_final_answers\n**Category:** response_style\n**Updated:** <t:1>\n**Preference:** Keep final answers concise.\n",
@@ -331,34 +419,32 @@ mod tests {
         .unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/architecture.md | status: verified | note: runtime\n",
+            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: verified | note: runtime\n",
         )
         .unwrap();
         fs::write(
-            temp.path().join(".topagent/topics/architecture.md"),
+            temp.path().join(".topagent/notes/architecture.md"),
             "# Architecture",
         )
         .unwrap();
-        fs::write(temp.path().join(".topagent/lessons/lesson.md"), "# Lesson").unwrap();
 
         let rendered = render_memory_status(temp.path()).unwrap();
 
         assert!(rendered.contains("Operator model: 1 preference(s)"));
         assert!(rendered.contains("Workspace index: 1 entries"));
         assert!(rendered.contains("Notes:"));
-        assert!(rendered.contains("1 topic(s)"));
+        assert!(rendered.contains("1 note(s)"));
     }
 
     #[test]
     fn test_render_memory_lint_clean_memory_and_user() {
         let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+        fs::create_dir_all(temp.path().join(MEMORY_NOTES_RELATIVE_DIR)).unwrap();
         fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
         fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: arch | file: topics/arch.md | status: verified | note: layout\n",
+            "# TopAgent Memory Index\n\n- topic: arch | file: notes/arch.md | status: verified | note: layout\n",
         )
         .unwrap();
         fs::write(
@@ -376,10 +462,10 @@ mod tests {
     #[test]
     fn test_render_memory_lint_flags_transient_in_memory() {
         let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::create_dir_all(temp.path().join(MEMORY_NOTES_RELATIVE_DIR)).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: deploy | file: topics/deploy.md | status: verified | note: task completed successfully\n",
+            "# TopAgent Memory Index\n\n- topic: deploy | file: notes/deploy.md | status: verified | note: task completed successfully\n",
         )
         .unwrap();
 
@@ -391,7 +477,7 @@ mod tests {
     #[test]
     fn test_render_memory_lint_flags_forbidden_in_user() {
         let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::create_dir_all(temp.path().join(MEMORY_NOTES_RELATIVE_DIR)).unwrap();
         fs::write(
             user_profile_path(temp.path()),
             "# Operator Model\n\n## arch\n**Category:** style\n**Updated:** <t:1>\n**Preference:** The architecture uses microservices.\n",
@@ -406,17 +492,16 @@ mod tests {
     #[test]
     fn test_render_memory_recall_shows_provenance() {
         let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/notes")).unwrap();
         fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
         fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/architecture.md | status: verified | note: runtime layout\n",
+            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: verified | note: runtime layout\n",
         )
         .unwrap();
         fs::write(
-            temp.path().join(".topagent/topics/architecture.md"),
+            temp.path().join(".topagent/notes/architecture.md"),
             "# Architecture\nruntime layout details",
         )
         .unwrap();
@@ -430,8 +515,7 @@ mod tests {
     #[test]
     fn test_render_memory_recall_empty_workspace() {
         let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+        fs::create_dir_all(temp.path().join(MEMORY_NOTES_RELATIVE_DIR)).unwrap();
         fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
         fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
         fs::write(
@@ -447,7 +531,7 @@ mod tests {
     #[test]
     fn test_lint_valid_user_md_no_warnings() {
         let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::create_dir_all(temp.path().join(MEMORY_NOTES_RELATIVE_DIR)).unwrap();
         fs::write(
             user_profile_path(temp.path()),
             "# Operator Model\n\n## concise_final_answers\n**Category:** response_style\n**Updated:** <t:1>\n**Preference:** Keep it brief.\n",
@@ -462,7 +546,7 @@ mod tests {
     #[test]
     fn test_lint_oversized_user_md_reports_error_or_warning() {
         let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::create_dir_all(temp.path().join(MEMORY_NOTES_RELATIVE_DIR)).unwrap();
         let mut content = String::from(
             "# Operator Model\n\n## big_pref\n**Category:** style\n**Updated:** <t:1>\n**Preference:** ",
         );
@@ -482,10 +566,10 @@ mod tests {
     #[test]
     fn test_lint_memory_md_flags_verbose_instructions() {
         let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::create_dir_all(temp.path().join(MEMORY_NOTES_RELATIVE_DIR)).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: deploy | file: topics/deploy.md | status: verified | note: the agent should always deploy carefully\n",
+            "# TopAgent Memory Index\n\n- topic: deploy | file: notes/deploy.md | status: verified | note: the agent should always deploy carefully\n",
         )
         .unwrap();
         let output = render_memory_lint(temp.path()).unwrap();
@@ -496,7 +580,7 @@ mod tests {
     #[test]
     fn test_lint_memory_md_procedure_redirect() {
         let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::create_dir_all(temp.path().join(MEMORY_NOTES_RELATIVE_DIR)).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
             "# TopAgent Memory Index\n\n- topic: deploy procedure | file: procedures/deploy.md | status: verified | note: step-by-step deployment\n",
@@ -509,13 +593,12 @@ mod tests {
     #[test]
     fn test_lint_clean_memory_md_no_warnings() {
         let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+        fs::create_dir_all(temp.path().join(MEMORY_NOTES_RELATIVE_DIR)).unwrap();
         fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
         fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: arch | file: topics/arch.md | status: verified | note: service layout\n",
+            "# TopAgent Memory Index\n\n- topic: arch | file: notes/arch.md | status: verified | note: service layout\n",
         )
         .unwrap();
         let output = render_memory_lint(temp.path()).unwrap();
@@ -527,7 +610,7 @@ mod tests {
     #[test]
     fn test_lint_output_includes_summary_line() {
         let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
+        fs::create_dir_all(temp.path().join(MEMORY_NOTES_RELATIVE_DIR)).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
             "# TopAgent Memory Index\n\n",
@@ -573,40 +656,38 @@ mod tests {
     #[test]
     fn test_recall_topic_shows_file_path_in_provenance() {
         let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+        fs::create_dir_all(temp.path().join(".topagent/notes")).unwrap();
         fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
         fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/arch.md | status: verified | note: service layout\n",
+            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/arch.md | status: verified | note: service layout\n",
         )
         .unwrap();
         fs::write(
-            temp.path().join(".topagent/topics/arch.md"),
+            temp.path().join(".topagent/notes/arch.md"),
             "# Architecture\nservice layout details",
         )
         .unwrap();
 
         let output = render_memory_recall(temp.path(), "inspect service architecture").unwrap();
         assert!(output.contains("Provenance"));
-        assert!(output.contains("topics/arch.md"));
+        assert!(output.contains("notes/arch.md"));
     }
 
     #[test]
     fn test_recall_total_prompt_bytes_is_bounded() {
         let temp = TempDir::new().unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
-        fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+        fs::create_dir_all(temp.path().join(MEMORY_NOTES_RELATIVE_DIR)).unwrap();
         fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
         fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/arch.md | status: verified | note: service layout\n",
+            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/arch.md | status: verified | note: service layout\n",
         )
         .unwrap();
         fs::write(
-            temp.path().join(".topagent/topics/arch.md"),
+            temp.path().join(".topagent/notes/arch.md"),
             "# Architecture\nservice layout details",
         )
         .unwrap();

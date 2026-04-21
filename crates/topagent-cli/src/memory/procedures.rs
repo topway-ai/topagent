@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 use topagent_core::BehaviorContract;
 
-use super::{WorkspaceMemory, artifact_filename, compact_text_line, score_text_relevance};
+use super::{WorkspaceMemory, artifact_filename, compact_text_line, score_text_relevance, slugify, unix_timestamp_secs};
 use crate::managed_files::write_managed_file;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +82,7 @@ pub(crate) fn save_procedure(
         .with_context(|| format!("failed to create {}", procedures_dir.display()))?;
 
     let timestamp = unix_timestamp_secs();
-    let filename = format!("{}-{}.md", timestamp, slugify_title(&draft.title));
+    let filename = format!("{}-{}.md", timestamp, slugify(&draft.title, "procedure"));
     let path = procedures_dir.join(&filename);
     let content = render_procedure_markdown(&ParsedProcedure {
         filename: filename.clone(),
@@ -588,30 +587,6 @@ fn merge_unique_items(existing: &[String], incoming: &[String], max_items: usize
     }
     merged
 }
-
-fn slugify_title(title: &str) -> String {
-    let slug = title
-        .chars()
-        .filter(|ch| ch.is_alphanumeric() || *ch == ' ' || *ch == '-')
-        .collect::<String>()
-        .chars()
-        .take(48)
-        .collect::<String>()
-        .replace(' ', "-");
-    if slug.is_empty() {
-        "procedure".to_string()
-    } else {
-        slug
-    }
-}
-
-fn unix_timestamp_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

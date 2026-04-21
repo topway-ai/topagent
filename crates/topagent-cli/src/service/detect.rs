@@ -1,3 +1,4 @@
+use crate::commands::surface::PRODUCT_NAME;
 use anyhow::{Context, Result, anyhow};
 use std::path::{Path, PathBuf};
 
@@ -15,9 +16,9 @@ pub(super) struct InstallRoot {
 
 pub(super) fn resolve_current_exe() -> Result<PathBuf> {
     std::env::current_exe()
-        .context("cannot determine the TopAgent binary path")?
+        .context(format!("cannot determine the {PRODUCT_NAME} binary path"))?
         .canonicalize()
-        .context("cannot resolve the TopAgent binary path")
+        .context(format!("cannot resolve the {PRODUCT_NAME} binary path"))
 }
 
 pub(super) fn detect_install_root() -> Result<PathBuf> {
@@ -31,7 +32,7 @@ pub(super) fn detect_install_root_from_exe(exe: &Path) -> Result<InstallRoot> {
     {
         let repo_root = target_dir.parent().ok_or_else(|| {
             anyhow!(
-                "TopAgent is running from a target directory, but the repo root could not be determined."
+                "{PRODUCT_NAME} is running from a target directory, but the repo root could not be determined."
             )
         })?;
         if looks_like_source_checkout(repo_root) {
@@ -41,12 +42,12 @@ pub(super) fn detect_install_root_from_exe(exe: &Path) -> Result<InstallRoot> {
             });
         }
         return Err(anyhow!(
-            "TopAgent is running from a target directory, but this does not look like a TopAgent source checkout. Re-run from the repo root or install the binary into a stable directory before `topagent install`."
+            "{PRODUCT_NAME} is running from a target directory, but this does not look like a {PRODUCT_NAME} source checkout. Re-run from the repo root or install the binary into a stable directory before `topagent install`."
         ));
     }
 
     let install_dir = exe.parent().ok_or_else(|| {
-        anyhow!("Could not determine the directory that contains the TopAgent binary.")
+        anyhow!("Could not determine the directory that contains the {PRODUCT_NAME} binary.")
     })?;
     Ok(InstallRoot {
         kind: InstallRootKind::InstalledBinary,

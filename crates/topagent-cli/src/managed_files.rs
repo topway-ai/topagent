@@ -2,10 +2,14 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
 
+use crate::commands::surface::PRODUCT_NAME;
 use crate::config::defaults::TOPAGENT_SERVICE_MANAGED_KEY;
 
 pub(crate) const TOPAGENT_MANAGED_HEADER: &str =
     "# Managed by TopAgent. Safe to remove with `topagent uninstall`.";
+// Note: TOPAGENT_MANAGED_HEADER is intentionally static — it is written into
+// files on disk and changing it would break is_topagent_managed_file() for
+// existing deployments.
 
 pub(crate) fn read_managed_env_metadata(path: &Path) -> Result<HashMap<String, String>> {
     if !path.exists() {
@@ -52,7 +56,7 @@ pub(crate) fn assert_managed_or_absent(path: &Path, label: &str) -> Result<()> {
     }
 
     Err(anyhow::anyhow!(
-        "Refusing to overwrite existing {} at {} because it was not created by TopAgent. Move it aside or remove it, then run `topagent install` again.",
+        "Refusing to overwrite existing {} at {} because it was not created by {PRODUCT_NAME}. Move it aside or remove it, then run `topagent install` again.",
         label,
         path.display()
     ))
@@ -64,7 +68,7 @@ pub(crate) fn ensure_service_setup_present(unit_path: &Path, env_path: &Path) ->
     }
 
     Err(anyhow::anyhow!(
-        "TopAgent is not installed yet. Run `topagent install` first."
+        format!("{PRODUCT_NAME} is not installed yet. Run `topagent install` first.")
     ))
 }
 

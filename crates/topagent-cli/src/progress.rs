@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use crate::commands::surface::PRODUCT_NAME;
 use std::sync::{Arc, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -167,34 +168,34 @@ fn format_cli_status(update: &ProgressUpdate, elapsed: Duration, heartbeat: bool
 fn format_telegram_status(update: &ProgressUpdate, elapsed: Duration, heartbeat: bool) -> String {
     let seconds = elapsed.as_secs();
     match update.kind {
-        ProgressKind::Completed => format!("TopAgent completed in {}s.", seconds),
+        ProgressKind::Completed => format!("{PRODUCT_NAME} completed in {}s.", seconds),
         ProgressKind::Failed => format!(
-            "TopAgent failed after {}s.\n{}",
+            "{PRODUCT_NAME} failed after {}s.\n{}",
             seconds,
             trim_failed_message(update)
         ),
-        ProgressKind::Stopped => format!("TopAgent stopped after {}s.", seconds),
+        ProgressKind::Stopped => format!("{PRODUCT_NAME} stopped after {}s.", seconds),
         ProgressKind::Stopping => format!(
-            "TopAgent is stopping.\n{}\nElapsed: {}s",
+            "{PRODUCT_NAME} is stopping.\n{}\nElapsed: {}s",
             update.message, seconds
         ),
         ProgressKind::Blocked => {
             let heading = if heartbeat {
-                "TopAgent is still blocked."
+                format!("{PRODUCT_NAME} is still blocked.")
             } else {
-                "TopAgent is blocked."
+                format!("{PRODUCT_NAME} is blocked.")
             };
             format!("{}\n{}\nElapsed: {}s", heading, update.message, seconds)
         }
         ProgressKind::Retrying => format!(
-            "TopAgent is retrying.\n{}\nElapsed: {}s",
+            "{PRODUCT_NAME} is retrying.\n{}\nElapsed: {}s",
             update.message, seconds
         ),
         _ => {
             let heading = if heartbeat {
-                "TopAgent is still working."
+                format!("{PRODUCT_NAME} is still working.")
             } else {
-                "TopAgent is working."
+                format!("{PRODUCT_NAME} is working.")
             };
             format!("{}\n{}\nElapsed: {}s", heading, update.message, seconds)
         }

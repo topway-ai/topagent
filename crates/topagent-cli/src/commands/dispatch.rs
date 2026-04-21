@@ -2,7 +2,6 @@ use anyhow::Result;
 
 use crate::commands::memory_cli::run_memory_command;
 use crate::commands::procedure_cli::run_procedure_command;
-use crate::commands::trajectory_cli::run_trajectory_command;
 use crate::config::defaults::CliParams;
 use crate::doctor::run_doctor;
 use crate::service::{
@@ -10,10 +9,9 @@ use crate::service::{
 };
 use crate::telegram::run_telegram;
 
-use super::checkpoint_cli::run_checkpoint_command;
 use super::config::run_config_inspect;
 use super::oneshot::run_one_shot;
-use super::run::run_session_status;
+use super::run::{run_checkpoint_diff, run_checkpoint_restore, run_session_status};
 use super::types::{Commands, ConfigCommands, RunCommands, ToolAuthoringMode};
 
 pub(crate) fn dispatch(
@@ -31,15 +29,10 @@ pub(crate) fn dispatch(
         Some(Commands::Model { command }) => run_model_command(command, params),
         Some(Commands::Memory { command }) => run_memory_command(command, params.workspace),
         Some(Commands::Procedure { command }) => run_procedure_command(command, params.workspace),
-        Some(Commands::Trajectory { command }) => run_trajectory_command(command, params.workspace),
         Some(Commands::Run { command }) => match command {
             RunCommands::Status => run_session_status(params.workspace),
-            RunCommands::Diff => {
-                run_checkpoint_command(super::types::CheckpointCommands::Diff, params.workspace)
-            }
-            RunCommands::Restore => {
-                run_checkpoint_command(super::types::CheckpointCommands::Restore, params.workspace)
-            }
+            RunCommands::Diff => run_checkpoint_diff(params.workspace),
+            RunCommands::Restore => run_checkpoint_restore(params.workspace),
         },
         Some(Commands::Upgrade { use_cargo }) => run_upgrade(use_cargo),
         Some(Commands::Uninstall { purge }) => run_uninstall(purge),

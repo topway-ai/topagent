@@ -25,20 +25,23 @@ pub(crate) const HELP_MEMORY_LINT: &str =
 pub(crate) const HELP_MEMORY_RECALL: &str =
     "Dry-run memory retrieval for an instruction and show recall provenance.";
 
+pub(crate) const HELP_MEMORY_TRAJECTORY_LIST: &str = "List saved trajectories.";
+pub(crate) const HELP_MEMORY_TRAJECTORY_SHOW: &str = "Show one saved trajectory.";
+pub(crate) const HELP_MEMORY_TRAJECTORY_REVIEW: &str =
+    "Mark a trajectory ready for export after review.";
+pub(crate) const HELP_MEMORY_TRAJECTORY_EXPORT: &str = "Export a reviewed trajectory.";
+
 pub(crate) const HELP_PROCEDURE_LIST: &str = "List saved procedures.";
 pub(crate) const HELP_PROCEDURE_SHOW: &str = "Show one saved procedure.";
 pub(crate) const HELP_PROCEDURE_PRUNE: &str = "Remove superseded and disabled procedures.";
 pub(crate) const HELP_PROCEDURE_DISABLE: &str = "Mark a procedure disabled.";
 
-pub(crate) const HELP_TRAJECTORY_LIST: &str = "List saved trajectories.";
-pub(crate) const HELP_TRAJECTORY_SHOW: &str = "Show one saved trajectory.";
-pub(crate) const HELP_TRAJECTORY_REVIEW: &str = "Mark a trajectory ready for export after review.";
-pub(crate) const HELP_TRAJECTORY_EXPORT: &str = "Export a reviewed trajectory.";
-
-pub(crate) const UNINSTALL_PRESERVED: &str = "Neither uninstall nor purge removes the workspace directory itself. \
-     Delete it manually if needed.";
-pub(crate) const UNINSTALL_PURGE_EXTRA: &str =
-    "Purge also removes workspace .topagent/ data and the model cache.";
-
-pub(crate) const MODEL_CHANGE_SEMANTICS: &str = "topagent model set and topagent model pick change only the model, not the provider. \
-     To change the provider, re-run topagent setup.";
+pub(crate) const TELEGRAM_COMMANDS: &[(&str, &str)] = &[
+    ("/start", "show configuration and help"),
+    ("/help", "show this message"),
+    ("/stop", "stop the current task"),
+    ("/approvals", "list pending approvals for this chat"),
+    ("/approve <id>", "approve a pending action"),
+    ("/deny <id>", "deny a pending action"),
+    ("/reset", "clear this chat's saved transcript"),
+];

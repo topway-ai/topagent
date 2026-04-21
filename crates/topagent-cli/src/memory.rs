@@ -23,10 +23,16 @@ use crate::managed_files::write_managed_file;
 
 const MEMORY_ROOT_DIR: &str = ".topagent";
 pub(crate) const MEMORY_INDEX_RELATIVE_PATH: &str = ".topagent/MEMORY.md";
-pub(crate) const MEMORY_TOPICS_RELATIVE_DIR: &str = ".topagent/topics";
-pub(crate) const MEMORY_LESSONS_RELATIVE_DIR: &str = ".topagent/lessons";
+pub(crate) const MEMORY_NOTES_RELATIVE_DIR: &str = ".topagent/notes";
 pub(crate) const MEMORY_PROCEDURES_RELATIVE_DIR: &str = ".topagent/procedures";
 pub(crate) const MEMORY_TRAJECTORIES_RELATIVE_DIR: &str = ".topagent/trajectories";
+pub(crate) const TELEGRAM_HISTORY_RELATIVE_DIR: &str = ".topagent/telegram-history";
+
+// Shared diagnostic size thresholds used by doctor and memory lint.
+pub(crate) const USER_MD_SIZE_WARN: usize = 2048;
+pub(crate) const USER_MD_SIZE_ERROR: usize = 4096;
+pub(crate) const MEMORY_MD_SIZE_WARN: usize = 1500;
+pub(crate) const MEMORY_MD_SIZE_ERROR: usize = 3000;
 
 const AUTO_PROMOTED_TAG: &str = "curated";
 
@@ -81,6 +87,38 @@ const STOP_WORDS: &[&str] = &[
     "your",
 ];
 
+fn migrate_legacy_notes_layout(workspace_root: &Path) -> Result<()> {
+    let root = workspace_root.join(MEMORY_ROOT_DIR);
+    let legacy_topics = root.join("topics");
+    let legacy_lessons = root.join("lessons");
+    let notes_dir = root.join("notes");
+
+    if !notes_dir.exists() {
+        std::fs::create_dir_all(&notes_dir)
+            .with_context(|| format!("failed to create {}", notes_dir.display()))?;
+    }
+
+    for legacy_dir in &[&legacy_topics, &legacy_lessons] {
+        if legacy_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(legacy_dir) {
+                for entry in entries.flatten() {
+                    let src = entry.path();
+                    if src.is_file() {
+                        let dest = notes_dir.join(entry.file_name());
+                        if !dest.exists() {
+                            std::fs::copy(&src, &dest).with_context(|| {
+                                format!("failed to migrate {} to {}", src.display(), dest.display())
+                            })?;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 fn memory_contract() -> BehaviorContract {
     BehaviorContract::default()
 }
@@ -113,8 +151,7 @@ pub(crate) struct MemoryPromptStats {
 pub(crate) struct WorkspaceMemory {
     workspace_root: PathBuf,
     index_path: PathBuf,
-    topics_dir: PathBuf,
-    lessons_dir: PathBuf,
+    notes_dir: PathBuf,
     procedures_dir: PathBuf,
     trajectories_dir: PathBuf,
 }
@@ -123,8 +160,7 @@ impl WorkspaceMemory {
     pub(crate) fn new(workspace_root: PathBuf) -> Self {
         Self {
             index_path: workspace_root.join(MEMORY_INDEX_RELATIVE_PATH),
-            topics_dir: workspace_root.join(MEMORY_TOPICS_RELATIVE_DIR),
-            lessons_dir: workspace_root.join(MEMORY_LESSONS_RELATIVE_DIR),
+            notes_dir: workspace_root.join(MEMORY_NOTES_RELATIVE_DIR),
             procedures_dir: workspace_root.join(MEMORY_PROCEDURES_RELATIVE_DIR),
             trajectories_dir: workspace_root.join(MEMORY_TRAJECTORIES_RELATIVE_DIR),
             workspace_root,
@@ -136,14 +172,13 @@ impl WorkspaceMemory {
     }
 
     pub(crate) fn ensure_layout(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.topics_dir)
-            .with_context(|| format!("failed to create {}", self.topics_dir.display()))?;
-        std::fs::create_dir_all(&self.lessons_dir)
-            .with_context(|| format!("failed to create {}", self.lessons_dir.display()))?;
+        std::fs::create_dir_all(&self.notes_dir)
+            .with_context(|| format!("failed to create {}", self.notes_dir.display()))?;
         std::fs::create_dir_all(&self.procedures_dir)
             .with_context(|| format!("failed to create {}", self.procedures_dir.display()))?;
         std::fs::create_dir_all(&self.trajectories_dir)
             .with_context(|| format!("failed to create {}", self.trajectories_dir.display()))?;
+        migrate_legacy_notes_layout(&self.workspace_root)?;
         migrate_legacy_operator_preferences(&self.workspace_root)
             .map_err(|err| anyhow::anyhow!(err.to_string()))?;
 
@@ -241,19 +276,16 @@ fn normalize_memory_file(file: &str) -> String {
 
 fn display_memory_file(file: &str) -> String {
     let normalized = normalize_memory_file(file);
-    if normalized.starts_with("topics/")
-        || normalized.starts_with("lessons/")
-        || normalized.starts_with("procedures/")
-    {
+    if normalized.starts_with("notes/") || normalized.starts_with("procedures/") {
         normalized
     } else {
-        format!("topics/{normalized}")
+        format!("notes/{normalized}")
     }
 }
 
 fn allowed_memory_prefix(contract: &BehaviorContract, normalized: &str) -> bool {
-    let topic_prefix = format!("{}/", contract.memory.topic_file_relative_dir);
-    if normalized.starts_with(&topic_prefix) {
+    let notes_prefix = format!("{}/", contract.memory.note_file_relative_dir);
+    if normalized.starts_with(&notes_prefix) {
         return true;
     }
 
@@ -317,6 +349,30 @@ fn artifact_filename(path: &str) -> Option<&str> {
     Path::new(path).file_name().and_then(|name| name.to_str())
 }
 
+pub(super) fn slugify(input: &str, fallback: &str) -> String {
+    let slug = input
+        .chars()
+        .filter(|ch| ch.is_alphanumeric() || *ch == ' ' || *ch == '-')
+        .collect::<String>()
+        .chars()
+        .take(48)
+        .collect::<String>()
+        .replace(' ', "-");
+    if slug.is_empty() {
+        fallback.to_string()
+    } else {
+        slug
+    }
+}
+
+pub(super) fn unix_timestamp_secs() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::procedures::{ProcedureDraft, save_procedure};
@@ -337,14 +393,14 @@ mod tests {
         fs::write(path, body).unwrap();
     }
 
-    fn write_topic(workspace: &Path, name: &str, body: &str) {
-        let path = workspace.join(MEMORY_TOPICS_RELATIVE_DIR).join(name);
+    fn write_lesson(workspace: &Path, name: &str, body: &str) {
+        let path = workspace.join(MEMORY_NOTES_RELATIVE_DIR).join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, body).unwrap();
     }
 
-    fn write_lesson(workspace: &Path, name: &str, body: &str) {
-        let path = workspace.join(MEMORY_LESSONS_RELATIVE_DIR).join(name);
+    fn write_note(workspace: &Path, name: &str, body: &str) {
+        let path = workspace.join(MEMORY_NOTES_RELATIVE_DIR).join(name);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, body).unwrap();
     }
@@ -497,13 +553,13 @@ path = "src/lib.rs"
     }
 
     #[test]
-    fn test_ensure_layout_creates_index_and_topics_dir() {
+    fn test_ensure_layout_creates_index_and_notes_dir() {
         let temp = TempDir::new().unwrap();
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
         memory.ensure_layout().unwrap();
 
         assert!(temp.path().join(MEMORY_INDEX_RELATIVE_PATH).is_file());
-        assert!(temp.path().join(MEMORY_TOPICS_RELATIVE_DIR).is_dir());
+        assert!(temp.path().join(MEMORY_NOTES_RELATIVE_DIR).is_dir());
     }
 
     #[test]
@@ -511,7 +567,7 @@ path = "src/lib.rs"
         let temp = TempDir::new().unwrap();
         write_memory_index(
             temp.path(),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/architecture.md | status: verified | note: keep this\n- topic: architecture | file: topics/architecture.md | status: verified | note: keep this\n",
+            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: verified | note: keep this\n- topic: architecture | file: notes/architecture.md | status: verified | note: keep this\n",
         );
 
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
@@ -528,7 +584,7 @@ path = "src/lib.rs"
         let mut body = String::from("# TopAgent Memory Index\n\n");
         for idx in 0..40 {
             body.push_str(&format!(
-                "- topic: topic-{idx} | file: topics/topic-{idx}.md | status: verified | note: durable note {idx} with enough text to make the line non-trivial\n"
+                "- topic: topic-{idx} | file: notes/topic-{idx}.md | status: verified | note: durable note {idx} with enough text to make the line non-trivial\n",
             ));
         }
         write_memory_index(temp.path(), &body);
@@ -551,14 +607,14 @@ path = "src/lib.rs"
         let temp = TempDir::new().unwrap();
         write_memory_index(
             temp.path(),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/architecture.md | status: verified | tags: runtime, session | note: agent lifecycle and session model\n- topic: security | file: topics/security.md | status: verified | tags: secret, redaction, telegram | note: do not persist secrets or redacted content\n",
+            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: verified | tags: runtime, session | note: agent lifecycle and session model\n- topic: security | file: notes/security.md | status: verified | tags: secret, redaction, telegram | note: do not persist secrets or redacted content\n",
         );
-        write_topic(
+        write_note(
             temp.path(),
             "architecture.md",
             "# Architecture\nsession details",
         );
-        write_topic(
+        write_note(
             temp.path(),
             "security.md",
             "# Security\nsecret handling details",
@@ -633,7 +689,7 @@ path = "src/lib.rs"
         let temp = TempDir::new().unwrap();
         write_memory_index(
             temp.path(),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/architecture.md | status: tentative | note: old assumption\n",
+            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: tentative | note: old assumption\n",
         );
 
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
@@ -655,9 +711,9 @@ path = "src/lib.rs"
         .unwrap();
         write_memory_index(
             temp.path(),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/architecture.md | status: verified | note: runtime details\n",
+            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: verified | note: runtime details\n",
         );
-        write_topic(
+        write_note(
             temp.path(),
             "architecture.md",
             "# Architecture\nruntime details",
@@ -757,9 +813,9 @@ path = "src/lib.rs"
         let temp = TempDir::new().unwrap();
         write_memory_index(
             temp.path(),
-            "# TopAgent Memory Index\n\n- topic: approval flow | file: topics/approval.md | status: verified | note: current repo approval flow\n",
+            "# TopAgent Memory Index\n\n- topic: approval flow | file: notes/approval.md | status: verified | note: current repo approval flow\n",
         );
-        write_topic(temp.path(), "approval.md", "# Approval\nrepo flow");
+        write_note(temp.path(), "approval.md", "# Approval\nrepo flow");
         fs::create_dir_all(temp.path().join(MEMORY_TRAJECTORIES_RELATIVE_DIR)).unwrap();
         fs::write(
             temp.path()
@@ -952,7 +1008,7 @@ path = "src/lib.rs"
         assert!(lesson_path.is_file());
         assert!(procedure_path.is_file());
         assert!(trajectory_path.is_file());
-        assert!(memory_index.contains("file: lessons/"));
+        assert!(memory_index.contains("file: notes/"));
         assert!(memory_index.contains("file: procedures/"));
         assert!(lesson.starts_with("# "));
         assert!(procedure.contains("## Steps"));
@@ -1026,7 +1082,7 @@ path = "src/lib.rs"
         .unwrap();
 
         assert_eq!(report, TaskPromotionReport::default());
-        assert!(!temp.path().join(MEMORY_LESSONS_RELATIVE_DIR).exists());
+        assert!(!temp.path().join(MEMORY_NOTES_RELATIVE_DIR).exists());
         assert!(!temp.path().join(MEMORY_PROCEDURES_RELATIVE_DIR).exists());
         assert!(!temp.path().join(MEMORY_TRAJECTORIES_RELATIVE_DIR).exists());
     }
@@ -1059,7 +1115,6 @@ path = "src/lib.rs"
         .unwrap();
 
         assert_eq!(report, TaskPromotionReport::default());
-        assert!(!temp.path().join(MEMORY_LESSONS_RELATIVE_DIR).exists());
         assert!(!temp.path().join(MEMORY_PROCEDURES_RELATIVE_DIR).exists());
         assert!(!temp.path().join(MEMORY_TRAJECTORIES_RELATIVE_DIR).exists());
     }
@@ -1085,7 +1140,6 @@ path = "src/lib.rs"
         .unwrap();
 
         assert_eq!(report, TaskPromotionReport::default());
-        assert!(!temp.path().join(MEMORY_LESSONS_RELATIVE_DIR).exists());
         assert!(!temp.path().join(MEMORY_PROCEDURES_RELATIVE_DIR).exists());
         assert!(!temp.path().join(MEMORY_TRAJECTORIES_RELATIVE_DIR).exists());
     }
@@ -1447,9 +1501,9 @@ path = "src/lib.rs"
         let temp = TempDir::new().unwrap();
         write_memory_index(
             temp.path(),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/architecture.md | status: verified | note: runtime details\n",
+            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: verified | note: runtime details\n",
         );
-        write_topic(
+        write_note(
             temp.path(),
             "architecture.md",
             "# Architecture\nruntime details",
@@ -1460,17 +1514,17 @@ path = "src/lib.rs"
             .build_prompt("inspect runtime architecture", None)
             .unwrap();
 
-        let topic_notes: Vec<_> = prompt
+        let note_entries: Vec<_> = prompt
             .stats
             .provenance_notes
             .iter()
-            .filter(|n| n.starts_with("topic |"))
+            .filter(|n| n.starts_with("lesson |") || n.starts_with("note |"))
             .collect();
-        assert!(!topic_notes.is_empty());
-        let note = topic_notes[0];
+        assert!(!note_entries.is_empty());
+        let note = note_entries[0];
         assert!(note.contains("advisory"));
         assert!(note.contains("matched: score"));
-        assert!(note.contains("topics/architecture.md"));
+        assert!(note.contains("notes/architecture.md"));
     }
 
     #[test]
@@ -1552,10 +1606,10 @@ path = "src/lib.rs"
         let report = memory.consolidate_memory_if_needed().unwrap();
         let rewritten = fs::read_to_string(temp.path().join(MEMORY_INDEX_RELATIVE_PATH)).unwrap();
 
-        assert_eq!(report.promoted_lessons, 1);
+        assert_eq!(report.promoted_notes, 1);
         assert!(report.normalized_dates >= 1);
         assert!(rewritten.contains("topic: Approval Mailbox"));
-        assert!(rewritten.contains("file: lessons/1700000000-approval-mailbox.md"));
+        assert!(rewritten.contains("file: notes/1700000000-approval-mailbox.md"));
         assert!(rewritten.contains("saved 2023-11-14"));
     }
 
@@ -1564,7 +1618,7 @@ path = "src/lib.rs"
         let temp = TempDir::new().unwrap();
         write_memory_index(
             temp.path(),
-            "# TopAgent Memory Index\n\n- topic: approval mailbox | file: topics/approval.md | status: verified | tags: approval | note: operator approval gates runtime mutations\n- topic: approval mailbox | file: topics/approval.md | status: stale | tags: approval | note: runtime still allows mutation without approval\n",
+            "# TopAgent Memory Index\n\n- topic: approval mailbox | file: notes/approval.md | status: verified | tags: approval | note: operator approval gates runtime mutations\n- topic: approval mailbox | file: notes/approval.md | status: stale | tags: approval | note: runtime still allows mutation without approval\n",
         );
 
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
@@ -1583,7 +1637,7 @@ path = "src/lib.rs"
         let temp = TempDir::new().unwrap();
         write_memory_index(temp.path(), "# TopAgent Memory Index\n\n");
 
-        for idx in 0..(memory_contract().memory.max_curated_lessons + 2) {
+        for idx in 0..(memory_contract().memory.max_curated_notes + 2) {
             let timestamp = 1700001000 + idx as i64;
             write_lesson(
                 temp.path(),
@@ -1599,12 +1653,12 @@ path = "src/lib.rs"
         let rewritten = fs::read_to_string(temp.path().join(MEMORY_INDEX_RELATIVE_PATH)).unwrap();
 
         assert_eq!(
-            rewritten.matches("| file: lessons/").count(),
-            memory_contract().memory.max_curated_lessons
+            rewritten.matches("file: notes/").count(),
+            memory_contract().memory.max_curated_notes
         );
         assert_eq!(
-            report.promoted_lessons,
-            memory_contract().memory.max_curated_lessons
+            report.promoted_notes,
+            memory_contract().memory.max_curated_notes
         );
         assert!(report.pruned_entries >= 2);
     }
@@ -1752,7 +1806,7 @@ path = "src/lib.rs"
         .unwrap();
 
         assert_eq!(report, TaskPromotionReport::default());
-        assert!(!temp.path().join(MEMORY_LESSONS_RELATIVE_DIR).exists());
+        assert!(!temp.path().join(MEMORY_NOTES_RELATIVE_DIR).exists());
         assert!(!temp.path().join(MEMORY_PROCEDURES_RELATIVE_DIR).exists());
         assert!(!temp.path().join(MEMORY_TRAJECTORIES_RELATIVE_DIR).exists());
     }

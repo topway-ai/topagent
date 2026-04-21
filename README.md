@@ -62,7 +62,7 @@ TopAgent uses three prompt-memory layers:
 
 1. **Operator model** — `workspace/.topagent/USER.md` stores stable collaboration preferences; loaded separately and capped tightly
 2. **Workspace index** — `workspace/.topagent/MEMORY.md` is a tiny always-loaded pointer index
-3. **Workspace notes** — `workspace/.topagent/topics/` and `workspace/.topagent/lessons/` hold compact durable notes (topics and lessons) loaded only when relevant
+3. **Workspace notes** — `workspace/.topagent/notes/` holds compact durable notes loaded only when relevant
 
 Procedures (`workspace/.topagent/procedures/`) are reusable playbooks governed by proven reuse, not prompt memory. Trajectories (`workspace/.topagent/trajectories/`) are structured export records, not prompt memory. Both stay off the hot path by default.
 
@@ -100,14 +100,14 @@ topagent model refresh # refresh cached top models
 topagent memory status       # show notes, procedures, and trajectory counts
 topagent memory lint         # lint USER.md and MEMORY.md for size and content policy issues
 topagent memory recall "..." # dry-run memory retrieval for an instruction
+topagent memory trajectory list     # list saved trajectories
+topagent memory trajectory show <id> # show one trajectory
+topagent memory trajectory review <id> # mark a trajectory ready for export
+topagent memory trajectory export <id> # export a reviewed trajectory
 topagent procedure list      # list live procedures
 topagent procedure show <id> # show one procedure
 topagent procedure prune     # remove superseded and disabled procedures
 topagent procedure disable <id> # disable a procedure without deleting it
-topagent trajectory list     # list saved trajectories
-topagent trajectory show <id> # show one trajectory
-topagent trajectory review <id> # mark a trajectory ready for export
-topagent trajectory export <id> # export a reviewed trajectory
 topagent telegram              # run the Telegram bot in the foreground
 topagent service install     # install service without the full interactive flow
 topagent service start       # start the background service
@@ -151,7 +151,7 @@ Workspace memory is separate from `TOPAGENT.md`:
 - `TOPAGENT.md` is for always-on project instructions
 - `.topagent/USER.md` is for stable operator preferences and collaboration habits that should not be mixed into repo memory
 - `.topagent/MEMORY.md` is a tiny durable memory index
-- `.topagent/topics/` and `.topagent/lessons/` hold workspace notes — topics are compact notes by concern, lessons are distilled facts, pitfalls, and rules from verified work
+- `.topagent/notes/` holds workspace notes — compact durable notes loaded only when relevant
 - `.topagent/procedures/` holds reusable workspace-local playbooks distilled from strong verified runs, revised through proven reuse, and loaded lazily in small batches
 - `.topagent/trajectories/` holds compact structured execution traces from high-quality verified runs; they are reviewable export artifacts, not hot-path prompt memory
 - `.topagent/exports/trajectories/` holds reviewed trajectory export packages

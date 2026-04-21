@@ -19,7 +19,7 @@ pub(crate) struct ConsolidationReport {
     pub merged_entries: usize,
     pub contradictions_resolved: usize,
     pub stale_entries_pruned: usize,
-    pub promoted_lessons: usize,
+    pub promoted_notes: usize,
     pub promoted_procedures: usize,
     pub normalized_dates: usize,
     pub pruned_entries: usize,
@@ -36,18 +36,15 @@ pub(super) struct MemoryIndexEntry {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MemoryIndexEntryKind {
-    Topic,
-    Lesson,
+    Note,
     Procedure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum DurableMemoryCategory {
-    ReusableProcedure,
-    RepoOperational,
     OperatorPreference,
-    ReusableLesson,
-    StaleCandidate,
+    ReusableProcedure,
+    DurableNote,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,7 +132,7 @@ impl WorkspaceMemory {
             }
         }
 
-        orientation.lesson_files = list_markdown_files(&self.lessons_dir)?;
+        orientation.lesson_files = list_markdown_files(&self.notes_dir)?;
         orientation.procedure_files = list_markdown_files(&self.procedures_dir)?;
         Ok(orientation)
     }
@@ -185,10 +182,8 @@ impl MemoryIndexEntry {
         let normalized = normalize_memory_file(&self.file);
         if normalized.starts_with("procedures/") {
             MemoryIndexEntryKind::Procedure
-        } else if normalized.starts_with("lessons/") {
-            MemoryIndexEntryKind::Lesson
         } else {
-            MemoryIndexEntryKind::Topic
+            MemoryIndexEntryKind::Note
         }
     }
 }
@@ -233,12 +228,12 @@ impl MemoryCandidate {
         Self {
             entry: MemoryIndexEntry {
                 topic: lesson.title,
-                file: format!("lessons/{}", lesson.filename),
+                file: format!("notes/{}", lesson.filename),
                 status: "verified".to_string(),
                 tags,
                 note,
             },
-            category: DurableMemoryCategory::ReusableLesson,
+            category: DurableMemoryCategory::DurableNote,
             source: MemorySourceKind::SavedLesson,
             saved_at: lesson.saved_at,
         }
@@ -287,7 +282,7 @@ impl MemoryCandidate {
             category: if is_live {
                 DurableMemoryCategory::ReusableProcedure
             } else {
-                DurableMemoryCategory::StaleCandidate
+                DurableMemoryCategory::DurableNote
             },
             source: MemorySourceKind::SavedProcedure,
             saved_at: procedure.saved_at,
@@ -393,17 +388,18 @@ fn status_rank(status: &str) -> usize {
 
 fn classify_entry_category(entry: &MemoryIndexEntry) -> DurableMemoryCategory {
     if normalize_status(&entry.status) == "stale" {
-        return DurableMemoryCategory::StaleCandidate;
+        return DurableMemoryCategory::DurableNote;
     }
 
     let lower_topic = entry.topic.to_ascii_lowercase();
     if entry.file.starts_with("lessons/")
+        || entry.file.starts_with("notes/")
         || entry
             .tags
             .iter()
             .any(|tag| matches!(tag.as_str(), "lesson" | "lessons" | "reusable"))
     {
-        return DurableMemoryCategory::ReusableLesson;
+        return DurableMemoryCategory::DurableNote;
     }
 
     if entry.file.starts_with("procedures/")
@@ -425,16 +421,14 @@ fn classify_entry_category(entry: &MemoryIndexEntry) -> DurableMemoryCategory {
         return DurableMemoryCategory::OperatorPreference;
     }
 
-    DurableMemoryCategory::RepoOperational
+    DurableMemoryCategory::DurableNote
 }
 
 fn candidate_priority(candidate: &MemoryCandidate) -> (usize, usize, usize, i64, &str) {
     let category = match candidate.category {
         DurableMemoryCategory::OperatorPreference => 4,
         DurableMemoryCategory::ReusableProcedure => 3,
-        DurableMemoryCategory::RepoOperational => 2,
-        DurableMemoryCategory::ReusableLesson => 1,
-        DurableMemoryCategory::StaleCandidate => 1,
+        DurableMemoryCategory::DurableNote => 2,
     };
     let source = match candidate.source {
         MemorySourceKind::ManualIndex => 3,
@@ -494,7 +488,7 @@ fn consolidate_candidates(
             let candidate_status_rank = status_rank(&candidate.entry.status);
             if candidate_status_rank < winner_status_rank {
                 report.contradictions_resolved += 1;
-                if candidate.category == DurableMemoryCategory::StaleCandidate {
+                if normalize_status(&candidate.entry.status) == "stale" {
                     report.stale_entries_pruned += 1;
                 }
                 continue;
@@ -533,20 +527,18 @@ fn prune_candidates(
     candidates.sort_by(|left, right| candidate_priority(right).cmp(&candidate_priority(left)));
 
     let mut kept = Vec::new();
-    let mut kept_lessons = 0usize;
+    let mut kept_notes = 0usize;
     let mut kept_procedures = 0usize;
 
     for candidate in candidates {
-        if candidate.category == DurableMemoryCategory::StaleCandidate {
+        if normalize_status(&candidate.entry.status) == "stale" {
             report.stale_entries_pruned += 1;
             report.pruned_entries += 1;
             continue;
         }
 
         match candidate.source {
-            MemorySourceKind::SavedLesson
-                if kept_lessons >= contract.memory.max_curated_lessons =>
-            {
+            MemorySourceKind::SavedLesson if kept_notes >= contract.memory.max_curated_notes => {
                 report.pruned_entries += 1;
                 continue;
             }
@@ -560,7 +552,7 @@ fn prune_candidates(
         }
 
         match candidate.source {
-            MemorySourceKind::SavedLesson => kept_lessons += 1,
+            MemorySourceKind::SavedLesson => kept_notes += 1,
             MemorySourceKind::SavedProcedure => kept_procedures += 1,
             MemorySourceKind::ManualIndex => {}
         }
@@ -574,7 +566,7 @@ fn prune_candidates(
     }
 
     kept.sort_by(|left, right| candidate_priority(right).cmp(&candidate_priority(left)));
-    report.promoted_lessons = kept_lessons;
+    report.promoted_notes = kept_notes;
     report.promoted_procedures = kept_procedures;
     kept
 }

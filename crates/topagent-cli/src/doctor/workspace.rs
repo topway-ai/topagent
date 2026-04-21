@@ -6,18 +6,15 @@ use crate::doctor::lint::{
 };
 use crate::doctor::types::{CheckLevel, CheckResult};
 use crate::memory::{
-    MEMORY_INDEX_RELATIVE_PATH, MEMORY_LESSONS_RELATIVE_DIR, MEMORY_PROCEDURES_RELATIVE_DIR,
-    MEMORY_TOPICS_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR,
+    MEMORY_INDEX_RELATIVE_PATH, MEMORY_MD_SIZE_ERROR, MEMORY_MD_SIZE_WARN,
+    MEMORY_NOTES_RELATIVE_DIR, MEMORY_PROCEDURES_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR,
+    USER_MD_SIZE_ERROR, USER_MD_SIZE_WARN,
 };
 
 pub(crate) const HOOKS_MANIFEST_RELATIVE_PATH: &str = ".topagent/hooks.toml";
 pub(crate) const EXTERNAL_TOOLS_RELATIVE_PATH: &str = ".topagent/external-tools.json";
 pub(crate) const TOOLS_DIR_RELATIVE_PATH: &str = ".topagent/tools";
 
-const USER_MD_SIZE_WARN: usize = 2048;
-const USER_MD_SIZE_ERROR: usize = 4096;
-const MEMORY_MD_SIZE_WARN: usize = 1500;
-const MEMORY_MD_SIZE_ERROR: usize = 3000;
 const MEMORY_MD_MAX_ENTRIES: usize = 24;
 const MEMORY_MD_MAX_NOTE_CHARS: usize = 120;
 
@@ -36,8 +33,7 @@ pub(crate) fn check_workspace_layout(workspace: &Path, checks: &mut Vec<CheckRes
     }
 
     let required_dirs = [
-        MEMORY_TOPICS_RELATIVE_DIR,
-        MEMORY_LESSONS_RELATIVE_DIR,
+        MEMORY_NOTES_RELATIVE_DIR,
         MEMORY_PROCEDURES_RELATIVE_DIR,
         MEMORY_TRAJECTORIES_RELATIVE_DIR,
     ];
@@ -477,8 +473,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let ws = temp.path();
 
-        std::fs::create_dir_all(ws.join(".topagent/topics")).unwrap();
-        std::fs::create_dir_all(ws.join(".topagent/lessons")).unwrap();
+        std::fs::create_dir_all(ws.join(".topagent/notes")).unwrap();
         std::fs::create_dir_all(ws.join(".topagent/procedures")).unwrap();
         std::fs::create_dir_all(ws.join(".topagent/trajectories")).unwrap();
 
@@ -627,7 +622,7 @@ mod tests {
         let mut content = String::from("# TopAgent Memory Index\n\n");
         for i in 0..=MEMORY_MD_MAX_ENTRIES {
             content.push_str(&format!(
-                "- topic: thing_{i} | file: topics/thing_{i}.md | status: verified | note: ok\n"
+                "- topic: thing_{i} | file: notes/thing_{i}.md | status: verified | note: ok\n"
             ));
         }
         std::fs::write(temp.path().join(MEMORY_INDEX_RELATIVE_PATH), &content).unwrap();
@@ -756,8 +751,7 @@ label = "test hook""#,
     #[test]
     fn test_doctor_partial_layout_reports_warnings() {
         let temp = TempDir::new().unwrap();
-        std::fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
-        std::fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+        std::fs::create_dir_all(temp.path().join(".topagent/notes")).unwrap();
         std::fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
             "# TopAgent Memory Index\n",

@@ -1,6 +1,7 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
+use crate::commands::surface::PRODUCT_NAME;
 use crate::commands::ModelCommands;
 use crate::config::defaults::{
     CliParams, OPENROUTER_API_KEY_KEY, TOPAGENT_MODEL_KEY, TOPAGENT_PROVIDER_KEY,
@@ -47,7 +48,7 @@ fn run_model_status(params: CliParams) -> Result<()> {
     let cache_path = openrouter_model_cache_path()?;
     let cached = load_cached_openrouter_models(&cache_path)?;
 
-    println!("TopAgent model status");
+    println!("{PRODUCT_NAME} model status");
     println!(
         "Configured default model: {} [{}] ({})",
         state.model_selection.configured_default.model_id,
@@ -110,7 +111,7 @@ fn run_model_pick(params: CliParams) -> Result<()> {
     let paths = service_paths()?;
     if !paths.env_path.exists() {
         return Err(anyhow::anyhow!(
-            "TopAgent is not set up yet. Run `topagent setup` first."
+            format!("{PRODUCT_NAME} is not set up yet. Run `topagent setup` first.")
         ));
     }
     assert_managed_or_absent(&paths.env_path, "service env file")?;
@@ -158,7 +159,7 @@ fn run_model_pick(params: CliParams) -> Result<()> {
         Some(resolved_model.source),
     )?;
 
-    println!("TopAgent model updated.");
+    println!("{PRODUCT_NAME} model updated.");
     println!("Previous model: {}", report.previous_model);
     println!(
         "Configured model: {} [{}]",
@@ -191,14 +192,14 @@ fn run_model_list() -> Result<()> {
     let current_model = current_resolved.model_id;
     let current_provider = current_resolved.provider;
     let Some(cached) = load_cached_openrouter_models(&cache_path)? else {
-        println!("TopAgent model list");
+        println!("{PRODUCT_NAME} model list");
         println!("Current model: {} [{}]", current_model, current_provider);
         println!("No cached OpenRouter model list found.");
         println!("Run `topagent model refresh` to fetch the current top models.");
         return Ok(());
     };
 
-    println!("TopAgent model list");
+    println!("{PRODUCT_NAME} model list");
     println!(
         "Cached top models: {} (updated {} ago)",
         cached.models.len(),
@@ -266,7 +267,7 @@ fn update_configured_model(
 ) -> Result<ModelUpdateReport> {
     if !paths.env_path.exists() {
         return Err(anyhow::anyhow!(
-            "TopAgent is not installed yet. Run `topagent install` first."
+            format!("{PRODUCT_NAME} is not installed yet. Run `topagent install` first.")
         ));
     }
     assert_managed_or_absent(&paths.env_path, "service env file")?;
@@ -285,7 +286,7 @@ fn update_configured_model(
 
     let service_restarted = restart_service_if_installed(paths).map_err(|err| {
         anyhow::anyhow!(
-            "Updated the configured model from {} to {} in {}, but failed to restart the TopAgent Telegram service. {}",
+            "Updated the configured model from {} to {} in {}, but failed to restart the {PRODUCT_NAME} Telegram service. {}",
             previous_model,
             model_id,
             paths.env_path.display(),
@@ -303,7 +304,7 @@ fn update_configured_model(
 }
 
 fn print_model_update_report(report: &ModelUpdateReport, provider_label: &str) {
-    println!("TopAgent model updated.");
+    println!("{PRODUCT_NAME} model updated.");
     println!("Previous model: {}", report.previous_model);
     println!(
         "Configured model: {} [{}]",

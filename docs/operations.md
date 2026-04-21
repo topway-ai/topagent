@@ -88,13 +88,13 @@ topagent model pick          # pick the configured model interactively
 topagent model list          # show cached top provider models
 topagent model refresh       # refresh the cached provider models
 topagent memory status       # show notes, procedures, and trajectory counts
+topagent memory lint         # lint memory files for size and policy issues
+topagent memory recall "..." # dry-run memory retrieval for an instruction
+topagent memory trajectory list     # list saved trajectories
+topagent memory trajectory show <id> # show one trajectory
+topagent memory trajectory review <id> # mark a trajectory ready for export
+topagent memory trajectory export <id> # export a reviewed trajectory
 topagent procedure list      # list live procedures
-topagent procedure show <id> # show one procedure
-topagent procedure prune     # remove superseded and disabled procedures
-topagent procedure disable <id> [--reason ...] # disable a procedure without deleting it
-topagent trajectory list     # list saved trajectories
-topagent trajectory show <id> # show one trajectory
-topagent trajectory review <id> # mark a trajectory ready for export
 topagent trajectory export <id> # export a reviewed trajectory
 topagent service start       # start the service
 topagent service stop        # stop the service
@@ -200,8 +200,7 @@ The workspace must exist and be a directory. The agent creates a `.topagent/` su
 workspace/.topagent/
   USER.md                    # operator model (stable user preferences)
   MEMORY.md                  # thin workspace memory index (always loaded)
-  topics/                    # workspace notes — topics (durable notes by concern, lazy loaded)
-  lessons/                   # workspace notes — lessons (distilled facts and rules, lazy loaded)
+  notes/                     # workspace notes (durable notes, lazy loaded)
   procedures/                # governed reusable procedures (markdown)
   trajectories/              # local saved trajectory records (JSON)
   exports/trajectories/      # reviewed trajectory export packages (JSON)
@@ -263,11 +262,11 @@ If `sandbox` is omitted, TopAgent rejects the external-tool config. Generated to
 - Safe to inject at task start
 - Should reference topic files or durable facts, not transcript dumps
 
-#### 3. Workspace notes (topics and lessons)
+#### 3. Workspace notes
 
-`workspace/.topagent/topics/*.md` and `workspace/.topagent/lessons/*.md`
+`workspace/.topagent/notes/*.md`
 
-- Store compact durable notes by concern (topics) and distilled facts, pitfalls, and rules (lessons)
+- Store compact durable notes by concern
 - Loaded only when the current task matches the topic
 - Good fits: architecture, runtime behavior, security constraints, open issues
 - Bad fits: shell logs, command dumps, transient plans, cheap repo summaries
@@ -347,7 +346,7 @@ TopAgent keeps memory lightweight with a bounded consolidation step:
 
 ### Notes
 
-Workspace notes are saved under `.topagent/topics/` and `.topagent/lessons/`. Topics capture durable notes by concern; lessons capture distilled facts, pitfalls, and rules from verified work. Both persist across runs and are not affected by `/reset`. `topagent memory status` shows combined counts as "Notes: N topic(s), M lesson(s)".
+Workspace notes are saved under `.topagent/notes/`. Notes persist across runs and are not affected by `/reset`. `topagent memory status` shows the count as "Notes: N note(s)".
 
 ### Config
 
@@ -561,14 +560,13 @@ Commands that inspect and govern the workspace's durable learning artifacts. The
 
 | Command | When to use |
 |---------|-------------|
-| `topagent memory status` | Show notes (topics and lessons), procedures, and trajectory counts |
+| `topagent memory status` | Show notes, procedures, and trajectory counts |
 | `topagent memory lint` | Check USER.md and MEMORY.md for size and content policy issues |
 | `topagent memory recall` | Dry-run retrieval to see what memory would be loaded for a task |
-| `topagent model set` / `topagent model pick` | Change the configured model without re-running full setup |
+| `topagent memory trajectory list` | List saved trajectories and their review state |
+| `topagent memory trajectory review` | Mark a trajectory ready for export |
+| `topagent memory trajectory export` | Export a reviewed trajectory to the export directory |
 | `topagent procedure list` | List active (or all) procedures |
 | `topagent procedure show` | Inspect one procedure's raw content |
 | `topagent procedure prune` | Remove superseded and disabled procedures |
 | `topagent procedure disable` | Disable a noisy procedure without deleting it |
-| `topagent trajectory list` | List saved trajectories and their review state |
-| `topagent trajectory review` | Mark a trajectory ready for export |
-| `topagent trajectory export` | Export a reviewed trajectory to the export directory |

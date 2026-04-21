@@ -1,8 +1,9 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 use topagent_core::{RunTrustContext, SourceLabel, TaskMode, ToolTraceStep, VerificationCommand};
+
+use super::{slugify, unix_timestamp_secs};
 
 use crate::managed_files::write_managed_file;
 
@@ -99,7 +100,7 @@ pub(crate) fn save_trajectory(
         .with_context(|| format!("failed to create {}", trajectories_dir.display()))?;
 
     let timestamp = unix_timestamp_secs();
-    let id = format!("trj-{}-{}", timestamp, slugify(&draft.task_intent));
+    let id = format!("trj-{}-{}", timestamp, slugify(&draft.task_intent, "trajectory"));
     let filename = format!("{id}.json");
     let path = trajectories_dir.join(&filename);
 
@@ -229,30 +230,6 @@ fn write_trajectory_artifact(path: &Path, artifact: &TrajectoryArtifact) -> Resu
         .with_context(|| format!("failed to encode {}", path.display()))?;
     write_managed_file(path, &json, false)
 }
-
-fn slugify(input: &str) -> String {
-    let slug = input
-        .chars()
-        .filter(|ch| ch.is_alphanumeric() || *ch == ' ' || *ch == '-')
-        .collect::<String>()
-        .chars()
-        .take(48)
-        .collect::<String>()
-        .replace(' ', "-");
-    if slug.is_empty() {
-        "trajectory".to_string()
-    } else {
-        slug
-    }
-}
-
-fn unix_timestamp_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs() as i64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

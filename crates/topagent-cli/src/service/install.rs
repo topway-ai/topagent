@@ -18,6 +18,7 @@ use crate::config::model_selection::{
 use crate::config::runtime::{
     TelegramModeConfig, build_runtime_options_with_defaults, resolve_telegram_mode_config,
 };
+use crate::commands::surface::PRODUCT_NAME;
 use crate::managed_files::{assert_managed_or_absent, read_managed_env_metadata};
 use crate::openrouter_models::{
     OpenRouterCatalogSource, discover_install_openrouter_models, humanize_age,
@@ -50,7 +51,7 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
     let defaults = TelegramModeDefaults::from_metadata(&existing_values);
     let workspace = resolve_install_workspace_path(params.workspace, &existing_values)?;
 
-    println!("TopAgent setup");
+    println!("{PRODUCT_NAME} setup");
     println!("This will configure and start your Telegram background service.");
     println!();
 
@@ -162,7 +163,7 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
 
     println!();
     print_service_installed(
-        "TopAgent installed.",
+        &format!("{PRODUCT_NAME} installed."),
         Some(&config.workspace),
         service_action,
     );
@@ -180,7 +181,7 @@ pub(super) fn run_service_install(token: Option<String>, params: CliParams) -> R
     )?;
     let service_action = install_service_with_config(&config, &paths)?;
     print_service_installed(
-        "TopAgent service installed.",
+        &format!("{PRODUCT_NAME} service installed."),
         Some(&config.workspace),
         service_action,
     );

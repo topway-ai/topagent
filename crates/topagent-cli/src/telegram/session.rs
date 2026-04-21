@@ -587,7 +587,10 @@ mod tests {
     use super::*;
     use crate::config::defaults::{TELEGRAM_ALLOWED_DM_USERNAME_KEY, TOPAGENT_SERVICE_MANAGED_KEY};
     use crate::memory::procedures::{ProcedureDraft, save_procedure};
-    use crate::memory::{MEMORY_PROCEDURES_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR};
+    use crate::memory::{
+        MEMORY_PROCEDURES_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR,
+        TELEGRAM_HISTORY_RELATIVE_DIR,
+    };
     use crate::telegram::history::{ChatHistoryStore, persist_agent_history_to_store};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
@@ -867,8 +870,7 @@ mod tests {
         assert!(
             workspace
                 .path()
-                .join(".topagent")
-                .join("telegram-history")
+                .join(TELEGRAM_HISTORY_RELATIVE_DIR)
                 .join("chat-4242.json")
                 .is_file()
         );
@@ -879,8 +881,7 @@ mod tests {
             let mode = std::fs::metadata(
                 workspace
                     .path()
-                    .join(".topagent")
-                    .join("telegram-history")
+                    .join(TELEGRAM_HISTORY_RELATIVE_DIR)
                     .join("chat-4242.json"),
             )
             .unwrap()
@@ -1148,8 +1149,7 @@ mod tests {
         manager.persist_agent_history(chat_id, &agent);
         let history_path = workspace
             .path()
-            .join(".topagent")
-            .join("telegram-history")
+            .join(TELEGRAM_HISTORY_RELATIVE_DIR)
             .join("chat-9001.json");
         let memory_index_path = workspace.path().join(".topagent").join("MEMORY.md");
         assert!(history_path.is_file());
@@ -1214,8 +1214,7 @@ mod tests {
 
         let transcript_path = workspace
             .path()
-            .join(".topagent")
-            .join("telegram-history")
+            .join(TELEGRAM_HISTORY_RELATIVE_DIR)
             .join("chat-9102.json");
         let user_path = workspace.path().join(".topagent").join("USER.md");
         let memory_index_path = workspace.path().join(".topagent").join("MEMORY.md");
@@ -1271,8 +1270,7 @@ mod tests {
 
         let history_path = workspace
             .path()
-            .join(".topagent")
-            .join("telegram-history")
+            .join(TELEGRAM_HISTORY_RELATIVE_DIR)
             .join("chat-3003.json");
         let settings_path = workspace
             .path()
@@ -1336,7 +1334,7 @@ mod tests {
             .save(202, &[Message::user("goodbye"), Message::assistant("moon")])
             .unwrap();
 
-        let history_dir = workspace.path().join(".topagent").join("telegram-history");
+        let history_dir = workspace.path().join(TELEGRAM_HISTORY_RELATIVE_DIR);
         assert!(history_dir.is_dir());
 
         let cleared =

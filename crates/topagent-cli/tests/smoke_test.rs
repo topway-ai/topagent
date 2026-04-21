@@ -281,7 +281,7 @@ fn test_cli_trajectory_appears_in_help() {
     cmd.arg("--help")
         .assert()
         .success()
-        .stdout(predicates::str::contains("trajectory"));
+        .stdout(predicates::str::contains("memory"));
 }
 
 #[test]
@@ -339,13 +339,12 @@ fn test_cli_memory_help_mentions_lint() {
 #[test]
 fn test_cli_memory_lint_clean_workspace_ok() {
     let temp = TempDir::new().unwrap();
-    std::fs::create_dir_all(temp.path().join(".topagent/topics")).unwrap();
-    std::fs::create_dir_all(temp.path().join(".topagent/lessons")).unwrap();
+    std::fs::create_dir_all(temp.path().join(".topagent/notes")).unwrap();
     std::fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
     std::fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
     std::fs::write(
         temp.path().join(".topagent/MEMORY.md"),
-        "# TopAgent Memory Index\n\n- topic: arch | file: topics/arch.md | status: verified | note: layout\n",
+        "# TopAgent Memory Index\n\n- topic: arch | file: notes/arch.md | status: verified | note: layout\n",
     )
     .unwrap();
     let (_isolated, mut cmd) = isolated_topagent_command();
@@ -372,7 +371,7 @@ fn test_cli_procedure_help_mentions_management_commands() {
 #[test]
 fn test_cli_trajectory_help_mentions_review_and_export_commands() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
-    cmd.args(["trajectory", "--help"])
+    cmd.args(["memory", "trajectory", "--help"])
         .assert()
         .success()
         .stdout(predicates::str::contains("list"))
@@ -453,9 +452,9 @@ fn test_readme_documents_product_setup_commands() {
     assert!(readme.contains("topagent procedure list"));
     assert!(readme.contains("topagent procedure show <id>"));
     assert!(readme.contains("topagent procedure prune"));
-    assert!(readme.contains("topagent trajectory list"));
-    assert!(readme.contains("topagent trajectory review <id>"));
-    assert!(readme.contains("topagent trajectory export <id>"));
+    assert!(readme.contains("topagent memory trajectory list"));
+    assert!(readme.contains("topagent memory trajectory review <id>"));
+    assert!(readme.contains("topagent memory trajectory export <id>"));
     assert!(readme.contains("topagent uninstall"));
     assert!(readme.contains("topagent service start"));
     assert!(readme.contains("topagent service stop"));
@@ -581,7 +580,6 @@ fn test_cli_docs_consistency_readme_covers_all_subcommands() {
         "model",
         "memory",
         "procedure",
-        "trajectory",
         "run",
         "config",
         "doctor",

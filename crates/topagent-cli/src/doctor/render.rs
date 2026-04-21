@@ -1,7 +1,8 @@
+use crate::commands::surface::PRODUCT_NAME;
 use crate::doctor::types::{CheckLevel, CheckResult};
 
 pub(crate) fn print_report(checks: &[CheckResult]) {
-    println!("TopAgent doctor");
+    println!("{PRODUCT_NAME} doctor");
     println!("{}", "-".repeat(40));
 
     let mut ok_count = 0usize;

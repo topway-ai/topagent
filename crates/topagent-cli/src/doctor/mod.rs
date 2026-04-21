@@ -70,8 +70,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let ws = temp.path();
 
-        std::fs::create_dir_all(ws.join(".topagent/topics")).unwrap();
-        std::fs::create_dir_all(ws.join(".topagent/lessons")).unwrap();
+        std::fs::create_dir_all(ws.join(".topagent/notes")).unwrap();
         std::fs::create_dir_all(ws.join(".topagent/procedures")).unwrap();
         std::fs::create_dir_all(ws.join(".topagent/trajectories")).unwrap();
 

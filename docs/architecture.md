@@ -94,9 +94,9 @@ CLI parses args
 -> append proof-of-work (changed files, diff summary, trust notes when low-trust content shaped the run)
       -> for PlanAndExecute mode with files changed: append structured delivery summary with explicit verification status
    -> if the task was strongly verified, run the workspace promotion policy:
-     - save nothing, or
-     - save/update a note (topic or lesson), or
-     - save/update a reusable procedure, or
+- save nothing, or
+      - save/update a durable note, or
+      - save/update a reusable procedure, or
      - emit a compact trajectory artifact, or
      - some narrow combination of the above
      - but refuse durable promotions that are still primarily driven by low-trust content
@@ -123,7 +123,7 @@ CLI parses args
          - text -> start_message:
           a. load `.topagent/MEMORY.md` (always)
           b. load matching `.topagent/procedures/*.md` files only if relevant, capped to a small subset
-          c. load matching workspace notes (`.topagent/topics/*.md`, `.topagent/lessons/*.md`) only if relevant
+          c. load matching workspace notes (`.topagent/notes/*.md`) only if relevant
           d. search the saved Telegram transcript and extract targeted snippets only if useful
           e. build a fresh agent run with the operator model plus that memory briefing and the merged trust context
           f. append the filtered user-visible transcript to disk
@@ -192,10 +192,9 @@ TopAgent uses three prompt-memory layers, plus procedures (governed reuse) and t
    - one-line entries only
    - cheap enough to load at task start
    - points to durable artifacts instead of embedding large notes
-3. **Workspace notes**: `workspace/.topagent/topics/*.md` and `workspace/.topagent/lessons/*.md`
-   - topics hold compact notes by concern (`architecture`, `security`, `runtime`, etc.)
-   - lessons hold distilled facts, pitfalls, and rules from verified work
-   - loaded only when relevant; `topagent memory status` shows counts as "Notes: N topic(s), M lesson(s)"
+3. **Workspace notes**: `workspace/.topagent/notes/*.md`
+   - compact durable notes, loaded only when relevant
+   - `topagent memory status` shows count as "Notes: N note(s)"
 
 **Procedures** (`workspace/.topagent/procedures/*.md`) are reusable playbooks with explicit reuse/revision/supersession metadata, not prompt memory. They load lazily when relevant, and superseded procedures are ignored.
 
@@ -203,7 +202,7 @@ TopAgent uses three prompt-memory layers, plus procedures (governed reuse) and t
 
 **Raw transcript evidence** (`workspace/.topagent/telegram-history/`) stores searchable per-chat text exchanges, never replayed wholesale.
 
-`/reset` deletes only the per-chat transcript file. It does not touch `MEMORY.md`, workspace notes (topics or lessons), procedures, or trajectories.
+`/reset` deletes only the per-chat transcript file. It does not touch `MEMORY.md`, workspace notes, procedures, or trajectories.
 
 Curated consolidation keeps the index practical:
 
@@ -220,7 +219,7 @@ Curated consolidation keeps the index practical:
 ### Performance invariants
 
 - Always-loaded memory stays tiny and bounded. `USER.md` and `MEMORY.md` are capped briefings, not growing prompt dumps.
-- Lazy retrieval stays capped. Relevant procedures, workspace notes (topics and lessons), operator preferences, transcript snippets, and injected bytes all use fixed limits.
+- Lazy retrieval stays capped. Relevant procedures, workspace notes, operator preferences, transcript snippets, and injected bytes all use fixed limits.
 - Transcript use stays targeted. Prior chat is searched for narrow snippets only and is never replayed wholesale into the prompt.
 - Procedures are a latency aid, not a ceremony layer. They are loaded sparsely, only when relevant, and superseded procedures stay off the hot path.
 - Trajectories are export artifacts, not prompt memory. Saving more trajectories must not make normal task startup heavier.

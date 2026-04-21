@@ -324,7 +324,7 @@ fn render_durable_notes_section(
 
     for (score, entry) in scored_entries
         .into_iter()
-        .take(contract.memory.max_topics_to_load)
+        .take(contract.memory.max_notes_to_load)
     {
         let Some(path) = resolve_memory_path(memory, contract, &entry.file) else {
             warn!(
@@ -349,8 +349,8 @@ fn render_durable_notes_section(
         }
 
         let kind_label = match entry.kind() {
-            MemoryIndexEntryKind::Lesson => "lesson",
-            _ => "topic",
+            MemoryIndexEntryKind::Note => "note",
+            MemoryIndexEntryKind::Procedure => "procedure",
         };
         section.push_str(&format!(
             "[{}] {} ({})\n{}\n",
@@ -387,7 +387,7 @@ fn resolve_memory_path(
     let relative = if allowed_memory_prefix(contract, &normalized) {
         normalized
     } else {
-        format!("{}/{}", contract.memory.topic_file_relative_dir, normalized)
+        format!("{}/{}", contract.memory.note_file_relative_dir, normalized)
     };
 
     let relative_path = Path::new(&relative);
@@ -418,7 +418,7 @@ fn render_memory_file_excerpt(
     path: &Path,
 ) -> Result<String> {
     match entry.kind() {
-        MemoryIndexEntryKind::Lesson => {
+        MemoryIndexEntryKind::Note => {
             if let Some(parsed) = parse_saved_lesson(path)? {
                 return Ok(render_saved_lesson_excerpt(contract, &parsed));
             }
@@ -428,7 +428,6 @@ fn render_memory_file_excerpt(
                 return Ok(render_saved_procedure_excerpt(contract, &parsed));
             }
         }
-        MemoryIndexEntryKind::Topic => {}
     }
 
     let raw = std::fs::read_to_string(path)

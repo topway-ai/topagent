@@ -23,7 +23,7 @@ The question is “is this complexity earned now, with clear ownership and payof
 
 - **Meaningful code change**: any non-trivial change that can affect runtime behavior, persistence, configuration, policy, prompt assembly, retrieval, tool surface, transport behavior, operator-visible behavior, or tests relied on for correctness.
 - **Hot path**: ordinary one-shot execution, ordinary Telegram handling, prompt assembly, bounded retrieval, preflight gating, and tool execution for a normal task.
-- **Durable artifact**: any stored record expected to survive across sessions and influence future work, including `USER.md`, `MEMORY.md`, lessons, procedures, trajectories, checkpoints, and transcript stores.
+- **Durable artifact**: any stored record expected to survive across sessions and influence future work, including `USER.md`, `MEMORY.md`, notes, procedures, trajectories, checkpoints, and transcript stores.
 - **Session state**: live run state, blockers, approvals, transient user wishes, active file state, and in-progress objective state.
 - **Spike**: exploratory work that is intentionally non-final and explicitly contained.
 
@@ -73,7 +73,7 @@ Reject speculative complexity unless the work is an explicitly labeled spike.
 
 TopAgent may learn more over time, but repeated tasks must not get slower just because durable artifacts accumulated.
 
-- Hot-path cost must stay bounded as `USER.md`, `MEMORY.md`, lessons, procedures, trajectories, checkpoints, and transcripts grow.
+- Hot-path cost must stay bounded as `USER.md`, `MEMORY.md`, notes, procedures, trajectories, checkpoints, and transcripts grow.
 - Durable artifact growth must not imply prompt growth.
 - Retrieval must stay capped and relevance-filtered.
 - Repeated tasks should get faster or more predictable from procedures and memory, not slower from extra ceremony or extra always-on reasoning.
@@ -141,7 +141,7 @@ Keep `USER.md` and `MEMORY.md` small, curated, and purpose-specific.
 
 Do not let them become transcript dumps, temporary task logs, or vague note piles.
 
-Procedures, trajectories, lessons, and transcripts already exist for other memory roles.
+Procedures, trajectories, notes, and transcripts already exist for other memory roles.
 
 ### 6. Compaction correctness
 

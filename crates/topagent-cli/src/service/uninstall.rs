@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use super::detect::{InstallRoot, InstallRootKind, detect_install_root_from_exe};
 use super::systemd::{ensure_systemd_user_available, format_systemctl_result};
+use crate::commands::surface::PRODUCT_NAME;
 use crate::config::defaults::{TELEGRAM_SERVICE_UNIT_NAME, TOPAGENT_WORKSPACE_KEY};
 use crate::managed_files::{
     is_topagent_managed_file, read_managed_env_metadata, remove_managed_env_file,
@@ -122,7 +123,7 @@ pub(super) fn uninstall_service_setup(remove_binary: bool, purge: bool) -> Resul
         daemon_reload = format_systemctl_result(&["daemon-reload"]);
     }
 
-    println!("TopAgent uninstall");
+    println!("{PRODUCT_NAME} uninstall");
     println!("Stopped: {}", stopped);
     println!("Disabled: {}", disabled);
     println!("Daemon reload: {}", daemon_reload);

@@ -3,6 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::artifact_util;
+use super::surface::PRODUCT_NAME;
 use super::types::ProcedureCommands;
 use crate::config::workspace::resolve_workspace_path;
 use crate::memory::{
@@ -37,7 +38,7 @@ pub(crate) fn run_procedure_command(
 
 fn render_procedure_list(workspace: &Path, all: bool) -> Result<String> {
     let mut output = String::new();
-    output.push_str("TopAgent procedure list\n");
+    output.push_str(&format!("{PRODUCT_NAME} procedure list\n"));
     output.push_str(&format!("Workspace: {}\n", workspace.display()));
     output.push_str(if all {
         "Showing: active, superseded, and disabled procedures\n"
@@ -76,7 +77,7 @@ fn render_procedure_show(workspace: &Path, id: &str) -> Result<String> {
     let body =
         fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
     Ok(format!(
-        "TopAgent procedure show\nWorkspace: {}\nPath: {}\n\n{}",
+        "{PRODUCT_NAME} procedure show\nWorkspace: {}\nPath: {}\n\n{}",
         workspace.display(),
         path.display(),
         body
@@ -97,7 +98,7 @@ fn prune_procedures(workspace: &Path) -> Result<String> {
     }
 
     let mut output = String::new();
-    output.push_str("TopAgent procedure prune\n");
+    output.push_str(&format!("{PRODUCT_NAME} procedure prune\n"));
     output.push_str(&format!("Workspace: {}\n", workspace.display()));
     if removed.is_empty() {
         output.push_str("Removed: 0\n");
@@ -125,7 +126,7 @@ fn disable_selected_procedure(workspace: &Path, id: &str, reason: Option<&str>) 
     let memory = WorkspaceMemory::new(workspace.to_path_buf());
     let _ = memory.consolidate_memory_if_needed()?;
     let mut output = String::new();
-    output.push_str("TopAgent procedure disable\n");
+    output.push_str(&format!("{PRODUCT_NAME} procedure disable\n"));
     output.push_str(&format!("Workspace: {}\n", workspace.display()));
     output.push_str(&format!("Disabled: {}\n", saved));
     if let Some(reason) = reason {

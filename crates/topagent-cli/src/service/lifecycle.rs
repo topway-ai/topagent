@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 
+use crate::commands::surface::PRODUCT_NAME;
 use crate::config::defaults::{
     CliParams, TELEGRAM_SERVICE_UNIT_NAME, TOPAGENT_TOOL_AUTHORING_KEY, parse_env_bool,
 };
@@ -56,17 +57,17 @@ pub(super) fn install_service_with_config(
     if was_installed {
         run_systemctl_user_checked(
             &["enable", TELEGRAM_SERVICE_UNIT_NAME],
-            "enable the TopAgent Telegram service",
+            &format!("enable the {PRODUCT_NAME} Telegram service"),
         )?;
         run_systemctl_user_checked(
             &["restart", TELEGRAM_SERVICE_UNIT_NAME],
-            "restart the TopAgent Telegram service with the updated config",
+            &format!("restart the {PRODUCT_NAME} Telegram service with the updated config"),
         )?;
         Ok(ServiceConfigApplyAction::EnabledAndRestarted)
     } else {
         run_systemctl_user_checked(
             &["enable", "--now", TELEGRAM_SERVICE_UNIT_NAME],
-            "enable and start the TopAgent Telegram service",
+            &format!("enable and start the {PRODUCT_NAME} Telegram service"),
         )?;
         Ok(ServiceConfigApplyAction::EnabledAndStarted)
     }
@@ -79,7 +80,7 @@ pub(super) fn restart_service_if_installed(paths: &ServicePaths) -> Result<bool>
 
     run_systemctl_user_checked(
         &["restart", TELEGRAM_SERVICE_UNIT_NAME],
-        "restart the TopAgent Telegram service",
+        &format!("restart the {PRODUCT_NAME} Telegram service"),
     )?;
     Ok(true)
 }
@@ -136,9 +137,9 @@ fn run_service_lifecycle(
     ensure_systemd_user_available()?;
     let paths = service_paths()?;
     ensure_service_setup_present(&paths.unit_path, &paths.env_path)?;
-    run_systemctl_user_checked(args, &format!("{} the TopAgent Telegram service", action))?;
+    run_systemctl_user_checked(args, &format!("{} the {PRODUCT_NAME} Telegram service", action))?;
 
-    println!("TopAgent service {}.", completed_state);
+    println!("{PRODUCT_NAME} service {}.", completed_state);
     println!("Service: {}", TELEGRAM_SERVICE_UNIT_NAME);
     println!("Config file: {}", paths.env_path.display());
     println!("Next:");
@@ -166,7 +167,7 @@ fn render_status(params: CliParams) -> Result<()> {
         .map(|status| status.active_state.as_deref() == Some("active"));
     let unit_path = state.service_probe.unit_path(&state.paths.unit_path);
 
-    println!("TopAgent status");
+    println!("{PRODUCT_NAME} status");
     println!("Setup installed: {}", yes_no(state.setup_installed));
     println!("Service installed: {}", yes_no(service_installed));
     if let (Some(enabled), Some(active)) = (enabled, active) {

@@ -49,16 +49,16 @@ fn high_trust_context() -> RunTrustContext {
 }
 
 #[test]
-fn test_restore_clears_workspace_mutations_but_preserves_durable_lessons() {
+fn test_restore_clears_workspace_mutations_but_preserves_durable_notes() {
     let (temp, store) = create_temp_workspace();
 
-    let lessons_dir = temp.path().join(".topagent").join("lessons");
+    let notes_dir = temp.path().join(".topagent").join("notes");
     let procedures_dir = temp.path().join(".topagent").join("procedures");
-    fs::create_dir_all(&lessons_dir).unwrap();
+    fs::create_dir_all(&notes_dir).unwrap();
     fs::create_dir_all(&procedures_dir).unwrap();
     fs::write(
-        lessons_dir.join("lesson-1.md"),
-        "# Lesson\nAlways run tests before committing.\n",
+        notes_dir.join("note-1.md"),
+        "# Note\nAlways run tests before committing.\n",
     )
     .unwrap();
     fs::write(
@@ -114,8 +114,8 @@ fn test_restore_clears_workspace_mutations_but_preserves_durable_lessons() {
     );
 
     assert!(
-        temp.path().join(".topagent/lessons/lesson-1.md").exists(),
-        "lessons must survive restore"
+        temp.path().join(".topagent/notes/note-1.md").exists(),
+        "notes must survive restore"
     );
     assert!(
         temp.path()
@@ -134,7 +134,7 @@ fn test_restore_preserves_memory_index_and_user_model() {
 
     fs::write(
         topagent_dir.join("MEMORY.md"),
-        "# TopAgent Memory Index\n\n- topic: arch | file: topics/arch.md | status: verified\n",
+        "# TopAgent Memory Index\n\n- topic: arch | file: notes/arch.md | status: verified\n",
     )
     .unwrap();
 

@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use crate::commands::surface::PRODUCT_NAME;
 use crate::config::defaults::CliParams;
 use crate::config::defaults::load_persisted_telegram_defaults;
 use crate::config::summary::{ResolvedContractSummary, resolve_contract_summary};
@@ -12,7 +13,7 @@ pub(crate) fn run_config_inspect(params: CliParams) -> Result<()> {
 }
 
 pub(crate) fn render_contract_summary(summary: &ResolvedContractSummary) -> String {
-    let mut out = String::from("TopAgent runtime contract\n\n");
+    let mut out = format!("{PRODUCT_NAME} runtime contract\n\n");
 
     out.push_str(&format!("Provider:           {}\n", summary.provider));
     out.push_str(&format!(

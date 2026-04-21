@@ -88,15 +88,15 @@ mod tests {
     #[test]
     fn test_prepare_run_context_attaches_memory_prompt() {
         let temp = TempDir::new().unwrap();
-        let topics_dir = temp.path().join(".topagent/topics");
-        fs::create_dir_all(&topics_dir).unwrap();
+        let notes_dir = temp.path().join(".topagent/notes");
+        fs::create_dir_all(&notes_dir).unwrap();
         fs::write(
             temp.path().join(".topagent/MEMORY.md"),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: topics/architecture.md | status: verified | tags: runtime | note: runtime details\n",
+            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: verified | tags: runtime | note: runtime details\n",
         )
         .unwrap();
         fs::write(
-            topics_dir.join("architecture.md"),
+            notes_dir.join("architecture.md"),
             "# Architecture\nruntime details",
         )
         .unwrap();

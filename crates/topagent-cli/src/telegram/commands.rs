@@ -1,40 +1,5 @@
+use crate::commands::surface::{PRODUCT_NAME, TELEGRAM_COMMANDS};
 use crate::telegram::session::ChatSessionManager;
-
-pub(crate) struct BotCommand {
-    pub name: &'static str,
-    pub description: &'static str,
-}
-
-pub(crate) const BOT_COMMANDS: &[BotCommand] = &[
-    BotCommand {
-        name: "/start",
-        description: "show configuration and help",
-    },
-    BotCommand {
-        name: "/help",
-        description: "show this message",
-    },
-    BotCommand {
-        name: "/stop",
-        description: "stop the current task",
-    },
-    BotCommand {
-        name: "/approvals",
-        description: "list pending approvals for this chat",
-    },
-    BotCommand {
-        name: "/approve <id>",
-        description: "approve a pending action",
-    },
-    BotCommand {
-        name: "/deny <id>",
-        description: "deny a pending action",
-    },
-    BotCommand {
-        name: "/reset",
-        description: "clear this chat's saved transcript",
-    },
-];
 
 pub(super) fn handle_help(
     workspace_label: &str,
@@ -44,11 +9,11 @@ pub(super) fn handle_help(
 ) -> String {
     let tool_authoring = if tool_authoring_enabled { "on" } else { "off" };
     let mut commands_section = String::from("Commands:\n");
-    for cmd in BOT_COMMANDS {
-        commands_section.push_str(&format!("{} - {}\n", cmd.name, cmd.description));
+    for (name, description) in TELEGRAM_COMMANDS {
+        commands_section.push_str(&format!("{} - {}\n", name, description));
     }
     format!(
-        "TopAgent\n\n\
+        "{PRODUCT_NAME}\n\n\
          Workspace: {}\n\
          Model: {}\n\
          Tool authoring: {}\n\
@@ -110,12 +75,8 @@ mod tests {
         assert!(reply.contains("Model: gpt-4o"));
         assert!(reply.contains("Tool authoring: on"));
         assert!(reply.contains("DM access: unbound"));
-        for cmd in BOT_COMMANDS {
-            assert!(
-                reply.contains(cmd.name),
-                "help text missing command {}",
-                cmd.name
-            );
+        for (name, _description) in TELEGRAM_COMMANDS {
+            assert!(reply.contains(name), "help text missing command {}", name);
         }
     }
 
@@ -126,7 +87,7 @@ mod tests {
     }
 
     #[test]
-    fn test_bot_commands_table_matches_router() {
+    fn test_telegram_commands_match_router() {
         let routed = [
             "/start",
             "/help",
@@ -138,26 +99,25 @@ mod tests {
         ];
         for name in &routed {
             let bare = name.trim_start_matches('/');
-            let found = BOT_COMMANDS
+            let found = TELEGRAM_COMMANDS
                 .iter()
-                .any(|cmd| cmd.name.trim_start_matches('/') == bare || cmd.name.starts_with(name));
+                .any(|(cmd, _)| cmd.trim_start_matches('/').starts_with(bare));
             assert!(
                 found,
-                "router handles {} but it is not in BOT_COMMANDS",
+                "router handles {} but it is not in TELEGRAM_COMMANDS",
                 name
             );
         }
-        for cmd in BOT_COMMANDS {
+        for (cmd, _description) in TELEGRAM_COMMANDS {
             let bare = cmd
-                .name
                 .split_whitespace()
                 .next()
                 .unwrap()
                 .trim_start_matches('/');
             assert!(
                 routed.contains(&format!("/{}", bare).as_str()),
-                "BOT_COMMANDS contains {} but router does not route it",
-                cmd.name,
+                "TELEGRAM_COMMANDS contains {} but router does not route it",
+                cmd,
             );
         }
     }

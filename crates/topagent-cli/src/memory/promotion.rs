@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use std::path::Path;
 use topagent_core::context::ToolContext;
 use topagent_core::tools::{SaveLessonArgs, SaveLessonTool, Tool};
 use topagent_core::{
@@ -210,7 +209,7 @@ pub(crate) fn promote_verified_task(pc: &PromotionContext) -> Result<TaskPromoti
             ));
         }
         if let Some(procedure_file) = report.procedure_file.clone() {
-            if let Some(filename) = artifact_filename(&procedure_file) {
+            if let Some(filename) = super::artifact_filename(&procedure_file) {
                 set_procedure_source_trajectory(
                     &memory.procedures_dir.join(filename),
                     &trajectory_file,
@@ -547,10 +546,6 @@ fn extract_saved_artifact_path(output: &str, prefix: &str) -> Option<String> {
         .map(str::trim)
         .filter(|path| !path.is_empty())
         .map(ToString::to_string)
-}
-
-fn artifact_filename(path: &str) -> Option<&str> {
-    Path::new(path).file_name().and_then(|name| name.to_str())
 }
 
 #[cfg(test)]

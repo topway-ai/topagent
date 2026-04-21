@@ -4,7 +4,7 @@ use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const LESSONS_DIR: &str = ".topagent/lessons";
+const NOTES_DIR: &str = ".topagent/notes";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SaveLessonArgs {
@@ -83,12 +83,12 @@ impl crate::tools::Tool for SaveLessonTool {
             .replace(' ', "-");
 
         let filename = format!("{}-{}.md", timestamp, slug);
-        let lessons_dir = ctx.exec.workspace_root.join(LESSONS_DIR);
-        std::fs::create_dir_all(&lessons_dir).map_err(|e| {
+        let notes_dir = ctx.exec.workspace_root.join(NOTES_DIR);
+        std::fs::create_dir_all(&notes_dir).map_err(|e| {
             Error::ToolFailed(format!("save_lesson: failed to create directory: {}", e))
         })?;
 
-        let filepath = lessons_dir.join(&filename);
+        let filepath = notes_dir.join(&filename);
 
         let mut content = String::new();
         content.push_str(&format!("# {}\n\n", args.title));
@@ -110,7 +110,7 @@ impl crate::tools::Tool for SaveLessonTool {
             .map_err(|e| Error::ToolFailed(format!("save_lesson: failed to write file: {}", e)))?;
 
         Ok(format!(
-            "Lesson saved to .topagent/lessons/{}\n\n{}",
+            "Lesson saved to .topagent/notes/{}\n\n{}",
             filename, content
         ))
     }
@@ -141,7 +141,7 @@ mod tests {
         let result = tool.execute(args, &ctx);
         assert!(result.is_ok(), "save_lesson failed: {:?}", result);
         let output = result.unwrap();
-        assert!(output.contains(".topagent/lessons/"));
+        assert!(output.contains(".topagent/notes/"));
         assert!(output.contains("Test Lesson"));
         assert!(output.contains("Implemented new feature"));
         assert!(output.contains("Testing is important"));

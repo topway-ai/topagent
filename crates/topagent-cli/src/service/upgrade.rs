@@ -4,6 +4,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::commands::surface::PRODUCT_NAME;
 use crate::config::defaults::TELEGRAM_SERVICE_UNIT_NAME;
 
 const RELEASE_BASE_URL: &str = "https://github.com/topway-ai/topagent/releases/latest/download";
@@ -22,7 +23,7 @@ pub(crate) fn release_target() -> Option<&'static str> {
 /// restarting the systemd service around the swap when it is active.
 pub(crate) fn run_upgrade(use_cargo: bool) -> Result<()> {
     let target_bin = resolve_upgrade_target()?;
-    println!("TopAgent upgrade");
+    println!("{PRODUCT_NAME} upgrade");
     println!("Binary: {}", target_bin.display());
 
     if use_cargo {
@@ -233,9 +234,9 @@ fn resolve_upgrade_target() -> Result<PathBuf> {
     }
     // Fallback: replace the binary that is currently running.
     std::env::current_exe()
-        .context("cannot determine the TopAgent binary path")?
+        .context(format!("cannot determine the {PRODUCT_NAME} binary path"))?
         .canonicalize()
-        .context("cannot resolve the TopAgent binary path")
+        .context(format!("cannot resolve the {PRODUCT_NAME} binary path"))
 }
 
 fn service_is_active() -> bool {
@@ -260,7 +261,7 @@ fn restart_service() {
 
 fn print_next_steps(target_bin: &Path, service_was_active: bool) {
     println!();
-    println!("TopAgent upgraded.");
+    println!("{PRODUCT_NAME} upgraded.");
     println!("Binary: {}", target_bin.display());
     if service_was_active {
         println!("Service restarted.");
