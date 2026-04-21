@@ -4,7 +4,7 @@ mod git;
 mod operator_preference;
 mod planning;
 mod read;
-mod save_lesson;
+mod save_note;
 mod write;
 
 pub(crate) use bash::risky_shell_changed_path_hints;
@@ -14,7 +14,7 @@ pub use git::{GitAddTool, GitBranchTool, GitCloneTool, GitCommitTool, GitDiffToo
 pub use operator_preference::ManageOperatorPreferenceTool;
 pub use planning::UpdatePlanTool;
 pub use read::ReadTool;
-pub use save_lesson::{SaveLessonArgs, SaveLessonTool};
+pub use save_note::{SaveNoteArgs, SaveNoteTool};
 pub use write::WriteTool;
 
 use crate::context::ToolContext;

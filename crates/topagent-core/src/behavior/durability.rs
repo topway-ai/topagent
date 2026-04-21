@@ -6,7 +6,7 @@ use crate::task_result::VerificationCommand;
 pub(super) fn default_memory_policy() -> MemoryPolicy {
     MemoryPolicy {
         loaded_memory_is_advisory: true,
-        durable_write_tools: &["save_lesson", "manage_operator_preference"],
+        durable_write_tools: &["save_note", "manage_operator_preference"],
         current_state_wins: true,
         never_store: &[
             "transcripts",

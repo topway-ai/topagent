@@ -22,7 +22,8 @@ pub(crate) struct TrajectoryArtifact {
     pub(crate) changed_files: Vec<String>,
     pub(crate) verification: Vec<TrajectoryVerification>,
     pub(crate) outcome_summary: String,
-    pub(crate) lesson_file: Option<String>,
+    #[serde(alias = "lesson_file")]
+    pub(crate) note_file: Option<String>,
     pub(crate) procedure_file: Option<String>,
     pub(crate) redaction: TrajectoryRedaction,
     #[serde(default)]
@@ -87,7 +88,7 @@ pub(crate) struct TrajectoryDraft {
     pub(crate) changed_files: Vec<String>,
     pub(crate) verification: Vec<VerificationCommand>,
     pub(crate) outcome_summary: String,
-    pub(crate) lesson_file: Option<String>,
+    pub(crate) note_file: Option<String>,
     pub(crate) procedure_file: Option<String>,
     pub(crate) source_labels: Vec<SourceLabel>,
 }
@@ -135,7 +136,7 @@ pub(crate) fn save_trajectory(
             })
             .collect(),
         outcome_summary: draft.outcome_summary.clone(),
-        lesson_file: draft.lesson_file.clone(),
+        note_file: draft.note_file.clone(),
         procedure_file: draft.procedure_file.clone(),
         redaction: TrajectoryRedaction {
             secret_safe: true,
@@ -267,7 +268,7 @@ mod tests {
                 succeeded: true,
             }],
             outcome_summary: "Repaired the workflow and reran verification.".to_string(),
-            lesson_file: None,
+            note_file: None,
             procedure_file: None,
             source_labels: Vec::new(),
         }

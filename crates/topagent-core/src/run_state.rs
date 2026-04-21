@@ -547,7 +547,7 @@ impl AgentRunState {
                     .map_or(0, |items| items.len());
                 Some(format!("update_plan ({item_count} items)"))
             }
-            "save_lesson" | "manage_operator_preference" => Some(tool_name.to_string()),
+            "save_note" | "manage_operator_preference" => Some(tool_name.to_string()),
             "bash" => bash_command.map(|command| {
                 if behavior.is_verification_command(command) {
                     format!("verification: {}", compact_trace_text(command, 96))

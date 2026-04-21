@@ -16,7 +16,7 @@ use crate::tool_genesis::{
     GeneratedToolRuntimeGuard,
 };
 use crate::tools::{
-    ManageOperatorPreferenceTool, SaveLessonTool, Tool, ToolRegistry, UpdatePlanTool,
+    ManageOperatorPreferenceTool, SaveNoteTool, Tool, ToolRegistry, UpdatePlanTool,
 };
 use crate::{Error, Message, Provider, ProviderResponse, Result, ToolSpec};
 use std::collections::HashMap;
@@ -116,7 +116,7 @@ impl Agent {
         let planning_tool = UpdatePlanTool::with_plan(plan.clone());
         registry.add(Box::new(planning_tool));
 
-        registry.add(Box::new(SaveLessonTool::new()));
+        registry.add(Box::new(SaveNoteTool::new()));
         registry.add(Box::new(ManageOperatorPreferenceTool::new()));
 
         if behavior.generated_tools.authoring_enabled {
@@ -1059,7 +1059,7 @@ path = "src/lib.rs"
             Box::new(ScriptedProvider::new(vec![
                 tool_call(
                     "save",
-                    "save_lesson",
+                    "save_note",
                     serde_json::json!({
                         "title": "Approval mailbox",
                         "what_changed": "Updated the approval flow",

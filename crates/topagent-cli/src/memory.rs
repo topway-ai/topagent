@@ -992,20 +992,20 @@ path = "src/lib.rs"
         })
         .unwrap();
 
-        assert!(report.lesson_file.is_some());
+        assert!(report.note_file.is_some());
         assert!(report.procedure_file.is_some());
         assert!(report.trajectory_file.is_some());
 
-        let lesson_path = temp.path().join(report.lesson_file.unwrap());
+        let note_path = temp.path().join(report.note_file.unwrap());
         let procedure_path = temp.path().join(report.procedure_file.unwrap());
         let trajectory_path = temp.path().join(report.trajectory_file.unwrap());
         let memory_index =
             fs::read_to_string(temp.path().join(MEMORY_INDEX_RELATIVE_PATH)).unwrap();
-        let lesson = fs::read_to_string(&lesson_path).unwrap();
+        let lesson = fs::read_to_string(&note_path).unwrap();
         let procedure = fs::read_to_string(&procedure_path).unwrap();
         let trajectory = fs::read_to_string(&trajectory_path).unwrap();
 
-        assert!(lesson_path.is_file());
+        assert!(note_path.is_file());
         assert!(procedure_path.is_file());
         assert!(trajectory_path.is_file());
         assert!(memory_index.contains("file: notes/"));
@@ -1043,7 +1043,7 @@ path = "src/lib.rs"
         })
         .unwrap();
 
-        assert!(report.lesson_file.is_some());
+        assert!(report.note_file.is_some());
         assert!(report.procedure_file.is_none());
         assert!(report.trajectory_file.is_some());
         assert!(
@@ -1580,7 +1580,7 @@ path = "src/lib.rs"
         })
         .unwrap();
 
-        let lesson = fs::read_to_string(temp.path().join(report.lesson_file.unwrap())).unwrap();
+        let lesson = fs::read_to_string(temp.path().join(report.note_file.unwrap())).unwrap();
         let procedure =
             fs::read_to_string(temp.path().join(report.procedure_file.unwrap())).unwrap();
         let trajectory =
@@ -1711,7 +1711,7 @@ path = "src/lib.rs"
                 .iter()
                 .any(|label| label.kind == SourceKind::TranscriptPrior)
         );
-        assert!(report.lesson_file.is_some());
+        assert!(report.note_file.is_some());
         assert!(report.procedure_file.is_none());
         assert!(report.trajectory_file.is_some());
         assert!(

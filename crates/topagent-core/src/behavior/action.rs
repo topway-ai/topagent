@@ -4,7 +4,7 @@ pub(super) fn default_tool_policy() -> ToolPolicy {
     ToolPolicy {
         repo_awareness_tools: &["git_status", "git_branch", "git_diff"],
         planning_tools: &["update_plan"],
-        memory_write_tools: &["save_lesson", "manage_operator_preference"],
+        memory_write_tools: &["save_note", "manage_operator_preference"],
         generated_tool_authoring_tools: &[
             "create_tool",
             "repair_tool",

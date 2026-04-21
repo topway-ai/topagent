@@ -313,7 +313,7 @@ label = "permissive hook"
             update_plan_call("plan"),
             tool_call(
                 "save",
-                "save_lesson",
+                "save_note",
                 serde_json::json!({
                     "title": "test lesson",
                     "content": "something learned from low-trust content"
@@ -701,7 +701,7 @@ fn test_low_trust_durable_promotion_remains_blocked_after_restore_context() {
     );
     assert!(
         contract
-            .memory_write_block_reason("save_lesson", &trust_after_restore, false)
+            .memory_write_block_reason("save_note", &trust_after_restore, false)
             .is_some(),
         "low-trust context must still block memory writes even after restore/restart"
     );

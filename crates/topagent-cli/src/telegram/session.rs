@@ -445,12 +445,12 @@ impl ChatSessionManager {
                             loaded_procedure_files: &loaded_procedure_files,
                         }) {
                             Ok(report) => {
-                                if report.lesson_file.is_some()
+                                if report.note_file.is_some()
                                     || report.procedure_file.is_some()
                                     || report.trajectory_file.is_some()
                                 {
                                     info!(
-                                        lesson = report.lesson_file.as_deref().unwrap_or(""),
+                                        note = report.note_file.as_deref().unwrap_or(""),
                                         procedure = report.procedure_file.as_deref().unwrap_or(""),
                                         trajectory =
                                             report.trajectory_file.as_deref().unwrap_or(""),

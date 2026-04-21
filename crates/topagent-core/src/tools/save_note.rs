@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const NOTES_DIR: &str = ".topagent/notes";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SaveLessonArgs {
+pub struct SaveNoteArgs {
     pub title: String,
     pub what_changed: String,
     pub what_learned: String,
@@ -15,24 +15,24 @@ pub struct SaveLessonArgs {
     pub avoid_next_time: Option<String>,
 }
 
-pub struct SaveLessonTool;
+pub struct SaveNoteTool;
 
-impl SaveLessonTool {
+impl SaveNoteTool {
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Default for SaveLessonTool {
+impl Default for SaveNoteTool {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl crate::tools::Tool for SaveLessonTool {
+impl crate::tools::Tool for SaveNoteTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
-            name: "save_lesson".to_string(),
+            name: "save_note".to_string(),
             description: "Save a lesson learned note for future reference. Use sparingly - only for genuinely useful lessons that improve future work.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
@@ -64,12 +64,12 @@ impl crate::tools::Tool for SaveLessonTool {
     }
 
     fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
-        let args: SaveLessonArgs = serde_json::from_value(args)
-            .map_err(|e| Error::InvalidInput(format!("save_lesson: invalid input: {}", e)))?;
+        let args: SaveNoteArgs = serde_json::from_value(args)
+            .map_err(|e| Error::InvalidInput(format!("save_note: invalid input: {}", e)))?;
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| Error::ToolFailed(format!("save_lesson: time error: {}", e)))?
+            .map_err(|e| Error::ToolFailed(format!("save_note: time error: {}", e)))?
             .as_secs();
 
         let slug = args
@@ -85,7 +85,7 @@ impl crate::tools::Tool for SaveLessonTool {
         let filename = format!("{}-{}.md", timestamp, slug);
         let notes_dir = ctx.exec.workspace_root.join(NOTES_DIR);
         std::fs::create_dir_all(&notes_dir).map_err(|e| {
-            Error::ToolFailed(format!("save_lesson: failed to create directory: {}", e))
+            Error::ToolFailed(format!("save_note: failed to create directory: {}", e))
         })?;
 
         let filepath = notes_dir.join(&filename);
@@ -107,10 +107,10 @@ impl crate::tools::Tool for SaveLessonTool {
         content.push_str("---\n*Saved by topagent*\n");
 
         std::fs::write(&filepath, &content)
-            .map_err(|e| Error::ToolFailed(format!("save_lesson: failed to write file: {}", e)))?;
+            .map_err(|e| Error::ToolFailed(format!("save_note: failed to write file: {}", e)))?;
 
         Ok(format!(
-            "Lesson saved to .topagent/notes/{}\n\n{}",
+            "Note saved to .topagent/notes/{}\n\n{}",
             filename, content
         ))
     }
@@ -123,14 +123,14 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn test_save_lesson_creates_file() {
+    fn test_save_note_creates_file() {
         let temp = TempDir::new().unwrap();
         let root = temp.path().to_path_buf();
         let exec = crate::context::ExecutionContext::new(root);
         let runtime = crate::runtime::RuntimeOptions::default();
         let ctx = crate::context::ToolContext::new(&exec, &runtime);
 
-        let tool = SaveLessonTool::new();
+        let tool = SaveNoteTool::new();
 
         let args = serde_json::json!({
             "title": "Test Lesson",
@@ -139,7 +139,7 @@ mod tests {
         });
 
         let result = tool.execute(args, &ctx);
-        assert!(result.is_ok(), "save_lesson failed: {:?}", result);
+        assert!(result.is_ok(), "save_note failed: {:?}", result);
         let output = result.unwrap();
         assert!(output.contains(".topagent/notes/"));
         assert!(output.contains("Test Lesson"));
@@ -148,14 +148,14 @@ mod tests {
     }
 
     #[test]
-    fn test_save_lesson_with_optional_fields() {
+    fn test_save_note_with_optional_fields() {
         let temp = TempDir::new().unwrap();
         let root = temp.path().to_path_buf();
         let exec = crate::context::ExecutionContext::new(root);
         let runtime = crate::runtime::RuntimeOptions::default();
         let ctx = crate::context::ToolContext::new(&exec, &runtime);
 
-        let tool = SaveLessonTool::new();
+        let tool = SaveNoteTool::new();
 
         let args = serde_json::json!({
             "title": "Full Lesson",
@@ -175,14 +175,14 @@ mod tests {
     }
 
     #[test]
-    fn test_save_lesson_minimal() {
+    fn test_save_note_minimal() {
         let temp = TempDir::new().unwrap();
         let root = temp.path().to_path_buf();
         let exec = crate::context::ExecutionContext::new(root);
         let runtime = crate::runtime::RuntimeOptions::default();
         let ctx = crate::context::ToolContext::new(&exec, &runtime);
 
-        let tool = SaveLessonTool::new();
+        let tool = SaveNoteTool::new();
 
         let args = serde_json::json!({
             "title": "Minimal Lesson",

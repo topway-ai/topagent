@@ -278,10 +278,10 @@ fn test_cli_procedure_appears_in_help() {
 #[test]
 fn test_cli_trajectory_appears_in_help() {
     let mut cmd = Command::cargo_bin("topagent").unwrap();
-    cmd.arg("--help")
+    cmd.args(["memory", "--help"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("memory"));
+        .stdout(predicates::str::contains("trajectory"));
 }
 
 #[test]
@@ -679,6 +679,50 @@ fn test_cli_docs_consistency_no_stale_top_level_trajectory_or_checkpoint_in_oper
         !operations.contains("topagent checkpoint restore"),
         "operations.md still has stale `topagent checkpoint restore` (should be `topagent run restore`)"
     );
+}
+
+#[test]
+fn test_cli_docs_consistency_no_stale_checkpoint_in_readme() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let readme = std::fs::read_to_string(repo_root.join("README.md")).unwrap();
+
+    assert!(
+        !readme.lines().any(|line| line.trim().starts_with("topagent checkpoint")),
+        "README.md still has stale `topagent checkpoint` command(s) (should be `topagent run diff` / `topagent run restore`)"
+    );
+}
+
+#[test]
+fn test_telegram_commands_agree_with_router() {
+    // Verify that TELEGRAM_COMMANDS in surface.rs matches the actual router
+    // dispatch in telegram/commands.rs. This prevents drift between the
+    // help text and the actual bot behavior.
+    use std::path::Path;
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+
+    let surface = std::fs::read_to_string(
+        repo_root.join("crates/topagent-cli/src/commands/surface.rs"),
+    )
+    .unwrap();
+    let commands = std::fs::read_to_string(
+        repo_root.join("crates/topagent-cli/src/telegram/commands.rs"),
+    )
+    .unwrap();
+
+    // Every command name in TELEGRAM_COMMANDS must appear in the router
+    let command_names = ["/start", "/help", "/stop", "/approvals", "/approve", "/deny", "/reset"];
+    for name in &command_names {
+        assert!(
+            surface.contains(name),
+            "TELEGRAM_COMMANDS in surface.rs is missing `{name}`"
+        );
+        assert!(
+            commands.contains(name),
+            "router in telegram/commands.rs is missing `{name}`"
+        );
+    }
 }
 
 #[test]

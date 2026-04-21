@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use topagent_core::context::ToolContext;
-use topagent_core::tools::{SaveLessonArgs, SaveLessonTool, Tool};
+use topagent_core::tools::{SaveNoteArgs, SaveNoteTool, Tool};
 use topagent_core::{
     DurablePromotionKind, ExecutionContext, Plan, RuntimeOptions, TaskMode, TaskResult,
 };
@@ -16,7 +16,7 @@ use super::{WorkspaceMemory, compact_text_line, memory_contract};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct TaskPromotionReport {
-    pub lesson_file: Option<String>,
+    pub note_file: Option<String>,
     pub procedure_file: Option<String>,
     pub superseded_procedure_file: Option<String>,
     pub trajectory_file: Option<String>,
@@ -86,17 +86,17 @@ pub(crate) fn promote_verified_task(pc: &PromotionContext) -> Result<TaskPromoti
         ) {
             report.notes.push(reason);
         } else {
-            let lesson_output = SaveLessonTool::new()
+            let note_output = SaveNoteTool::new()
                 .execute(
-                    serde_json::to_value(build_lesson_args(
+                    serde_json::to_value(build_note_args(
                         &stored_instruction,
                         &stored_task_result,
                     )?)
-                    .context("failed to serialize lesson args")?,
+                    .context("failed to serialize note args")?,
                     &tool_ctx,
                 )
                 .map_err(anyhow::Error::new)?;
-            report.lesson_file = extract_saved_artifact_path(&lesson_output, "Lesson saved to ");
+            report.note_file = extract_saved_artifact_path(&note_output, "Note saved to ");
         }
     }
 
@@ -114,7 +114,7 @@ pub(crate) fn promote_verified_task(pc: &PromotionContext) -> Result<TaskPromoti
                 &stored_instruction,
                 &stored_task_result,
                 plan,
-                report.lesson_file.as_deref(),
+                report.note_file.as_deref(),
                 None,
                 reused
                     .as_ref()
@@ -158,7 +158,7 @@ pub(crate) fn promote_verified_task(pc: &PromotionContext) -> Result<TaskPromoti
                             report.procedure_file = revise_procedure(
                                 &existing.path,
                                 &procedure_draft,
-                                report.lesson_file.as_deref(),
+                                report.note_file.as_deref(),
                                 None,
                             )?
                             .or(Some(format!(".topagent/procedures/{}", existing.filename)));
@@ -195,7 +195,7 @@ pub(crate) fn promote_verified_task(pc: &PromotionContext) -> Result<TaskPromoti
             changed_files: stored_task_result.files_changed().to_vec(),
             verification: stored_task_result.verification_commands().to_vec(),
             outcome_summary: compact_text_line(&stored_task_result.outcome_summary, 220),
-            lesson_file: report.lesson_file.clone(),
+            note_file: report.note_file.clone(),
             procedure_file: report.procedure_file.clone(),
             source_labels: stored_task_result.source_labels().to_vec(),
         };
@@ -218,7 +218,7 @@ pub(crate) fn promote_verified_task(pc: &PromotionContext) -> Result<TaskPromoti
         }
     }
 
-    if report.lesson_file.is_some()
+    if report.note_file.is_some()
         || report.procedure_file.is_some()
         || report.trajectory_file.is_some()
     {
@@ -412,7 +412,7 @@ fn evaluate_promotion(
     }
 }
 
-fn build_lesson_args(instruction: &str, task_result: &TaskResult) -> Result<SaveLessonArgs> {
+fn build_note_args(instruction: &str, task_result: &TaskResult) -> Result<SaveNoteArgs> {
     let lesson_title = build_lesson_title(instruction, task_result);
     if lesson_title.is_empty() {
         return Err(anyhow::anyhow!("lesson title is empty after normalization"));
@@ -437,7 +437,7 @@ fn build_lesson_args(instruction: &str, task_result: &TaskResult) -> Result<Save
         .iter()
         .any(|command| !command.succeeded);
 
-    Ok(SaveLessonArgs {
+    Ok(SaveNoteArgs {
         title: lesson_title,
         what_changed: build_distilled_what_changed(&task_result.outcome_summary, &changed_files),
         what_learned: build_distilled_what_learned(

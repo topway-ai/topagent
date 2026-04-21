@@ -305,9 +305,9 @@ fn test_memory_write_blocking_remains_strict_under_low_trust() {
     let low = low_trust_context();
     assert!(
         contract
-            .memory_write_block_reason("save_lesson", &low, false)
+            .memory_write_block_reason("save_note", &low, false)
             .is_some(),
-        "save_lesson must be blocked under low trust without corroboration"
+        "save_note must be blocked under low trust without corroboration"
     );
     assert!(
         contract
@@ -329,9 +329,9 @@ fn test_memory_write_allows_trusted_context() {
     let high = high_trust_context();
     assert!(
         contract
-            .memory_write_block_reason("save_lesson", &high, false)
+            .memory_write_block_reason("save_note", &high, false)
             .is_none(),
-        "save_lesson should be allowed under high trust"
+        "save_note should be allowed under high trust"
     );
 }
 
