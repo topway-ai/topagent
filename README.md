@@ -160,7 +160,7 @@ Workspace memory is separate from `TOPAGENT.md`:
 
 TopAgent does not promote every successful task. Weak, trivial, failed, or ambiguous runs save nothing. It still does not provide a skills marketplace, subagents, online training, or multi-provider routing.
 
-Saved trajectories now include provenance labels from the run. A trajectory can still be stored locally with low-trust influence for audit value, but `topagent trajectory review` and `topagent trajectory export` refuse artifacts that remain influenced by unresolved low-trust content.
+Saved trajectories now include provenance labels from the run. A trajectory can still be stored locally with low-trust influence for audit value, but `topagent memory trajectory review` and `topagent memory trajectory export` refuse artifacts that remain influenced by unresolved low-trust content.
 
 ## Troubleshooting
 

@@ -95,7 +95,6 @@ topagent memory trajectory show <id> # show one trajectory
 topagent memory trajectory review <id> # mark a trajectory ready for export
 topagent memory trajectory export <id> # export a reviewed trajectory
 topagent procedure list      # list live procedures
-topagent trajectory export <id> # export a reviewed trajectory
 topagent service start       # start the service
 topagent service stop        # stop the service
 topagent service restart     # restart the service (keeps current config)
@@ -138,7 +137,7 @@ TopAgent now captures a lightweight workspace checkpoint automatically before `w
 TopAgent now keeps a small provenance model for execution-relevant text:
 
 - `operator_direct`: the current operator instruction
-- `generated_memory_artifact`: `USER.md`, `MEMORY.md`, notes (topics and lessons), procedures, and other curated memory loaded into the run
+- `generated_memory_artifact`: `USER.md`, `MEMORY.md`, notes, procedures, and other curated memory loaded into the run
 - `transcript_prior`: prior Telegram snippets retrieved as evidence
 - `fetched_web_content`: fetch-like shell commands that pulled in external content
 - `pasted_untrusted_text`: obviously pasted or quoted external content in the current instruction
@@ -270,7 +269,7 @@ If `sandbox` is omitted, TopAgent rejects the external-tool config. Generated to
 - Loaded only when the current task matches the topic
 - Good fits: architecture, runtime behavior, security constraints, open issues
 - Bad fits: shell logs, command dumps, transient plans, cheap repo summaries
-- `topagent memory status` shows counts as "Notes: N topic(s), M lesson(s)"
+- `topagent memory status` shows counts as "Notes: N note(s)"
 
 #### 4. Procedures
 
@@ -301,8 +300,8 @@ If `sandbox` is omitted, TopAgent rejects the external-tool config. Generated to
 
 - Compact structured records from strong verified runs
 - Saved locally first with review state `local_only`
-- `topagent trajectory review <id>` runs the explicit readiness gate and marks the artifact `ready_for_export`
-- `topagent trajectory export <id>` writes a copy to `workspace/.topagent/exports/trajectories/` and marks the local record `exported`
+- `topagent memory trajectory review <id>` runs the explicit readiness gate and marks the artifact `ready_for_export`
+- `topagent memory trajectory export <id>` writes a copy to `workspace/.topagent/exports/trajectories/` and marks the local record `exported`
 - Trajectory export refuses weak, unsafe, or still-low-trust artifacts
 - Saved-local and exported trajectories are distinct states
 
@@ -312,7 +311,7 @@ When a new Telegram message arrives, TopAgent:
 
 1. Loads the capped operator model from `USER.md`
 2. Loads `MEMORY.md`
-3. Selects only the small set of procedures and workspace notes (topics and lessons) whose topic/tags overlap the task
+3. Selects only the small set of procedures and workspace notes whose topic/tags overlap the task
 4. Searches the raw transcript only when the task appears to refer to prior chat context
 5. Carries a small trust summary alongside that memory so transcript/external content does not silently become trusted intent
 6. Injects a small memory briefing that explicitly tells the model to treat memory as hints and re-check current code/runtime state
@@ -327,7 +326,7 @@ If memory conflicts with the current repo, runtime, config, or service state, th
 - Clears any in-memory running state for that chat
 - Does **not** remove `USER.md`
 - Does **not** remove `MEMORY.md`
-- Does **not** remove workspace notes (topics or lessons), procedures, trajectories, or tools
+- Does **not** remove workspace notes, procedures, trajectories, or tools
 
 This keeps reset semantics simple and aligned with the current product shape.
 

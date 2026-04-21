@@ -116,7 +116,7 @@ impl BehaviorContract {
                     .to_string(),
                 "Runs a filesystem-changing shell command directly through the shell.".to_string(),
                 Some(
-                    "Use `topagent checkpoint restore` for the latest workspace checkpoint, then inspect git diff for any remaining shell-side effects."
+                    "Use `topagent run restore` for the latest workspace checkpoint, then inspect git diff for any remaining shell-side effects."
                         .to_string(),
                 ),
                 low_trust_summary.as_deref(),

@@ -70,7 +70,7 @@ fn test_contract_builds_bash_mutation_approval_request() {
         .rollback_hint
         .as_deref()
         .unwrap_or_default()
-        .contains("topagent checkpoint restore"));
+        .contains("topagent run restore"));
 }
 
 #[test]

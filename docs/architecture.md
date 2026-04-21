@@ -55,7 +55,7 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 | Module | Responsibility |
 |--------|---------------|
 | `main` | Entry point: parses CLI args, converts to params, dispatches to command handlers |
-| `commands` | CLI command types, dispatch, and rendering; `commands/types` owns all clap definitions, `commands/dispatch` owns the top-level match, per-domain modules (`memory_cli`, `procedure_cli`, `trajectory_cli`) own CLI rendering, `config` and `run` own their subcommand handlers (the `run` module dispatches checkpoint recovery subcommands: `run status`, `run diff`, `run restore`), `oneshot` owns the one-shot runner, and `artifact_util` shares file-list and path-resolution helpers |
+| `commands` | CLI command types, dispatch, and rendering; `commands/types` owns all clap definitions, `commands/dispatch` owns the top-level match, per-domain modules (`memory_cli`, `procedure_cli`) own CLI rendering, `config` and `run` own their subcommand handlers (the `run` module dispatches checkpoint recovery subcommands: `run status`, `run diff`, `run restore`; trajectory commands live under `memory trajectory`), `oneshot` owns the one-shot runner, and `artifact_util` shares file-list and path-resolution helpers |
 | `config` | CliParams struct, parameter validation, route/options construction |
 | `operational_paths` | Shared config-home, service unit, and managed env path ownership for the operational control plane |
 | `run_setup` | Shared agent/provider/context assembly for one-shot CLI and Telegram runs |
@@ -73,7 +73,7 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 CLI parses args
   -> resolve workspace, API key, model route
   -> build operator model briefing from .topagent/USER.md
-  -> build workspace memory briefing from .topagent/MEMORY.md + relevant procedures + relevant workspace notes (topics and lessons)
+  -> build workspace memory briefing from .topagent/MEMORY.md + relevant procedures + relevant workspace notes
   -> classify run-level trust context from operator instruction + loaded memory/transcript sources
   -> create ExecutionContext with workspace + cancel token + operator model + workspace memory briefing + trust context
   -> read explicit tool-authoring mode from CLI/service config

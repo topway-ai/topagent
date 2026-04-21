@@ -455,6 +455,11 @@ fn test_readme_documents_product_setup_commands() {
     assert!(readme.contains("topagent memory trajectory list"));
     assert!(readme.contains("topagent memory trajectory review <id>"));
     assert!(readme.contains("topagent memory trajectory export <id>"));
+    // Verify no stale top-level trajectory commands leaked into README
+    assert!(
+        !readme.lines().any(|line| line.trim().starts_with("topagent trajectory")),
+        "README.md still has old top-level `topagent trajectory` command(s) (should be `topagent memory trajectory`)"
+    );
     assert!(readme.contains("topagent uninstall"));
     assert!(readme.contains("topagent service start"));
     assert!(readme.contains("topagent service stop"));
@@ -547,8 +552,8 @@ fn test_operations_docs_cover_checkpoint_management() {
     assert!(operations.contains("topagent memory status"));
     assert!(operations.contains("topagent procedure list"));
     assert!(operations.contains("topagent procedure prune"));
-    assert!(operations.contains("topagent trajectory review"));
-    assert!(operations.contains("topagent trajectory export"));
+    assert!(operations.contains("topagent memory trajectory review"));
+    assert!(operations.contains("topagent memory trajectory export"));
     assert!(operations.contains(".topagent/checkpoints"));
     assert!(operations.contains("clears persisted Telegram transcripts"));
 }
@@ -655,6 +660,24 @@ fn test_cli_help_uses_surface_constants_for_key_commands() {
     assert!(
         help_output.contains("workspace checkpoint"),
         "run subcommand help should mention checkpoint"
+    );
+}
+
+#[test]
+fn test_cli_docs_consistency_no_stale_top_level_trajectory_or_checkpoint_in_operations() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
+    let operations = std::fs::read_to_string(repo_root.join("docs/operations.md")).unwrap();
+
+    // Trajectory commands must live under `memory trajectory`, not as top-level
+    assert!(
+        !operations.lines().any(|line| line.trim().starts_with("topagent trajectory")),
+        "operations.md still has stale top-level `topagent trajectory` command(s) (should be `topagent memory trajectory`)"
+    );
+    // Checkpoint restore must live under `run restore`, not as top-level
+    assert!(
+        !operations.contains("topagent checkpoint restore"),
+        "operations.md still has stale `topagent checkpoint restore` (should be `topagent run restore`)"
     );
 }
 
