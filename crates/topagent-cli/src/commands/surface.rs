@@ -6,7 +6,7 @@ pub(crate) const HELP_DOCTOR: &str =
 pub(crate) const HELP_CONFIG_INSPECT: &str =
     "Show the resolved runtime contract (provider, model, keys, workspace, options).";
 pub(crate) const HELP_RUN_STATUS: &str =
-    "Show execution-session state: run snapshot, transcripts, and recovery guidance.";
+    "Show execution-session state: run snapshot, transcripts, and restore guidance.";
 pub(crate) const HELP_RUN_DIFF: &str =
     "Preview the diff between the latest run snapshot and the current workspace.";
 pub(crate) const HELP_RUN_RESTORE: &str =
@@ -156,7 +156,7 @@ pub(crate) const LIFECYCLE_LANES: &[LifecycleLane] = &[
         owns: "installation presence, managed service files, service enabled/running state, configured default model",
     },
     LifecycleLane {
-        name: "run recovery",
+        name: "run snapshots",
         source_of_truth_command: "topagent run status",
         owns: "latest run snapshot, transcript count, and restore guidance",
     },
@@ -199,5 +199,19 @@ mod tests {
         assert!(commands.contains("topagent status"));
         assert!(commands.contains("topagent run status"));
         assert!(commands.contains("topagent memory status"));
+
+        let names = LIFECYCLE_LANES
+            .iter()
+            .map(|lane| lane.name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "runtime contract",
+                "install/service health",
+                "run snapshots",
+                "workspace learning",
+            ]
+        );
     }
 }

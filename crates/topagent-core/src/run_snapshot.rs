@@ -863,8 +863,8 @@ fn should_skip_internal_path(path: &str) -> bool {
     }
     path == ".git"
         || path.starts_with(".git/")
-        || path == ".topagent/run-snapshots"
-        || path.starts_with(".topagent/run-snapshots/")
+        || path == ".topagent"
+        || path.starts_with(".topagent/")
 }
 
 fn is_active_run_snapshot_path(relative_path: &str, snapshot_root: &Path) -> bool {

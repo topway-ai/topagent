@@ -95,12 +95,15 @@ topagent memory trajectory show <id> # show one trajectory
 topagent memory trajectory review <id> # mark a trajectory ready for export
 topagent memory trajectory export <id> # export a reviewed trajectory
 topagent procedure list      # list live procedures
+topagent procedure show <id> # show one procedure
+topagent procedure prune     # remove superseded and disabled procedures
+topagent procedure disable <id> # disable a procedure without deleting it
 topagent service start       # start the service
 topagent service stop        # stop the service
 topagent service restart     # restart the service (keeps current config)
 topagent run diff            # preview the restore diff for the latest run snapshot
 topagent run restore         # restore the latest run snapshot and clear Telegram transcripts
-topagent run status          # What happened in my last run? (run snapshot, transcripts, recovery guidance)
+topagent run status          # What happened in my last run? (run snapshot, transcripts, restore guidance)
 topagent config inspect      # What provider/model/keys am I actually using?
 topagent doctor              # Is everything healthy? (deep diagnostics)
 topagent upgrade             # download and install the latest GitHub release binary; stops/restarts service
@@ -123,9 +126,9 @@ topagent uninstall           # stop service, remove unit+env files and binary
 
 ### Workspace run snapshots
 
-TopAgent now captures a lightweight workspace run snapshot automatically before `write`, `edit`, and risky shell mutations. Run snapshots are stored under `workspace/.topagent/run-snapshots/` and keep only the original contents of files that were touched during that task, or the minimal broader workspace snapshot needed for an obvious shell rewrite.
+TopAgent captures a lightweight workspace run snapshot automatically before `write`, `edit`, and risky shell mutations. Run snapshots are stored under `workspace/.topagent/run-snapshots/` and keep only the original contents of files that were touched during that task, or the minimal broader workspace snapshot needed for an obvious shell rewrite. TopAgent-owned state under `.topagent/` is not captured by workspace-wide run snapshots.
 
-`topagent run status` shows the latest saved run snapshot alongside execution-session state and recovery guidance.
+`topagent run status` shows the latest saved run snapshot alongside execution-session state and restore guidance.
 
 `topagent run diff` previews the current workspace against that run snapshot so you can inspect the rollback before applying it.
 
@@ -133,7 +136,7 @@ TopAgent now captures a lightweight workspace run snapshot automatically before 
 
 ### Provenance and trust boundaries
 
-TopAgent now keeps a small provenance model for execution-relevant text:
+TopAgent keeps a small provenance model for execution-relevant text:
 
 - `operator_direct`: the current operator instruction
 - `generated_memory_artifact`: `USER.md`, `MEMORY.md`, notes, procedures, and other curated memory loaded into the run
@@ -188,9 +191,9 @@ The workspace is the root directory the agent operates in. All file paths are re
 |------|--------------------------|
 | One-shot (`topagent "task"`) | Current working directory, or `--workspace` |
 | Telegram (`topagent install`) | Interactive prompt with default, or `--workspace` |
-| Foreground Telegram (`topagent telegram`) | Current directory, or `--workspace` |
+| Foreground Telegram (`topagent telegram`) | Managed service workspace when installed, `--workspace` when provided, otherwise current working directory |
 
-The workspace must exist and be a directory. The agent creates a `.topagent/` subdirectory inside it for the versioned workspace-state marker, notes, tools, memory files, recovery artifacts, and chat transcript evidence.
+The workspace must exist and be a directory. The agent creates a `.topagent/` subdirectory inside it for the workspace-state marker, durable memory, governed procedures, run snapshots, trajectory exports, and chat transcript evidence.
 
 ### .topagent/ directory
 
@@ -216,7 +219,7 @@ The supported state model is intentionally split by role:
 - Hot-path prompt memory: `USER.md` and `MEMORY.md`
 - Lazy prompt context: relevant `notes/` and active `procedures/`, both capped
 - Evidence/export only: `trajectories/` and `exports/trajectories/`
-- Run recovery state: `run-snapshots/`
+- Run snapshot state: `run-snapshots/`
 - Transport evidence: `telegram-history/`
 
 ## Persistence and reset
@@ -389,19 +392,27 @@ Which diagnostic command to use:
 - `topagent status` — Is the service installed and running? (install health + running state)
 - `topagent doctor` — Is everything healthy? (deep diagnostics: workspace health, config validation, tool checks)
 - `topagent config inspect` — What provider/model/keys am I actually using? (resolved runtime contract)
-- `topagent run status` — What happened in my last run? (run snapshot, transcripts, recovery guidance)
+- `topagent run status` — What happened in my last run? (run snapshot, transcripts, restore guidance)
 
 Run `topagent config inspect` for a compact, secret-safe view of the resolved runtime contract:
 
 ```
-Provider:       OpenRouter
-Model:          minimax/minimax-m2.7 (persisted default)
-OpenRouter key: present
-Opencode key:   missing
-Bot token:      present
-DM access:      restricted to @myuser (bound)
-Workspace:      /home/frank/workspace
-Tool authoring: off
+Provider:           OpenRouter
+Model:              minimax/minimax-m2.7  [persisted default]
+Workspace:          /home/frank/workspace
+
+API keys:
+  OpenRouter:       present
+  Opencode:         missing
+
+Telegram:
+  Bot token:        present
+  DM access:        restricted to @myuser (bound)
+
+Options:
+  Max steps:        50
+  Max retries:      10
+  Timeout:          120s
 ```
 
 Key values are never shown — only `present` or `missing`. Use this command first when debugging API key or model problems before checking the journal.
@@ -464,7 +475,7 @@ Commands that read and display state without side effects unless noted. `topagen
 | `topagent config inspect` | What provider/model/keys am I actually using? (resolved runtime contract) |
 | `topagent model status` | Show the configured and effective model |
 | `topagent doctor` | Is everything healthy? (deep diagnostics: workspace health, config validation, tool checks) |
-| `topagent run status` | What happened in my last run? (run snapshot, transcripts, recovery guidance) |
+| `topagent run status` | What happened in my last run? (run snapshot, transcripts, restore guidance) |
 | `topagent run diff` | Preview what restore would change |
 | `topagent run restore` | Roll back to the latest run snapshot (clears transcripts) |
 
@@ -489,7 +500,7 @@ The source-of-truth commands are:
 
 - Runtime contract: `topagent config inspect` owns provider, effective model, API key presence, workspace, Telegram admission, and runtime options.
 - Install/service health: `topagent status` owns installation presence, managed service files, service enabled/running state, and configured default model.
-- Run recovery: `topagent run status` owns latest run snapshot, transcript count, and restore guidance.
+- Run snapshots: `topagent run status` owns latest run snapshot, transcript count, and restore guidance.
 - Workspace learning: `topagent memory status` owns workspace schema, operator model, memory index, notes, procedures, trajectories, and exports.
 
 Changing the configured model with `topagent model set <model-id>` updates the managed env file's model value, preserves the provider and other managed values, and restarts the Telegram service only if it is installed. Changing provider remains part of the install flow: run `topagent install`.

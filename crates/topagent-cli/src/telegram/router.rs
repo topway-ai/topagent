@@ -4,12 +4,10 @@ use topagent_core::channel::telegram::{
 use topagent_core::{context::ExecutionContext, SecretRegistry, TelegramAdapter};
 use tracing::{info, warn};
 
-use crate::commands::surface::{parse_telegram_command, TelegramCommandKind};
+use crate::commands::surface::parse_telegram_command;
 use crate::telegram::admission::{decide_inbound_admission, InboundAdmission};
 use crate::telegram::approval::{format_approval_resolution, parse_approval_callback_data};
-use crate::telegram::commands::{
-    handle_approvals, handle_approve, handle_deny, handle_help, handle_reset, handle_stop,
-};
+use crate::telegram::commands::handle_parsed_command;
 use crate::telegram::delivery::send_telegram;
 use crate::telegram::session::ChatSessionManager;
 
@@ -153,20 +151,7 @@ pub(super) fn route_message(
     info!("received from chat {}: {}", chat_id, text);
 
     if let Some(command) = parse_telegram_command(text) {
-        let reply = match command.kind {
-            TelegramCommandKind::Start | TelegramCommandKind::Help => handle_help(
-                workspace_label,
-                &session_manager.model_label_for_help(),
-                &session_manager.dm_access_label(),
-            ),
-            TelegramCommandKind::Stop => handle_stop(session_manager, chat_id),
-            TelegramCommandKind::Approvals => handle_approvals(session_manager, chat_id),
-            TelegramCommandKind::Approve => {
-                handle_approve(session_manager, chat_id, command.argument)
-            }
-            TelegramCommandKind::Deny => handle_deny(session_manager, chat_id, command.argument),
-            TelegramCommandKind::Reset => handle_reset(session_manager, chat_id),
-        };
+        let reply = handle_parsed_command(command, session_manager, chat_id, workspace_label);
         send_telegram(adapter, chat_id, vec![reply], None);
         return;
     }

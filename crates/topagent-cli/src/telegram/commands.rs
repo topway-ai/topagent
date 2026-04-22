@@ -1,5 +1,27 @@
-use crate::commands::surface::{PRODUCT_NAME, TELEGRAM_COMMANDS};
+use crate::commands::surface::{
+    ParsedTelegramCommand, TelegramCommandKind, PRODUCT_NAME, TELEGRAM_COMMANDS,
+};
 use crate::telegram::session::ChatSessionManager;
+
+pub(super) fn handle_parsed_command(
+    command: ParsedTelegramCommand<'_>,
+    session_manager: &mut ChatSessionManager,
+    chat_id: i64,
+    workspace_label: &str,
+) -> String {
+    match command.kind {
+        TelegramCommandKind::Start | TelegramCommandKind::Help => handle_help(
+            workspace_label,
+            &session_manager.model_label_for_help(),
+            &session_manager.dm_access_label(),
+        ),
+        TelegramCommandKind::Stop => handle_stop(session_manager, chat_id),
+        TelegramCommandKind::Approvals => handle_approvals(session_manager, chat_id),
+        TelegramCommandKind::Approve => handle_approve(session_manager, chat_id, command.argument),
+        TelegramCommandKind::Deny => handle_deny(session_manager, chat_id, command.argument),
+        TelegramCommandKind::Reset => handle_reset(session_manager, chat_id),
+    }
+}
 
 pub(super) fn handle_help(workspace_label: &str, model_label: &str, dm_access: &str) -> String {
     let mut commands_section = String::from("Commands:\n");
@@ -77,33 +99,39 @@ mod tests {
     }
 
     #[test]
-    fn test_telegram_commands_match_router() {
-        let routed = [
-            "/start",
-            "/help",
-            "/stop",
-            "/approvals",
-            "/approve",
-            "/deny",
-            "/reset",
-        ];
-        for name in &routed {
-            let bare = name.trim_start_matches('/');
-            let found = TELEGRAM_COMMANDS
-                .iter()
-                .any(|spec| spec.command.trim_start_matches('/').starts_with(bare));
-            assert!(
-                found,
-                "router handles {} but it is not in TELEGRAM_COMMANDS",
-                name
-            );
-        }
+    fn test_declared_telegram_commands_parse_and_route() {
+        use std::path::PathBuf;
+        use topagent_core::{ModelRoute, RuntimeOptions};
+
+        let workspace = tempfile::TempDir::new().unwrap();
+        let mut session_manager = ChatSessionManager::new(
+            ModelRoute::openrouter("test-model"),
+            "test-model".to_string(),
+            "test-key".to_string(),
+            RuntimeOptions::default(),
+            PathBuf::from(workspace.path()),
+            topagent_core::SecretRegistry::new(),
+            None,
+            None,
+            None,
+        );
+
         for spec in TELEGRAM_COMMANDS {
-            let bare = spec.command.trim_start_matches('/');
+            let text = if spec.arguments.is_empty() {
+                spec.command.to_string()
+            } else {
+                format!("{} apr-1", spec.command)
+            };
+            let parsed = crate::commands::surface::parse_telegram_command(&text)
+                .unwrap_or_else(|| panic!("declared command did not parse: {text}"));
+            assert_eq!(parsed.kind, spec.kind);
+
+            let reply =
+                handle_parsed_command(parsed, &mut session_manager, 42, "/tmp/topagent-workspace");
             assert!(
-                routed.contains(&format!("/{}", bare).as_str()),
-                "TELEGRAM_COMMANDS contains {} but router does not route it",
-                spec.command,
+                !reply.trim().is_empty(),
+                "declared command {} routed to an empty reply",
+                spec.command
             );
         }
     }

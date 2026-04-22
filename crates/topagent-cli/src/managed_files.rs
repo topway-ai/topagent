@@ -7,9 +7,6 @@ use crate::config::defaults::TOPAGENT_SERVICE_MANAGED_KEY;
 
 pub(crate) const TOPAGENT_MANAGED_HEADER: &str =
     "# Managed by TopAgent. Safe to remove with `topagent uninstall`.";
-// Note: TOPAGENT_MANAGED_HEADER is intentionally static — it is written into
-// files on disk and changing it would break is_topagent_managed_file() for
-// existing deployments.
 
 pub(crate) fn read_managed_env_metadata(path: &Path) -> Result<HashMap<String, String>> {
     if !path.exists() {
@@ -81,8 +78,7 @@ pub(crate) fn is_topagent_managed_file(path: &Path) -> Result<bool> {
         .with_context(|| format!("failed to read {}", path.display()))?;
     Ok(contents
         .lines()
-        .any(|line| line.trim() == TOPAGENT_MANAGED_HEADER)
-        || contents.contains(&format!("{TOPAGENT_SERVICE_MANAGED_KEY}=1")))
+        .any(|line| line.trim() == TOPAGENT_MANAGED_HEADER))
 }
 
 pub(crate) fn write_managed_file(path: &Path, contents: &str, private: bool) -> Result<()> {
@@ -116,6 +112,10 @@ pub(crate) fn remove_managed_env_file(path: &Path) -> Result<Option<String>> {
         return Ok(None);
     }
 
+    if !is_topagent_managed_file(path)? {
+        return Ok(None);
+    }
+
     let env_values = read_managed_env_metadata(path)?;
     if env_values
         .get(TOPAGENT_SERVICE_MANAGED_KEY)
@@ -128,4 +128,51 @@ pub(crate) fn remove_managed_env_file(path: &Path) -> Result<Option<String>> {
     std::fs::remove_file(path)
         .with_context(|| format!("failed to remove env file {}", path.display()))?;
     Ok(Some(format!("env file {}", path.display())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::NamedTempFile;
+
+    #[test]
+    fn test_managed_file_detection_requires_current_header() {
+        let file = NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), format!("{TOPAGENT_SERVICE_MANAGED_KEY}=1\n")).unwrap();
+
+        assert!(
+            !is_topagent_managed_file(file.path()).unwrap(),
+            "service marker without managed header is not the current managed-file shape"
+        );
+
+        std::fs::write(
+            file.path(),
+            format!("{TOPAGENT_MANAGED_HEADER}\n{TOPAGENT_SERVICE_MANAGED_KEY}=1\n"),
+        )
+        .unwrap();
+
+        assert!(is_topagent_managed_file(file.path()).unwrap());
+    }
+
+    #[test]
+    fn test_remove_managed_env_file_requires_header_and_service_marker() {
+        let file = NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), format!("{TOPAGENT_SERVICE_MANAGED_KEY}=1\n")).unwrap();
+
+        assert_eq!(remove_managed_env_file(file.path()).unwrap(), None);
+        assert!(file.path().exists());
+
+        std::fs::write(file.path(), format!("{TOPAGENT_MANAGED_HEADER}\nOTHER=1\n")).unwrap();
+        assert_eq!(remove_managed_env_file(file.path()).unwrap(), None);
+        assert!(file.path().exists());
+
+        std::fs::write(
+            file.path(),
+            format!("{TOPAGENT_MANAGED_HEADER}\n{TOPAGENT_SERVICE_MANAGED_KEY}=1\n"),
+        )
+        .unwrap();
+        let removed = remove_managed_env_file(file.path()).unwrap();
+        assert!(removed.is_some());
+        assert!(!file.path().exists());
+    }
 }

@@ -209,3 +209,83 @@ pub(crate) enum ConfigCommands {
     /// secret values — keys and tokens are shown as present/missing only.
     Inspect,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    fn subcommand_names(command: &clap::Command) -> Vec<&str> {
+        command
+            .get_subcommands()
+            .map(|subcommand| subcommand.get_name())
+            .collect()
+    }
+
+    fn find_subcommand(command: &clap::Command, name: &str) -> clap::Command {
+        command
+            .get_subcommands()
+            .find(|subcommand| subcommand.get_name() == name)
+            .unwrap_or_else(|| panic!("missing subcommand {name}"))
+            .clone()
+    }
+
+    #[test]
+    fn test_cli_current_top_level_command_surface_is_exact() {
+        let command = Cli::command();
+
+        assert_eq!(
+            subcommand_names(&command),
+            vec![
+                "install",
+                "status",
+                "telegram",
+                "service",
+                "model",
+                "memory",
+                "procedure",
+                "config",
+                "doctor",
+                "run",
+                "upgrade",
+                "uninstall",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_cli_current_nested_command_surfaces_are_exact() {
+        let command = Cli::command();
+
+        assert_eq!(
+            subcommand_names(&find_subcommand(&command, "service")),
+            vec!["start", "stop", "restart", "uninstall"]
+        );
+        assert_eq!(
+            subcommand_names(&find_subcommand(&command, "model")),
+            vec!["status", "set", "pick", "list", "refresh"]
+        );
+        assert_eq!(
+            subcommand_names(&find_subcommand(&command, "memory")),
+            vec!["status", "lint", "recall", "trajectory"]
+        );
+        assert_eq!(
+            subcommand_names(&find_subcommand(&command, "procedure")),
+            vec!["list", "show", "prune", "disable"]
+        );
+        assert_eq!(
+            subcommand_names(&find_subcommand(&command, "run")),
+            vec!["status", "diff", "restore"]
+        );
+        assert_eq!(
+            subcommand_names(&find_subcommand(&command, "config")),
+            vec!["inspect"]
+        );
+
+        let memory = find_subcommand(&command, "memory");
+        assert_eq!(
+            subcommand_names(&find_subcommand(&memory, "trajectory")),
+            vec!["list", "show", "review", "export"]
+        );
+    }
+}

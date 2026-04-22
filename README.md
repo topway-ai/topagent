@@ -116,7 +116,7 @@ topagent service uninstall   # stop service, remove unit+env files, keep binary
 topagent run diff            # preview what restore would change
 topagent run restore         # restore the latest run snapshot and clear Telegram transcripts
 topagent config inspect      # What provider/model/keys am I actually using?
-topagent run status          # What happened in my last run? (run snapshot, transcripts, recovery guidance)
+topagent run status          # What happened in my last run? (run snapshot, transcripts, restore guidance)
 topagent doctor              # Is everything healthy? (deep diagnostics)
 topagent upgrade             # download and install the latest GitHub release binary
 topagent upgrade --use-cargo # build and install from source via cargo instead of a release binary

@@ -701,7 +701,7 @@ mod tests {
         let proof = result.format_proof_of_work();
         assert!(
             proof.contains("Final verification passed after 1 failed attempt."),
-            "should note recovery, got: {}",
+            "should note successful retry, got: {}",
             proof
         );
     }

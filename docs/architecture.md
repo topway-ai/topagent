@@ -52,7 +52,7 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 | Module | Responsibility |
 |--------|---------------|
 | `main` | Entry point: parses CLI args, converts to params, dispatches to command handlers |
-| `commands` | CLI command types, dispatch, and rendering; `commands/types` owns all clap definitions, `commands/dispatch` owns the top-level match, per-domain modules (`memory_cli`, `procedure_cli`) own CLI rendering, `config` and `run` own their subcommand handlers (the `run` module dispatches run snapshot recovery subcommands: `run status`, `run diff`, `run restore`; trajectory commands live under `memory trajectory`), `oneshot` owns the one-shot runner, and `artifact_util` shares file-list and path-resolution helpers |
+| `commands` | CLI command types, dispatch, and rendering; `commands/types` owns all clap definitions, `commands/dispatch` owns the top-level match, per-domain modules (`memory_cli`, `procedure_cli`) own CLI rendering, `config` and `run` own their subcommand handlers (the `run` module dispatches run snapshot subcommands: `run status`, `run diff`, `run restore`; trajectory commands live under `memory trajectory`), `oneshot` owns the one-shot runner, and `artifact_util` shares file-list and path-resolution helpers |
 | `config` | CliParams struct, parameter validation, route/options construction |
 | `operational_paths` | Shared config-home, service unit, and managed env path ownership for the operational control plane |
 | `run_context` | Shared agent/provider/context assembly for one-shot CLI and Telegram runs |
@@ -126,7 +126,7 @@ CLI parses args
      3. on polling error: retry with backoff
 ```
 
-Each chat gets its own running task state. The raw transcript is persisted to `workspace/.topagent/telegram-history/chat-<chat_id>.json` and survives service restarts, but it is no longer restored wholesale into a model session.
+Each chat gets its own running task state. The raw transcript is persisted to `workspace/.topagent/telegram-history/chat-<chat_id>.json` and survives service restarts, but prompt assembly only retrieves targeted transcript snippets when useful.
 
 ### Service install flow
 
@@ -135,7 +135,7 @@ topagent install
   -> check systemd user services available
   -> check for existing managed files (refuse to overwrite non-managed files)
   -> resolve workspace (--workspace, existing config, or auto-create)
-  -> prompt for API key (OpenRouter or Opencode) and Telegram bot token
+  -> prompt for provider, provider API key, provider-scoped model, Telegram bot token, and optional allowed DM username
   -> write env file to ~/.config/topagent/services/topagent-telegram.env (mode 0600, includes model + runtime settings)
   -> write systemd unit to ~/.config/systemd/user/topagent-telegram.service
   -> systemctl --user daemon-reload

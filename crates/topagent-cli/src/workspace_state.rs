@@ -8,6 +8,7 @@ use crate::managed_files::write_managed_file;
 pub(crate) const TOPAGENT_DIR: &str = ".topagent";
 pub(crate) const WORKSPACE_STATE_RELATIVE_PATH: &str = ".topagent/workspace-state.json";
 pub(crate) const CURRENT_WORKSPACE_SCHEMA_VERSION: u32 = 1;
+const CURRENT_WORKSPACE_STATE_MODEL: &str = "topagent-workspace-state-v1";
 
 pub(crate) const USER_PROFILE_RELATIVE_PATH: &str = ".topagent/USER.md";
 pub(crate) const MEMORY_INDEX_RELATIVE_PATH: &str = ".topagent/MEMORY.md";
@@ -31,7 +32,7 @@ pub(crate) enum WorkspaceStateRole {
     LazyPromptMemory,
     GovernedProcedure,
     EvidenceExport,
-    RunRecovery,
+    RunSnapshot,
     TransportEvidence,
 }
 
@@ -97,7 +98,7 @@ pub(crate) const SUPPORTED_WORKSPACE_STATE_PATHS: &[SupportedWorkspacePath] = &[
     SupportedWorkspacePath {
         relative_path: RUN_SNAPSHOTS_RELATIVE_DIR,
         kind: WorkspaceStatePathKind::Directory,
-        role: WorkspaceStateRole::RunRecovery,
+        role: WorkspaceStateRole::RunSnapshot,
         required: false,
         prompt_loaded_by_default: false,
     },
@@ -157,10 +158,15 @@ pub(crate) fn inspect_workspace_state(workspace_root: &Path) -> WorkspaceStateIn
     let topagent_dir = workspace_root.join(TOPAGENT_DIR);
     let topagent_exists = topagent_dir.is_dir();
 
-    let (schema_version, schema_error) = match read_schema_marker(workspace_root) {
-        Ok(marker) => (marker.map(|marker| marker.schema_version), None),
-        Err(err) => (None, Some(err.to_string())),
-    };
+    let (schema_version, schema_error) =
+        match read_schema_marker(workspace_root).and_then(|marker| {
+            marker
+                .map(|marker| validate_schema_marker(workspace_root, marker))
+                .transpose()
+        }) {
+            Ok(marker) => (marker.map(|marker| marker.schema_version), None),
+            Err(err) => (None, Some(err.to_string())),
+        };
 
     let missing_required_paths = SUPPORTED_WORKSPACE_STATE_PATHS
         .iter()
@@ -182,12 +188,7 @@ fn ensure_schema_marker(
     report: &mut WorkspaceStateEnsureReport,
 ) -> Result<()> {
     match read_schema_marker(workspace_root)? {
-        Some(marker)
-            if marker.schema_version == CURRENT_WORKSPACE_SCHEMA_VERSION
-                && marker.state_model == "topagent-workspace-state-v1" =>
-        {
-            Ok(())
-        }
+        Some(marker) if is_current_workspace_state_marker(&marker) => Ok(()),
         Some(marker) => anyhow::bail!(
             "unsupported workspace state model in {}: schema_version={}, state_model={}",
             workspace_root.join(WORKSPACE_STATE_RELATIVE_PATH).display(),
@@ -197,7 +198,7 @@ fn ensure_schema_marker(
         None => {
             let marker = PersistedWorkspaceState {
                 schema_version: CURRENT_WORKSPACE_SCHEMA_VERSION,
-                state_model: "topagent-workspace-state-v1".to_string(),
+                state_model: CURRENT_WORKSPACE_STATE_MODEL.to_string(),
             };
             let rendered = serde_json::to_string_pretty(&marker)
                 .context("failed to serialize workspace state marker")?;
@@ -222,6 +223,27 @@ fn read_schema_marker(workspace_root: &Path) -> Result<Option<PersistedWorkspace
     let marker = serde_json::from_str(&raw)
         .with_context(|| format!("failed to parse {}", path.display()))?;
     Ok(Some(marker))
+}
+
+fn validate_schema_marker(
+    workspace_root: &Path,
+    marker: PersistedWorkspaceState,
+) -> Result<PersistedWorkspaceState> {
+    if is_current_workspace_state_marker(&marker) {
+        return Ok(marker);
+    }
+
+    anyhow::bail!(
+        "unsupported workspace state model in {}: schema_version={}, state_model={}",
+        workspace_root.join(WORKSPACE_STATE_RELATIVE_PATH).display(),
+        marker.schema_version,
+        marker.state_model
+    )
+}
+
+fn is_current_workspace_state_marker(marker: &PersistedWorkspaceState) -> bool {
+    marker.schema_version == CURRENT_WORKSPACE_SCHEMA_VERSION
+        && marker.state_model == CURRENT_WORKSPACE_STATE_MODEL
 }
 
 fn ensure_memory_index(workspace_root: &Path) -> Result<()> {
@@ -308,5 +330,71 @@ mod tests {
                 .unwrap();
             assert!(!supported.prompt_loaded_by_default);
         }
+    }
+
+    #[test]
+    fn test_supported_workspace_state_paths_are_the_current_layout() {
+        let paths = SUPPORTED_WORKSPACE_STATE_PATHS
+            .iter()
+            .map(|path| path.relative_path)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            paths,
+            vec![
+                WORKSPACE_STATE_RELATIVE_PATH,
+                USER_PROFILE_RELATIVE_PATH,
+                MEMORY_INDEX_RELATIVE_PATH,
+                MEMORY_NOTES_RELATIVE_DIR,
+                MEMORY_PROCEDURES_RELATIVE_DIR,
+                MEMORY_TRAJECTORIES_RELATIVE_DIR,
+                TRAJECTORY_EXPORTS_RELATIVE_DIR,
+                RUN_SNAPSHOTS_RELATIVE_DIR,
+                TELEGRAM_HISTORY_RELATIVE_DIR,
+            ]
+        );
+    }
+
+    #[test]
+    fn test_inspect_workspace_state_rejects_wrong_state_model() {
+        let temp = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join(TOPAGENT_DIR)).unwrap();
+        std::fs::write(
+            temp.path().join(WORKSPACE_STATE_RELATIVE_PATH),
+            r#"{
+  "schema_version": 1,
+  "state_model": "not-topagent"
+}
+"#,
+        )
+        .unwrap();
+
+        let inspection = inspect_workspace_state(temp.path());
+
+        assert_eq!(inspection.schema_version, None);
+        assert!(inspection
+            .schema_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("unsupported workspace state model"));
+    }
+
+    #[test]
+    fn test_ensure_workspace_state_rejects_wrong_state_model() {
+        let temp = TempDir::new().unwrap();
+        std::fs::create_dir_all(temp.path().join(TOPAGENT_DIR)).unwrap();
+        std::fs::write(
+            temp.path().join(WORKSPACE_STATE_RELATIVE_PATH),
+            r#"{
+  "schema_version": 1,
+  "state_model": "not-topagent"
+}
+"#,
+        )
+        .unwrap();
+
+        let err = ensure_workspace_state(temp.path()).unwrap_err().to_string();
+
+        assert!(err.contains("unsupported workspace state model"));
     }
 }

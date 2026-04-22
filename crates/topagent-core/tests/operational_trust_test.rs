@@ -80,6 +80,16 @@ fn test_restore_clears_workspace_mutations_but_preserves_durable_notes() {
         ))
         .expect("capture_workspace should succeed");
 
+    fs::write(
+        notes_dir.join("note-1.md"),
+        "# Note\nUpdated after snapshot; preserve current learning.\n",
+    )
+    .unwrap();
+    fs::write(
+        procedures_dir.join("deploy-procedure.md"),
+        "# Deploy Procedure\nUpdated after snapshot; preserve current playbook.\n",
+    )
+    .unwrap();
     fs::write(temp.path().join("src/lib.rs"), "fn after() -> u32 { 2 }").unwrap();
     fs::write(temp.path().join("config.toml"), "key = \"after\"").unwrap();
     fs::write(temp.path().join("new_file.txt"), "unwanted addition").unwrap();
@@ -119,10 +129,22 @@ fn test_restore_clears_workspace_mutations_but_preserves_durable_notes() {
         "notes must survive restore"
     );
     assert!(
+        fs::read_to_string(temp.path().join(".topagent/notes/note-1.md"))
+            .unwrap()
+            .contains("Updated after snapshot"),
+        "run restore must not roll back durable notes"
+    );
+    assert!(
         temp.path()
             .join(".topagent/procedures/deploy-procedure.md")
             .exists(),
         "procedures must survive restore"
+    );
+    assert!(
+        fs::read_to_string(temp.path().join(".topagent/procedures/deploy-procedure.md"))
+            .unwrap()
+            .contains("Updated after snapshot"),
+        "run restore must not roll back governed procedures"
     );
 }
 
@@ -465,12 +487,20 @@ fn test_provenance_context_survives_merge() {
 }
 
 #[test]
-fn test_hidden_run_snapshot_paths_are_not_captured() {
+fn test_topagent_internal_state_paths_are_not_captured() {
     let (temp, store) = create_temp_workspace();
 
-    let snapshots_dir = temp.path().join(".topagent/run-snapshots");
+    let topagent_dir = temp.path().join(".topagent");
+    let snapshots_dir = topagent_dir.join("run-snapshots");
     fs::create_dir_all(&snapshots_dir).unwrap();
     fs::write(snapshots_dir.join("manifest.json"), "{}").unwrap();
+    fs::create_dir_all(topagent_dir.join("notes")).unwrap();
+    fs::write(topagent_dir.join("MEMORY.md"), "# TopAgent Memory Index\n").unwrap();
+    fs::write(
+        topagent_dir.join("notes/learning.md"),
+        "# Durable Learning\n",
+    )
+    .unwrap();
 
     let git_dir = temp.path().join(".git");
     fs::create_dir_all(&git_dir).unwrap();
@@ -498,7 +528,7 @@ fn test_hidden_run_snapshot_paths_are_not_captured() {
         !status
             .captured_paths
             .iter()
-            .any(|p| p.contains(".topagent/run-snapshots")),
-        "run snapshot paths should not be captured"
+            .any(|p| p.starts_with(".topagent")),
+        ".topagent state paths should not be captured"
     );
 }

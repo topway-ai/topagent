@@ -6,7 +6,7 @@ use crate::config::keys::{resolve_opencode_api_key, resolve_openrouter_api_key};
 use crate::config::model_selection::{
     build_route_from_resolved, provider_or_default, resolve_runtime_model_selection,
 };
-use crate::config::runtime::build_runtime_options;
+use crate::config::runtime::build_runtime_options_with_defaults;
 use crate::config::workspace::resolve_workspace_path;
 
 /// Secret-free summary of the resolved runtime contract, suitable for
@@ -60,7 +60,12 @@ pub(crate) fn resolve_contract_summary(
     )
     .map_err(|e| e.to_string());
 
-    let options = build_runtime_options(params.max_steps, params.max_retries, params.timeout_secs);
+    let options = build_runtime_options_with_defaults(
+        params.max_steps,
+        params.max_retries,
+        params.timeout_secs,
+        defaults,
+    );
 
     ResolvedContractSummary {
         provider: match route.provider {
@@ -260,5 +265,33 @@ mod tests {
         assert!(summary
             .effective_model_source_label
             .contains("CLI override"));
+    }
+
+    #[test]
+    fn test_resolve_contract_summary_uses_persisted_runtime_options_with_cli_overrides() {
+        let workspace = TempDir::new().unwrap();
+        let defaults = TelegramModeDefaults {
+            api_key: Some("k".to_string()),
+            workspace: Some(workspace.path().to_path_buf()),
+            max_steps: Some(80),
+            max_retries: Some(6),
+            timeout_secs: Some(95),
+            ..Default::default()
+        };
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: None,
+            max_steps: Some(40),
+            max_retries: None,
+            timeout_secs: None,
+        };
+
+        let summary = resolve_contract_summary(&params, &defaults);
+
+        assert_eq!(summary.max_steps, 40);
+        assert_eq!(summary.max_retries, 6);
+        assert_eq!(summary.timeout_secs, 95);
     }
 }
