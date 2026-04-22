@@ -1,8 +1,8 @@
 use crate::behavior::default_memory_policy;
 use crate::context::ToolContext;
 use crate::operator_profile::{
-    load_operator_profile, migrate_legacy_operator_preferences, save_operator_profile,
-    OperatorPreferenceRecord, PreferenceCategory, USER_PROFILE_RELATIVE_PATH,
+    load_operator_profile, save_operator_profile, OperatorPreferenceRecord, PreferenceCategory,
+    USER_PROFILE_RELATIVE_PATH,
 };
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
@@ -98,8 +98,6 @@ impl crate::tools::Tool for ManageOperatorPreferenceTool {
         let args: ManageOperatorPreferenceArgs = serde_json::from_value(args).map_err(|e| {
             Error::InvalidInput(format!("manage_operator_preference: invalid input: {}", e))
         })?;
-
-        migrate_legacy_operator_preferences(&ctx.exec.workspace_root)?;
 
         match args.action {
             OperatorPreferenceAction::Set => set_preference(args, ctx),
@@ -437,30 +435,6 @@ mod tests {
             .execute(serde_json::json!({ "action": "list" }), &ctx)
             .unwrap();
         assert_eq!(result, "No durable operator preferences stored.");
-    }
-
-    #[test]
-    fn test_manage_operator_preference_migrates_legacy_topic_files() {
-        let (ctx, temp) = create_tool_context();
-        let tool = ManageOperatorPreferenceTool::new();
-        let topics_dir = temp.path().join(".topagent/topics");
-        std::fs::create_dir_all(&topics_dir).unwrap();
-        std::fs::write(
-            topics_dir.join("operator-preference-concise_final_answers.md"),
-            "# Operator Preference: concise final answers\n\n**Key:** concise_final_answers\n**Category:** response_style\n**Updated:** <t:1700000000>\n\n## Preference\n\nKeep final responses concise.\n\n## Why This Matters\n\nThe operator reviews runs quickly.\n",
-        )
-        .unwrap();
-
-        let list_output = tool
-            .execute(serde_json::json!({ "action": "list" }), &ctx)
-            .unwrap();
-
-        assert!(list_output.contains("concise_final_answers [response_style]"));
-        assert!(temp.path().join(USER_PROFILE_RELATIVE_PATH).is_file());
-        assert!(!temp
-            .path()
-            .join(".topagent/topics/operator-preference-concise_final_answers.md")
-            .exists());
     }
 
     #[test]

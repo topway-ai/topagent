@@ -1,9 +1,9 @@
-use crate::checkpoint::{
-    CheckpointCaptureMetadata, CheckpointCaptureSource, WorkspaceCheckpointStore,
-};
 use crate::command_exec::{run_command, CommandSandboxPolicy};
 use crate::context::ToolContext;
 use crate::file_util::format_command_output_with_limit;
+use crate::run_snapshot::{
+    RunSnapshotCaptureMetadata, RunSnapshotCaptureSource, WorkspaceRunSnapshotStore,
+};
 use crate::secrets;
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
@@ -16,13 +16,13 @@ pub struct BashArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum BashCheckpointScope {
+enum BashRunSnapshotScope {
     Paths(Vec<String>),
     WorkspaceTree,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BashCheckpointReason {
+enum BashRunSnapshotReason {
     FileWriteRedirection,
     Delete,
     MoveOrRename,
@@ -37,7 +37,7 @@ enum BashCheckpointReason {
     GitWorkspaceRewrite,
 }
 
-impl BashCheckpointReason {
+impl BashRunSnapshotReason {
     fn label(self) -> &'static str {
         match self {
             Self::FileWriteRedirection => "shell redirection write",
@@ -57,10 +57,10 @@ impl BashCheckpointReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct BashCheckpointPlan {
-    reason: BashCheckpointReason,
+struct BashRunSnapshotPlan {
+    reason: BashRunSnapshotReason,
     detail: String,
-    scope: BashCheckpointScope,
+    scope: BashRunSnapshotScope,
 }
 
 #[derive(Clone)]
@@ -95,9 +95,9 @@ impl crate::tools::Tool for BashTool {
             return Ok(block_msg);
         }
 
-        if let Some(checkpoint_store) = ctx.exec.checkpoint_store() {
-            if let Some(plan) = checkpoint_plan(&args.command) {
-                capture_risky_shell_checkpoint(checkpoint_store, &plan, ctx)?;
+        if let Some(run_snapshot_store) = ctx.exec.run_snapshot_store() {
+            if let Some(plan) = run_snapshot_plan(&args.command) {
+                capture_risky_shell_run_snapshot(run_snapshot_store, &plan, ctx)?;
             }
         }
 
@@ -116,32 +116,32 @@ impl crate::tools::Tool for BashTool {
     }
 }
 
-fn capture_risky_shell_checkpoint(
-    checkpoint_store: &WorkspaceCheckpointStore,
-    plan: &BashCheckpointPlan,
+fn capture_risky_shell_run_snapshot(
+    run_snapshot_store: &WorkspaceRunSnapshotStore,
+    plan: &BashRunSnapshotPlan,
     ctx: &ToolContext,
 ) -> Result<()> {
     let metadata =
-        CheckpointCaptureMetadata::new(CheckpointCaptureSource::Bash, plan.reason.label())
+        RunSnapshotCaptureMetadata::new(RunSnapshotCaptureSource::Bash, plan.reason.label())
             .with_detail(plan.detail.clone());
 
     match &plan.scope {
-        BashCheckpointScope::WorkspaceTree => {
-            checkpoint_store.capture_workspace(metadata)?;
+        BashRunSnapshotScope::WorkspaceTree => {
+            run_snapshot_store.capture_workspace(metadata)?;
         }
-        BashCheckpointScope::Paths(paths) => {
-            let normalized = normalize_checkpoint_paths(paths, ctx);
+        BashRunSnapshotScope::Paths(paths) => {
+            let normalized = normalize_run_snapshot_paths(paths, ctx);
             if normalized.is_empty() {
                 return Ok(());
             }
-            checkpoint_store.capture_paths(&normalized, metadata)?;
+            run_snapshot_store.capture_paths(&normalized, metadata)?;
         }
     }
 
     Ok(())
 }
 
-fn normalize_checkpoint_paths(paths: &[String], ctx: &ToolContext) -> Vec<String> {
+fn normalize_run_snapshot_paths(paths: &[String], ctx: &ToolContext) -> Vec<String> {
     let mut normalized = BTreeSet::new();
     for path in paths {
         let path = path.trim();
@@ -168,7 +168,7 @@ fn normalize_checkpoint_paths(paths: &[String], ctx: &ToolContext) -> Vec<String
     normalized.into_iter().collect()
 }
 
-fn checkpoint_plan(command: &str) -> Option<BashCheckpointPlan> {
+fn run_snapshot_plan(command: &str) -> Option<BashRunSnapshotPlan> {
     let trimmed = command.trim();
     if trimmed.is_empty() {
         return None;
@@ -176,10 +176,10 @@ fn checkpoint_plan(command: &str) -> Option<BashCheckpointPlan> {
 
     for segment in split_shell_segments(trimmed) {
         if let Some(target) = file_write_redirection_target(segment) {
-            return Some(BashCheckpointPlan {
-                reason: BashCheckpointReason::FileWriteRedirection,
+            return Some(BashRunSnapshotPlan {
+                reason: BashRunSnapshotReason::FileWriteRedirection,
                 detail: summarize_shell_text(segment),
-                scope: BashCheckpointScope::Paths(vec![target]),
+                scope: BashRunSnapshotScope::Paths(vec![target]),
             });
         }
 
@@ -195,8 +195,8 @@ fn checkpoint_plan(command: &str) -> Option<BashCheckpointPlan> {
             "rm" | "unlink" => {
                 let paths = collect_path_hints(collect_non_option_tokens(args));
                 if let Some(scope) = path_scope(paths) {
-                    return Some(BashCheckpointPlan {
-                        reason: BashCheckpointReason::Delete,
+                    return Some(BashRunSnapshotPlan {
+                        reason: BashRunSnapshotReason::Delete,
                         detail: summarize_shell_text(segment),
                         scope,
                     });
@@ -208,8 +208,8 @@ fn checkpoint_plan(command: &str) -> Option<BashCheckpointPlan> {
                     let mut paths = path_tokens[..path_tokens.len().saturating_sub(1)].to_vec();
                     paths.push(path_tokens.last().cloned().unwrap_or_default());
                     if let Some(scope) = path_scope(collect_path_hints(paths)) {
-                        return Some(BashCheckpointPlan {
-                            reason: BashCheckpointReason::MoveOrRename,
+                        return Some(BashRunSnapshotPlan {
+                            reason: BashRunSnapshotReason::MoveOrRename,
                             detail: summarize_shell_text(segment),
                             scope,
                         });
@@ -220,8 +220,8 @@ fn checkpoint_plan(command: &str) -> Option<BashCheckpointPlan> {
                 let path_tokens = collect_non_option_tokens(args);
                 if let Some(destination) = path_tokens.last() {
                     if let Some(scope) = path_scope(collect_path_hints(vec![destination.clone()])) {
-                        return Some(BashCheckpointPlan {
-                            reason: BashCheckpointReason::Copy,
+                        return Some(BashRunSnapshotPlan {
+                            reason: BashRunSnapshotReason::Copy,
                             detail: summarize_shell_text(segment),
                             scope,
                         });
@@ -231,8 +231,8 @@ fn checkpoint_plan(command: &str) -> Option<BashCheckpointPlan> {
             "mkdir" | "rmdir" => {
                 if let Some(scope) = path_scope(collect_path_hints(collect_non_option_tokens(args)))
                 {
-                    return Some(BashCheckpointPlan {
-                        reason: BashCheckpointReason::DirectoryMutation,
+                    return Some(BashRunSnapshotPlan {
+                        reason: BashRunSnapshotReason::DirectoryMutation,
                         detail: summarize_shell_text(segment),
                         scope,
                     });
@@ -241,8 +241,8 @@ fn checkpoint_plan(command: &str) -> Option<BashCheckpointPlan> {
             "touch" => {
                 if let Some(scope) = path_scope(collect_path_hints(collect_non_option_tokens(args)))
                 {
-                    return Some(BashCheckpointPlan {
-                        reason: BashCheckpointReason::Touch,
+                    return Some(BashRunSnapshotPlan {
+                        reason: BashRunSnapshotReason::Touch,
                         detail: summarize_shell_text(segment),
                         scope,
                     });
@@ -250,8 +250,8 @@ fn checkpoint_plan(command: &str) -> Option<BashCheckpointPlan> {
             }
             "truncate" => {
                 if let Some(scope) = path_scope(collect_path_hints(truncate_target_tokens(args))) {
-                    return Some(BashCheckpointPlan {
-                        reason: BashCheckpointReason::Truncate,
+                    return Some(BashRunSnapshotPlan {
+                        reason: BashRunSnapshotReason::Truncate,
                         detail: summarize_shell_text(segment),
                         scope,
                     });
@@ -260,8 +260,8 @@ fn checkpoint_plan(command: &str) -> Option<BashCheckpointPlan> {
             "chmod" => {
                 if let Some(scope) = path_scope(collect_path_hints(permission_target_tokens(args)))
                 {
-                    return Some(BashCheckpointPlan {
-                        reason: BashCheckpointReason::PermissionChange,
+                    return Some(BashRunSnapshotPlan {
+                        reason: BashRunSnapshotReason::PermissionChange,
                         detail: summarize_shell_text(segment),
                         scope,
                     });
@@ -270,8 +270,8 @@ fn checkpoint_plan(command: &str) -> Option<BashCheckpointPlan> {
             "chown" | "chgrp" => {
                 if let Some(scope) = path_scope(collect_path_hints(permission_target_tokens(args)))
                 {
-                    return Some(BashCheckpointPlan {
-                        reason: BashCheckpointReason::OwnershipChange,
+                    return Some(BashRunSnapshotPlan {
+                        reason: BashRunSnapshotReason::OwnershipChange,
                         detail: summarize_shell_text(segment),
                         scope,
                     });
@@ -280,8 +280,8 @@ fn checkpoint_plan(command: &str) -> Option<BashCheckpointPlan> {
             "sed" => {
                 if has_in_place_flag(args) {
                     if let Some(scope) = path_scope(collect_path_hints(sed_target_tokens(args))) {
-                        return Some(BashCheckpointPlan {
-                            reason: BashCheckpointReason::InPlaceEdit,
+                        return Some(BashRunSnapshotPlan {
+                            reason: BashRunSnapshotReason::InPlaceEdit,
                             detail: summarize_shell_text(segment),
                             scope,
                         });
@@ -291,8 +291,8 @@ fn checkpoint_plan(command: &str) -> Option<BashCheckpointPlan> {
             "perl" => {
                 if has_perl_in_place_flag(args) {
                     if let Some(scope) = path_scope(collect_path_hints(perl_target_tokens(args))) {
-                        return Some(BashCheckpointPlan {
-                            reason: BashCheckpointReason::InPlaceEdit,
+                        return Some(BashRunSnapshotPlan {
+                            reason: BashRunSnapshotReason::InPlaceEdit,
                             detail: summarize_shell_text(segment),
                             scope,
                         });
@@ -300,27 +300,27 @@ fn checkpoint_plan(command: &str) -> Option<BashCheckpointPlan> {
                 }
             }
             "tar" => {
-                if let Some(scope) = tar_checkpoint_scope(args) {
-                    return Some(BashCheckpointPlan {
-                        reason: BashCheckpointReason::ArchiveExtraction,
+                if let Some(scope) = tar_run_snapshot_scope(args) {
+                    return Some(BashRunSnapshotPlan {
+                        reason: BashRunSnapshotReason::ArchiveExtraction,
                         detail: summarize_shell_text(segment),
                         scope,
                     });
                 }
             }
             "unzip" => {
-                if let Some(scope) = unzip_checkpoint_scope(args) {
-                    return Some(BashCheckpointPlan {
-                        reason: BashCheckpointReason::ArchiveExtraction,
+                if let Some(scope) = unzip_run_snapshot_scope(args) {
+                    return Some(BashRunSnapshotPlan {
+                        reason: BashRunSnapshotReason::ArchiveExtraction,
                         detail: summarize_shell_text(segment),
                         scope,
                     });
                 }
             }
             "7z" | "7za" | "7zr" => {
-                if let Some(scope) = seven_zip_checkpoint_scope(args) {
-                    return Some(BashCheckpointPlan {
-                        reason: BashCheckpointReason::ArchiveExtraction,
+                if let Some(scope) = seven_zip_run_snapshot_scope(args) {
+                    return Some(BashRunSnapshotPlan {
+                        reason: BashRunSnapshotReason::ArchiveExtraction,
                         detail: summarize_shell_text(segment),
                         scope,
                     });
@@ -328,8 +328,8 @@ fn checkpoint_plan(command: &str) -> Option<BashCheckpointPlan> {
             }
             "git" => {
                 if let Some(scope) = git_workspace_rewrite_scope(args) {
-                    return Some(BashCheckpointPlan {
-                        reason: BashCheckpointReason::GitWorkspaceRewrite,
+                    return Some(BashRunSnapshotPlan {
+                        reason: BashRunSnapshotReason::GitWorkspaceRewrite,
                         detail: summarize_shell_text(segment),
                         scope,
                     });
@@ -343,10 +343,10 @@ fn checkpoint_plan(command: &str) -> Option<BashCheckpointPlan> {
 }
 
 pub(crate) fn risky_shell_changed_path_hints(command: &str) -> Vec<String> {
-    checkpoint_plan(command)
+    run_snapshot_plan(command)
         .and_then(|plan| match plan.scope {
-            BashCheckpointScope::Paths(paths) => Some(paths),
-            BashCheckpointScope::WorkspaceTree => None,
+            BashRunSnapshotScope::Paths(paths) => Some(paths),
+            BashRunSnapshotScope::WorkspaceTree => None,
         })
         .unwrap_or_default()
 }
@@ -590,7 +590,7 @@ fn perl_target_tokens(args: &[String]) -> Vec<String> {
     targets
 }
 
-fn tar_checkpoint_scope(args: &[String]) -> Option<BashCheckpointScope> {
+fn tar_run_snapshot_scope(args: &[String]) -> Option<BashRunSnapshotScope> {
     let extraction = args.iter().any(|arg| is_tar_extract_flag(arg));
     if !extraction {
         return None;
@@ -601,17 +601,17 @@ fn tar_checkpoint_scope(args: &[String]) -> Option<BashCheckpointScope> {
         let arg = &args[index];
         if arg == "-C" {
             if let Some(path) = args.get(index + 1).and_then(|path| shell_path_hint(path)) {
-                return Some(BashCheckpointScope::Paths(vec![path]));
+                return Some(BashRunSnapshotScope::Paths(vec![path]));
             }
-            return Some(BashCheckpointScope::WorkspaceTree);
+            return Some(BashRunSnapshotScope::WorkspaceTree);
         }
         if let Some(path) = arg.strip_prefix("--directory=").and_then(shell_path_hint) {
-            return Some(BashCheckpointScope::Paths(vec![path]));
+            return Some(BashRunSnapshotScope::Paths(vec![path]));
         }
         index += 1;
     }
 
-    Some(BashCheckpointScope::WorkspaceTree)
+    Some(BashRunSnapshotScope::WorkspaceTree)
 }
 
 fn is_tar_extract_flag(arg: &str) -> bool {
@@ -621,22 +621,22 @@ fn is_tar_extract_flag(arg: &str) -> bool {
         && trimmed.contains('x')
 }
 
-fn unzip_checkpoint_scope(args: &[String]) -> Option<BashCheckpointScope> {
+fn unzip_run_snapshot_scope(args: &[String]) -> Option<BashRunSnapshotScope> {
     let mut index = 0usize;
     while index < args.len() {
         let arg = &args[index];
         if arg == "-d" {
             if let Some(path) = args.get(index + 1).and_then(|path| shell_path_hint(path)) {
-                return Some(BashCheckpointScope::Paths(vec![path]));
+                return Some(BashRunSnapshotScope::Paths(vec![path]));
             }
-            return Some(BashCheckpointScope::WorkspaceTree);
+            return Some(BashRunSnapshotScope::WorkspaceTree);
         }
         index += 1;
     }
-    Some(BashCheckpointScope::WorkspaceTree)
+    Some(BashRunSnapshotScope::WorkspaceTree)
 }
 
-fn seven_zip_checkpoint_scope(args: &[String]) -> Option<BashCheckpointScope> {
+fn seven_zip_run_snapshot_scope(args: &[String]) -> Option<BashRunSnapshotScope> {
     let mode = args.first()?;
     if mode != "x" && mode != "e" {
         return None;
@@ -644,39 +644,39 @@ fn seven_zip_checkpoint_scope(args: &[String]) -> Option<BashCheckpointScope> {
 
     for arg in args.iter().skip(1) {
         if let Some(path) = arg.strip_prefix("-o").and_then(shell_path_hint) {
-            return Some(BashCheckpointScope::Paths(vec![path]));
+            return Some(BashRunSnapshotScope::Paths(vec![path]));
         }
     }
 
-    Some(BashCheckpointScope::WorkspaceTree)
+    Some(BashRunSnapshotScope::WorkspaceTree)
 }
 
-fn git_workspace_rewrite_scope(args: &[String]) -> Option<BashCheckpointScope> {
+fn git_workspace_rewrite_scope(args: &[String]) -> Option<BashRunSnapshotScope> {
     let subcommand = args.first().map(String::as_str)?;
 
     match subcommand {
         "reset" => args
             .iter()
             .any(|arg| arg == "--hard")
-            .then_some(BashCheckpointScope::WorkspaceTree),
+            .then_some(BashRunSnapshotScope::WorkspaceTree),
         "clean" => args
             .iter()
             .any(|arg| arg.starts_with("-f") || arg == "--force")
-            .then_some(BashCheckpointScope::WorkspaceTree),
+            .then_some(BashRunSnapshotScope::WorkspaceTree),
         "checkout" => {
             if let Some(double_dash) = args.iter().position(|arg| arg == "--") {
                 let paths = collect_path_hints(args[double_dash + 1..].to_vec());
-                return path_scope(paths).or(Some(BashCheckpointScope::WorkspaceTree));
+                return path_scope(paths).or(Some(BashRunSnapshotScope::WorkspaceTree));
             }
             if args.len() > 1 {
-                return Some(BashCheckpointScope::WorkspaceTree);
+                return Some(BashRunSnapshotScope::WorkspaceTree);
             }
             None
         }
         "restore" => {
             if let Some(double_dash) = args.iter().position(|arg| arg == "--") {
                 let paths = collect_path_hints(args[double_dash + 1..].to_vec());
-                return path_scope(paths).or(Some(BashCheckpointScope::WorkspaceTree));
+                return path_scope(paths).or(Some(BashRunSnapshotScope::WorkspaceTree));
             }
 
             let paths = collect_path_hints(
@@ -686,9 +686,9 @@ fn git_workspace_rewrite_scope(args: &[String]) -> Option<BashCheckpointScope> {
                     .cloned()
                     .collect(),
             );
-            path_scope(paths).or(Some(BashCheckpointScope::WorkspaceTree))
+            path_scope(paths).or(Some(BashRunSnapshotScope::WorkspaceTree))
         }
-        "apply" => Some(BashCheckpointScope::WorkspaceTree),
+        "apply" => Some(BashRunSnapshotScope::WorkspaceTree),
         _ => None,
     }
 }
@@ -700,13 +700,13 @@ fn collect_path_hints(tokens: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-fn path_scope(paths: Vec<String>) -> Option<BashCheckpointScope> {
+fn path_scope(paths: Vec<String>) -> Option<BashRunSnapshotScope> {
     if paths.is_empty() {
         None
     } else if paths.iter().any(|path| path == ".") {
-        Some(BashCheckpointScope::WorkspaceTree)
+        Some(BashRunSnapshotScope::WorkspaceTree)
     } else {
-        Some(BashCheckpointScope::Paths(paths))
+        Some(BashRunSnapshotScope::Paths(paths))
     }
 }
 
@@ -767,33 +767,33 @@ mod tests {
     use crate::context::{ExecutionContext, ToolContext};
     use crate::runtime::RuntimeOptions;
     use crate::tools::Tool;
-    use crate::{CancellationToken, WorkspaceCheckpointStore};
+    use crate::{CancellationToken, WorkspaceRunSnapshotStore};
     use std::fs;
     use std::thread;
     use std::time::Duration;
     use tempfile::TempDir;
 
     #[test]
-    fn test_bash_checkpoint_plan_classifies_expected_cases() {
-        let plan = checkpoint_plan("echo hello > notes.txt").unwrap();
-        assert_eq!(plan.reason, BashCheckpointReason::FileWriteRedirection);
+    fn test_bash_run_snapshot_plan_classifies_expected_cases() {
+        let plan = run_snapshot_plan("echo hello > notes.txt").unwrap();
+        assert_eq!(plan.reason, BashRunSnapshotReason::FileWriteRedirection);
         assert_eq!(
             plan.scope,
-            BashCheckpointScope::Paths(vec!["notes.txt".to_string()])
+            BashRunSnapshotScope::Paths(vec!["notes.txt".to_string()])
         );
 
-        let plan = checkpoint_plan("rm -rf src").unwrap();
-        assert_eq!(plan.reason, BashCheckpointReason::Delete);
+        let plan = run_snapshot_plan("rm -rf src").unwrap();
+        assert_eq!(plan.reason, BashRunSnapshotReason::Delete);
 
-        let plan = checkpoint_plan("sed -i 's/a/b/' src/lib.rs").unwrap();
-        assert_eq!(plan.reason, BashCheckpointReason::InPlaceEdit);
+        let plan = run_snapshot_plan("sed -i 's/a/b/' src/lib.rs").unwrap();
+        assert_eq!(plan.reason, BashRunSnapshotReason::InPlaceEdit);
 
-        let plan = checkpoint_plan("git reset --hard").unwrap();
-        assert_eq!(plan.scope, BashCheckpointScope::WorkspaceTree);
+        let plan = run_snapshot_plan("git reset --hard").unwrap();
+        assert_eq!(plan.scope, BashRunSnapshotScope::WorkspaceTree);
 
-        assert!(checkpoint_plan("pwd").is_none());
-        assert!(checkpoint_plan("git status").is_none());
-        assert!(checkpoint_plan("cargo test --lib").is_none());
+        assert!(run_snapshot_plan("pwd").is_none());
+        assert!(run_snapshot_plan("git status").is_none());
+        assert!(run_snapshot_plan("cargo test --lib").is_none());
     }
 
     #[test]
@@ -892,10 +892,10 @@ mod tests {
     }
 
     #[test]
-    fn test_read_only_bash_does_not_create_checkpoint() {
+    fn test_read_only_bash_does_not_create_run_snapshot() {
         let temp = TempDir::new().unwrap();
         let exec = ExecutionContext::new(temp.path().to_path_buf())
-            .with_workspace_checkpoint_store(WorkspaceCheckpointStore::new(
+            .with_workspace_run_snapshot_store(WorkspaceRunSnapshotStore::new(
                 temp.path().to_path_buf(),
             ));
         let runtime = RuntimeOptions::default();
@@ -906,16 +906,16 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            exec.checkpoint_store().unwrap().latest_status().unwrap(),
+            exec.run_snapshot_store().unwrap().latest_status().unwrap(),
             None
         );
     }
 
     #[test]
-    fn test_risky_bash_creates_checkpoint_with_bash_metadata() {
+    fn test_risky_bash_creates_run_snapshot_with_bash_metadata() {
         let temp = TempDir::new().unwrap();
         let exec = ExecutionContext::new(temp.path().to_path_buf())
-            .with_workspace_checkpoint_store(WorkspaceCheckpointStore::new(
+            .with_workspace_run_snapshot_store(WorkspaceRunSnapshotStore::new(
                 temp.path().to_path_buf(),
             ));
         let runtime = RuntimeOptions::default();
@@ -929,13 +929,13 @@ mod tests {
         .unwrap();
 
         let status = exec
-            .checkpoint_store()
+            .run_snapshot_store()
             .unwrap()
             .latest_status()
             .unwrap()
             .unwrap();
         assert_eq!(status.captures.len(), 1);
-        assert_eq!(status.captures[0].source, CheckpointCaptureSource::Bash);
+        assert_eq!(status.captures[0].source, RunSnapshotCaptureSource::Bash);
         assert_eq!(status.captures[0].reason, "shell redirection write");
         assert!(status.captures[0]
             .detail
@@ -946,10 +946,10 @@ mod tests {
     }
 
     #[test]
-    fn test_failed_risky_bash_still_leaves_checkpoint() {
+    fn test_failed_risky_bash_still_leaves_run_snapshot() {
         let temp = TempDir::new().unwrap();
         let exec = ExecutionContext::new(temp.path().to_path_buf())
-            .with_workspace_checkpoint_store(WorkspaceCheckpointStore::new(
+            .with_workspace_run_snapshot_store(WorkspaceRunSnapshotStore::new(
                 temp.path().to_path_buf(),
             ));
         let runtime = RuntimeOptions::default();
@@ -962,7 +962,7 @@ mod tests {
         );
 
         assert!(result.unwrap().contains("Exit code: 1"));
-        let status = exec.checkpoint_store().unwrap().latest_status().unwrap();
+        let status = exec.run_snapshot_store().unwrap().latest_status().unwrap();
         assert!(status.is_some());
     }
 
@@ -972,7 +972,7 @@ mod tests {
         fs::write(temp.path().join("before.txt"), "before").unwrap();
 
         let exec = ExecutionContext::new(temp.path().to_path_buf())
-            .with_workspace_checkpoint_store(WorkspaceCheckpointStore::new(
+            .with_workspace_run_snapshot_store(WorkspaceRunSnapshotStore::new(
                 temp.path().to_path_buf(),
             ));
         let runtime = RuntimeOptions::default();
@@ -985,7 +985,7 @@ mod tests {
         )
         .unwrap();
 
-        exec.checkpoint_store()
+        exec.run_snapshot_store()
             .unwrap()
             .restore_latest()
             .unwrap()

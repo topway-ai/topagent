@@ -1,16 +1,14 @@
 use topagent_core::behavior::PreExecutionState;
-use topagent_core::{BehaviorContract, ExternalToolEffect, RuntimeOptions, TaskMode};
+use topagent_core::{BehaviorContract, RuntimeOptions, TaskMode};
 
 #[test]
 fn test_behavior_contract_respects_runtime_options() {
     let options = RuntimeOptions::default()
         .with_require_plan(false)
-        .with_generated_tool_authoring(true)
         .with_max_messages_before_truncation(42);
     let contract = BehaviorContract::from_runtime_options(&options);
 
     assert!(!contract.planning.require_plan_by_default);
-    assert!(contract.generated_tools.authoring_enabled);
     assert_eq!(contract.compaction.max_messages_before_truncation, 42);
     assert_eq!(contract.compaction.micro_trigger_messages, 21);
 }
@@ -57,22 +55,13 @@ fn test_planning_block_message_only_blocks_mutation_risk_without_plan() {
     let contract = BehaviorContract::default();
 
     assert!(contract
-        .planning_block_message("bash", Some("git status"), None, false,)
+        .planning_block_message("bash", Some("git status"), false,)
         .is_none());
 
     assert!(contract
-        .planning_block_message("bash", Some("touch risky.txt"), None, false,)
+        .planning_block_message("bash", Some("touch risky.txt"), false,)
         .unwrap()
         .contains("Planning required"));
-
-    assert!(contract
-        .planning_block_message(
-            "read_only_tool",
-            None,
-            Some(ExternalToolEffect::ReadOnly),
-            false,
-        )
-        .is_none());
 }
 
 #[test]
@@ -86,25 +75,17 @@ fn test_pre_execution_block_message_requires_real_execution_before_verify() {
     };
 
     let bash_block =
-        contract.pre_execution_block_message("bash", Some("cargo check --offline"), None, &state);
+        contract.pre_execution_block_message("bash", Some("cargo check --offline"), &state);
     assert!(bash_block
         .unwrap()
         .contains("Execute at least one plan step"));
-
-    let external_block = contract.pre_execution_block_message(
-        "verify_tool",
-        None,
-        Some(ExternalToolEffect::VerificationOnly),
-        &state,
-    );
-    assert!(external_block.unwrap().contains("verification tools"));
 
     let executed_state = PreExecutionState {
         execution_started: true,
         ..state
     };
     assert!(contract
-        .pre_execution_block_message("bash", Some("cargo check --offline"), None, &executed_state,)
+        .pre_execution_block_message("bash", Some("cargo check --offline"), &executed_state,)
         .is_none());
 }
 

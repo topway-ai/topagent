@@ -10,10 +10,7 @@ use crate::config::defaults::CliParams;
 use crate::config::workspace::resolve_workspace_path;
 use render::print_report;
 use service::check_service_config;
-use workspace::{
-    check_external_tools, check_generated_tools, check_hooks_manifest, check_workspace_files,
-    check_workspace_layout,
-};
+use workspace::{check_workspace_files, check_workspace_layout};
 
 // Expose lint functions for the `memory lint` command used in memory_cli.
 pub(crate) use lint::{lint_memory_md_content, lint_user_md_content};
@@ -42,9 +39,6 @@ pub(crate) fn run_doctor_checks(params: &CliParams) -> Vec<CheckResult> {
             });
             check_workspace_layout(&ws, &mut checks);
             check_workspace_files(&ws, &mut checks);
-            check_generated_tools(&ws, &mut checks);
-            check_external_tools(&ws, &mut checks);
-            check_hooks_manifest(&ws, &mut checks);
         }
         Err(err) => {
             checks.push(CheckResult {
@@ -86,20 +80,6 @@ mod tests {
     #[test]
     fn test_doctor_full_healthy_workspace_has_no_errors() {
         let temp = healthy_workspace();
-        std::fs::write(
-            temp.path().join(".topagent/hooks.toml"),
-            r#"[[hooks]]
-event = "pre_tool"
-command = "echo ok"
-label = "test hook""#,
-        )
-        .unwrap();
-        std::fs::write(
-            temp.path().join(workspace::EXTERNAL_TOOLS_RELATIVE_PATH),
-            r#"[{"name":"ls_tool","description":"list files","command":"ls","argv_template":["."],"sandbox":"workspace"}]"#,
-        )
-        .unwrap();
-
         let params = CliParams {
             api_key: Some("test-key".to_string()),
             opencode_api_key: None,
@@ -108,7 +88,6 @@ label = "test hook""#,
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let checks = run_doctor_checks(&params);
         let model_check = checks.iter().find(|c| c.name == "model config").unwrap();
@@ -130,7 +109,6 @@ label = "test hook""#,
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let checks = run_doctor_checks(&params);
         assert!(
@@ -163,7 +141,6 @@ label = "test hook""#,
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let _ = run_doctor_checks(&params);
 

@@ -1,9 +1,9 @@
 use anyhow::Result;
 
 use crate::commands::surface::PRODUCT_NAME;
-use crate::config::defaults::CliParams;
 use crate::config::defaults::load_persisted_telegram_defaults;
-use crate::config::summary::{ResolvedContractSummary, resolve_contract_summary};
+use crate::config::defaults::CliParams;
+use crate::config::summary::{resolve_contract_summary, ResolvedContractSummary};
 
 pub(crate) fn run_config_inspect(params: CliParams) -> Result<()> {
     let defaults = load_persisted_telegram_defaults().unwrap_or_default();
@@ -69,10 +69,6 @@ pub(crate) fn render_contract_summary(summary: &ResolvedContractSummary) -> Stri
     out.push_str(&format!("  DM access:        {}\n", dm_access));
 
     out.push_str("\nOptions:\n");
-    out.push_str(&format!(
-        "  Tool authoring:   {}\n",
-        if summary.tool_authoring { "on" } else { "off" }
-    ));
     out.push_str(&format!("  Max steps:        {}\n", summary.max_steps));
     out.push_str(&format!("  Max retries:      {}\n", summary.max_retries));
     out.push_str(&format!("  Timeout:          {}s\n", summary.timeout_secs));
@@ -83,8 +79,8 @@ pub(crate) fn render_contract_summary(summary: &ResolvedContractSummary) -> Stri
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::defaults::TOPAGENT_WORKSPACE_KEY;
     use crate::config::defaults::TelegramModeDefaults;
+    use crate::config::defaults::TOPAGENT_WORKSPACE_KEY;
     use std::collections::HashMap;
     use tempfile::TempDir;
 
@@ -118,7 +114,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let summary = resolve_contract_summary(&params, &defaults);
         let output = render_contract_summary(&summary);
@@ -182,7 +177,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let summary = resolve_contract_summary(&params, &defaults);
         let output = render_contract_summary(&summary);
@@ -225,7 +219,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let output_unbound =
             render_contract_summary(&resolve_contract_summary(&params, &defaults_unbound));

@@ -17,7 +17,6 @@ pub struct BehaviorContract {
     pub approval: ApprovalPolicy,
     pub output: OutputPolicy,
     pub memory: MemoryPolicy,
-    pub generated_tools: GeneratedToolPolicy,
     pub compaction: CompactionPolicy,
 }
 
@@ -61,7 +60,6 @@ pub struct ToolPolicy {
     pub repo_awareness_tools: &'static [&'static str],
     pub planning_tools: &'static [&'static str],
     pub memory_write_tools: &'static [&'static str],
-    pub generated_tool_authoring_tools: &'static [&'static str],
     pub research_safe_bash_prefixes: &'static [&'static str],
     pub verification_bash_prefixes: &'static [&'static str],
     pub verification_bash_keywords: &'static [&'static str],
@@ -70,7 +68,6 @@ pub struct ToolPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MutationPolicy {
     pub mutation_tools: &'static [&'static str],
-    pub generated_tool_surface_tools: &'static [&'static str],
     pub destructive_shell_tokens: &'static [&'static str],
     pub shell_write_tokens: &'static [&'static str],
 }
@@ -83,7 +80,6 @@ pub struct OutputPolicy {
     pub proof_of_work_for_verification: bool,
     pub show_verification_evidence_when_requested: bool,
     pub include_unresolved_issues: bool,
-    pub include_workspace_warnings: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,16 +109,6 @@ pub struct MemoryPolicy {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GeneratedToolPolicy {
-    pub authoring_enabled: bool,
-    pub verified_tools_only: bool,
-    pub disposable: bool,
-    pub expose_unavailable_warnings: bool,
-    pub max_runtime_warning_lines: usize,
-    pub reload_after_surface_mutation: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactionPolicy {
     pub micro_trigger_messages: usize,
     pub max_messages_before_truncation: usize,
@@ -144,7 +130,6 @@ pub struct RunStateSnapshot {
     pub active_files: Vec<String>,
     pub proof_of_work_anchors: Vec<String>,
     pub trust_notes: Vec<String>,
-    pub hook_notes: Vec<String>,
     pub memory_context_loaded: bool,
 }
 
@@ -179,7 +164,6 @@ impl BehaviorContract {
             approval: approval_policy::default_approval_policy(),
             output: durability::default_output_policy(),
             memory: durability::default_memory_policy(),
-            generated_tools: durability::default_generated_tool_policy(options),
             compaction: compaction_policy::default_compaction_policy(options),
         }
     }

@@ -8,7 +8,7 @@ mod memory;
 mod openrouter_models;
 mod operational_paths;
 mod progress;
-mod run_setup;
+mod run_context;
 mod service;
 mod telegram;
 mod workspace_state;

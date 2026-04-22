@@ -18,9 +18,8 @@ pub(crate) use install::run_install;
 pub(crate) use lifecycle::{run_status, run_uninstall};
 pub(crate) use upgrade::run_upgrade;
 
-pub(crate) fn run_service_command(command: ServiceCommands, params: CliParams) -> Result<()> {
+pub(crate) fn run_service_command(command: ServiceCommands) -> Result<()> {
     match command {
-        ServiceCommands::Install { token } => install::run_service_install(token, params),
         ServiceCommands::Start => lifecycle::run_service_start(),
         ServiceCommands::Stop => lifecycle::run_service_stop(),
         ServiceCommands::Restart => lifecycle::run_service_restart(),

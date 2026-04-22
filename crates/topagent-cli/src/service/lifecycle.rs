@@ -1,12 +1,10 @@
 use anyhow::{Context, Result};
 
 use crate::commands::surface::{LIFECYCLE_LANES, PRODUCT_NAME};
-use crate::config::defaults::{
-    parse_env_bool, CliParams, TELEGRAM_SERVICE_UNIT_NAME, TOPAGENT_TOOL_AUTHORING_KEY,
-};
+use crate::config::defaults::{CliParams, TELEGRAM_SERVICE_UNIT_NAME};
 use crate::config::runtime::TelegramModeConfig;
 use crate::managed_files::{
-    assert_managed_or_absent, ensure_service_setup_present, write_managed_file,
+    assert_managed_or_absent, ensure_service_install_present, write_managed_file,
 };
 use crate::operational_paths::{service_paths, ServicePaths};
 
@@ -14,7 +12,7 @@ use super::detect::resolve_current_exe;
 use super::managed_env::render_service_env_file;
 use super::state::{load_control_plane_state, load_service_probe};
 use super::systemd::{ensure_systemd_user_available, run_systemctl_user_checked};
-use super::uninstall::uninstall_service_setup;
+use super::uninstall::uninstall_installation;
 use super::unit::render_service_unit_file;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,7 +92,7 @@ pub(crate) fn run_status(params: CliParams) -> Result<()> {
 }
 
 pub(crate) fn run_uninstall(purge: bool) -> Result<()> {
-    uninstall_service_setup(true, purge)
+    uninstall_installation(true, purge)
 }
 
 pub(crate) fn run_service_start() -> Result<()> {
@@ -125,7 +123,7 @@ pub(crate) fn run_service_restart() -> Result<()> {
 }
 
 pub(crate) fn run_service_uninstall(purge: bool) -> Result<()> {
-    uninstall_service_setup(false, purge)
+    uninstall_installation(false, purge)
 }
 
 fn run_service_lifecycle(
@@ -136,7 +134,7 @@ fn run_service_lifecycle(
 ) -> Result<()> {
     ensure_systemd_user_available()?;
     let paths = service_paths()?;
-    ensure_service_setup_present(&paths.unit_path, &paths.env_path)?;
+    ensure_service_install_present(&paths.unit_path, &paths.env_path)?;
     run_systemctl_user_checked(
         args,
         &format!("{} the {PRODUCT_NAME} Telegram service", action),
@@ -171,7 +169,10 @@ fn render_status(params: CliParams) -> Result<()> {
     let unit_path = state.service_probe.unit_path(&state.paths.unit_path);
 
     println!("{PRODUCT_NAME} status");
-    println!("Setup installed: {}", yes_no(state.setup_installed));
+    println!(
+        "Installation present: {}",
+        yes_no(state.installation_present)
+    );
     println!("Service installed: {}", yes_no(service_installed));
     if let (Some(enabled), Some(active)) = (enabled, active) {
         println!("Enabled: {}", yes_no(enabled));
@@ -197,14 +198,6 @@ fn render_status(params: CliParams) -> Result<()> {
         state.model_selection.effective.model_id,
         state.model_selection.effective.source.label()
     );
-    if let Some(enabled) = parse_env_bool(
-        state
-            .env_values
-            .get(TOPAGENT_TOOL_AUTHORING_KEY)
-            .map(String::as_str),
-    ) {
-        println!("Tool authoring: {}", if enabled { "on" } else { "off" });
-    }
     println!("Lifecycle sources of truth:");
     for lane in LIFECYCLE_LANES {
         println!(
@@ -236,7 +229,7 @@ fn render_status(params: CliParams) -> Result<()> {
                 );
             }
         }
-    } else if !state.setup_installed {
+    } else if !state.installation_present {
         println!("Hint: run `topagent install` to configure the Telegram background service.");
     } else if let Some(status) = &snapshot {
         if let Some(active_state) = &status.active_state {

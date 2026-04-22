@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -7,17 +7,15 @@ use super::surface::PRODUCT_NAME;
 use super::types::ProcedureCommands;
 use crate::config::workspace::resolve_workspace_path;
 use crate::memory::{
-    MEMORY_PROCEDURES_RELATIVE_DIR, ProcedureStatus, WorkspaceMemory, disable_procedure,
-    parse_saved_procedure,
+    disable_procedure, parse_saved_procedure, ProcedureStatus, WorkspaceMemory,
+    MEMORY_PROCEDURES_RELATIVE_DIR,
 };
-use topagent_core::migrate_legacy_operator_preferences;
 
 pub(crate) fn run_procedure_command(
     command: ProcedureCommands,
     workspace: Option<PathBuf>,
 ) -> Result<()> {
     let workspace = resolve_workspace_path(workspace)?;
-    migrate_legacy_operator_preferences(&workspace).map_err(|err| anyhow!(err.to_string()))?;
     match command {
         ProcedureCommands::List { all } => {
             print!("{}", render_procedure_list(&workspace, all)?)
@@ -156,7 +154,7 @@ fn resolve_procedure_path(workspace: &Path, id: &str) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::procedures::{ProcedureDraft, mark_procedure_superseded, save_procedure};
+    use crate::memory::procedures::{mark_procedure_superseded, save_procedure, ProcedureDraft};
     use tempfile::TempDir;
 
     fn sample_procedure(title: &str) -> ProcedureDraft {
@@ -209,11 +207,9 @@ mod tests {
         let rendered = prune_procedures(temp.path()).unwrap();
 
         assert!(rendered.contains("Removed: 1"));
-        assert!(
-            procedures_dir
-                .join(active_file.trim_start_matches(".topagent/procedures/"))
-                .exists()
-        );
+        assert!(procedures_dir
+            .join(active_file.trim_start_matches(".topagent/procedures/"))
+            .exists());
         assert!(!stale_path.exists());
     }
 }

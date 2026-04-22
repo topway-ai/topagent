@@ -22,7 +22,6 @@ pub(crate) struct TrajectoryArtifact {
     pub(crate) changed_files: Vec<String>,
     pub(crate) verification: Vec<TrajectoryVerification>,
     pub(crate) outcome_summary: String,
-    #[serde(alias = "lesson_file")]
     pub(crate) note_file: Option<String>,
     pub(crate) procedure_file: Option<String>,
     pub(crate) redaction: TrajectoryRedaction,

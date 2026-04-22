@@ -1,8 +1,8 @@
 use anyhow::Result;
-use topagent_core::{POLL_TIMEOUT_SECS, TelegramAdapter, context::ExecutionContext};
+use topagent_core::{context::ExecutionContext, TelegramAdapter, POLL_TIMEOUT_SECS};
 use tracing::{debug, error, info, warn};
 
-use crate::config::defaults::{CliParams, load_persisted_telegram_defaults};
+use crate::config::defaults::{load_persisted_telegram_defaults, CliParams};
 use crate::config::runtime::resolve_telegram_mode_config;
 use crate::operational_paths::managed_service_env_path;
 use crate::telegram::router::{route_callback_query, route_message};

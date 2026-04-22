@@ -543,15 +543,16 @@ mod tests {
     fn snapshot() -> RunStateSnapshot {
         RunStateSnapshot {
             objective: Some("Fix the parser without losing approval state".to_string()),
-            blockers: vec!["Approval denied for deleting the generated tool".to_string()],
+            blockers: vec!["Approval denied for destructive shell mutation".to_string()],
             pending_approvals: vec!["apr-3 [pending] git commit: release".to_string()],
-            recent_approval_decisions: vec!["apr-2 [denied] delete generated tool".to_string()],
+            recent_approval_decisions: vec![
+                "apr-2 [denied] shell mutation: remove generated files".to_string(),
+            ],
             active_files: vec!["src/lib.rs".to_string(), "Cargo.toml".to_string()],
             proof_of_work_anchors: vec!["verification: cargo test --lib (exit 0)".to_string()],
             trust_notes: vec![
                 "Low-trust content is active in this run: prior transcript.".to_string()
             ],
-            hook_notes: vec![],
             memory_context_loaded: true,
         }
     }

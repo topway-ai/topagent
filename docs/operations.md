@@ -10,7 +10,7 @@ Command surface is authoritative in `topagent --help`; this document explains in
 curl -fsSL https://raw.githubusercontent.com/topway-ai/topagent/main/scripts/install.sh | bash
 ```
 
-Downloads a precompiled binary for Linux x86_64, verifies its SHA-256 checksum, and places it in `~/.cargo/bin/`. If the terminal is interactive, it launches `topagent setup` automatically.
+Downloads a precompiled binary for Linux x86_64, verifies its SHA-256 checksum, and places it in `~/.cargo/bin/`. If the terminal is interactive, it launches `topagent install` automatically.
 
 ### From source
 
@@ -28,15 +28,15 @@ Installs Rust if needed, then builds from the git repository. Requires a C compi
 | `TOPAGENT_INSTALL_PATH` | unset | Build from a local repo checkout instead of git |
 | `TOPAGENT_INSTALL_ROOT` | unset | Install to `$ROOT/bin/` instead of `~/.cargo/bin/` |
 | `TOPAGENT_INSTALL_VERSION` | latest | Download a specific release version |
-| `TOPAGENT_SKIP_SETUP` | unset | Skip the interactive `topagent setup` after binary install |
+| `TOPAGENT_SKIP_INSTALL` | unset | Skip the interactive `topagent install` after binary install |
 
-## Setup: topagent setup
+## Install: topagent install
 
 ```bash
-topagent setup
+topagent install
 ```
 
-Interactive setup that configures and starts the Telegram background service. `topagent install` remains available as an alias.
+Interactive install that configures and starts the Telegram background service.
 
 **What it does:**
 
@@ -54,25 +54,25 @@ Interactive setup that configures and starts the Telegram background service. `t
 9. Writes config file: `~/.config/topagent/services/topagent-telegram.env` (mode 0600)
 10. Writes systemd unit: `~/.config/systemd/user/topagent-telegram.service`
 11. Runs `systemctl --user daemon-reload`, then:
-    - on fresh setup: `systemctl --user enable --now topagent-telegram.service`
-    - on re-running setup over an existing managed install: `systemctl --user enable topagent-telegram.service` and `systemctl --user restart topagent-telegram.service`
+    - on fresh install: `systemctl --user enable --now topagent-telegram.service`
+    - on re-running install over an existing managed install: `systemctl --user enable topagent-telegram.service` and `systemctl --user restart topagent-telegram.service`
 
-**Telegram DM access control**: If you enter an allowed username during setup:
+**Telegram DM access control**: If you enter an allowed username during install:
 - The first direct message from a matching username binds and persists the numeric Telegram user ID
 - After binding, enforcement switches to numeric user ID — so if the user changes their username later, access still works
 - Direct messages from other users are quietly rejected
 - Non-private chats (groups, supergroups, channels) are rejected by the inbound admission gate before any binding lookup runs, so a bot accidentally added to a group cannot bind the allowed username to the group's chat ID
-- The bound numeric user ID is preserved across re-running setup as long as the allowed username is unchanged; clearing the allowed username also clears the persisted binding
+- The bound numeric user ID is preserved across re-running install as long as the allowed username is unchanged; clearing the allowed username also clears the persisted binding
 - After binding, both `TELEGRAM_ALLOWED_DM_USERNAME` and `TELEGRAM_BOUND_DM_USER_ID` are retained in the env file; the bound ID takes admission precedence at runtime, but retaining the username ensures a re-install with the same username correctly restores the binding
 
 Model precedence during install is:
 
 1. explicit `--model`
 2. the interactive model selection
-3. the previously persisted `TOPAGENT_MODEL`
+3. the persisted `TOPAGENT_MODEL`
 4. the built-in TopAgent default model
 
-**Re-running setup** still updates the managed config and explicitly restarts the service with that updated config, but you no longer need to use it just to switch models. The reconfigure path now writes the env file in a single atomic emit (rather than overwriting it twice) and preserves operator-entered secrets — API keys, the bot token, the allowed Telegram username, and the bound numeric user ID — when you accept the existing prompt defaults.
+Re-running `topagent install` updates the managed config and explicitly restarts the service with that updated config, but you do not need to use it just to switch models. The reconfigure path writes the env file in a single emit and preserves operator-entered secrets — API keys, the bot token, the allowed Telegram username, and the bound numeric user ID — when you accept the existing prompt defaults.
 
 ## Service lifecycle
 
@@ -98,12 +98,11 @@ topagent procedure list      # list live procedures
 topagent service start       # start the service
 topagent service stop        # stop the service
 topagent service restart     # restart the service (keeps current config)
-topagent run diff            # preview the restore diff for the latest checkpoint
-topagent run restore         # restore the latest checkpoint and clear Telegram transcripts
-topagent run status          # What happened in my last run? (checkpoint, transcripts, recovery guidance)
+topagent run diff            # preview the restore diff for the latest run snapshot
+topagent run restore         # restore the latest run snapshot and clear Telegram transcripts
+topagent run status          # What happened in my last run? (run snapshot, transcripts, recovery guidance)
 topagent config inspect      # What provider/model/keys am I actually using?
 topagent doctor              # Is everything healthy? (deep diagnostics)
-topagent service install     # install service without the full interactive flow
 topagent upgrade             # download and install the latest GitHub release binary; stops/restarts service
 topagent upgrade --use-cargo # build and install from source via cargo instead of a release binary
 topagent service uninstall   # stop service, remove unit and env files, keep binary
@@ -112,25 +111,25 @@ topagent uninstall           # stop service, remove unit+env files and binary
 
 ### Model management
 
-`topagent model status` reads the same managed env file that powers `topagent status`, then reports both the configured default model and the effective model for the current invocation. The effective provider is determined by the persisted `TOPAGENT_PROVIDER` selection (set explicitly during setup), defaulting to OpenRouter only for configs that predate the provider field.
+`topagent model status` reads the same managed env file that powers `topagent status`, then reports both the configured default model and the effective model for the current invocation. The effective provider is determined by the persisted `TOPAGENT_PROVIDER` selection or the built-in OpenRouter default when no install config exists.
 
-`topagent model set <model-id>` updates only `TOPAGENT_MODEL` inside the managed env file, preserves the other managed values (including the provider), and automatically restarts the Telegram service when it is installed. **`model set` changes only the model, not the provider.** To change the provider, re-run `topagent setup`. The `--model` flag overrides the configured default for one-shot runs only, without changing the persisted config.
+`topagent model set <model-id>` updates only `TOPAGENT_MODEL` inside the managed env file, preserves the other managed values (including the provider), and automatically restarts the Telegram service when it is installed. **`model set` changes only the model, not the provider.** To change the provider, run `topagent install`. The `--model` flag overrides the configured default for one-shot runs only, without changing the persisted config.
 
-`topagent model pick` uses the same provider-scoped model discovery and fallback logic as setup: live top-model lookup first, then cached models, then the curated starter list, with a manual custom-model entry path.
+`topagent model pick` uses the same provider-scoped model discovery as install: live top-model lookup first, then cached models, then the curated starter list, with a manual custom-model entry path.
 
 `topagent model list` shows the cached top OpenRouter models and marks the current configured model when it appears in that cache.
 
 `topagent model refresh` fetches the current top provider models and stores them in `~/.config/topagent/cache/openrouter-models.json`. If live refresh fails and a cache already exists, TopAgent keeps the stale cache and tells you so.
 
-### Workspace checkpoints
+### Workspace run snapshots
 
-TopAgent now captures a lightweight workspace checkpoint automatically before `write`, `edit`, and risky shell mutations. Checkpoints are stored under `workspace/.topagent/checkpoints/` and keep only the original contents of files that were touched during that task, or the minimal broader workspace snapshot needed for an obvious shell rewrite.
+TopAgent now captures a lightweight workspace run snapshot automatically before `write`, `edit`, and risky shell mutations. Run snapshots are stored under `workspace/.topagent/run-snapshots/` and keep only the original contents of files that were touched during that task, or the minimal broader workspace snapshot needed for an obvious shell rewrite.
 
-`topagent run status` shows the latest saved checkpoint alongside execution-session state and recovery guidance.
+`topagent run status` shows the latest saved run snapshot alongside execution-session state and recovery guidance.
 
-`topagent run diff` previews the current workspace against that checkpoint so you can inspect the rollback before applying it.
+`topagent run diff` previews the current workspace against that run snapshot so you can inspect the rollback before applying it.
 
-`topagent run restore` restores the latest checkpoint and clears persisted Telegram transcripts for that workspace so the next chat run does not reload stale file-state context.
+`topagent run restore` restores the latest run snapshot and clears persisted Telegram transcripts for that workspace so the next chat run does not reload stale file-state context.
 
 ### Provenance and trust boundaries
 
@@ -153,7 +152,7 @@ Low-trust content may still be summarized, quoted, or analyzed as data. It does 
 
 Answers: **Is the service installed and running?**
 
-- Whether setup and service are installed
+- Whether installation config and service are present
 - systemd service state (enabled, active/inactive/failed)
 - Config file path, unit file path, workspace path, configured default model, and effective model
 - Hints when something is wrong (e.g., journal command to inspect logs)
@@ -174,7 +173,7 @@ Neither command removes the workspace directory or the `.topagent/` data inside 
 
 `topagent uninstall --purge` adds to the standard uninstall:
 
-4. Removes the workspace `.topagent/` directory (notes, procedures, transcripts, checkpoints, etc.)
+4. Removes the workspace `.topagent/` directory (notes, procedures, transcripts, run snapshots, etc.)
 5. Removes the model cache under `~/.config/topagent/cache/`
 
 **Preserved:** The workspace directory itself (e.g., `workspace/`) is never deleted — only its `.topagent/` subdirectory.
@@ -188,7 +187,7 @@ The workspace is the root directory the agent operates in. All file paths are re
 | Mode | How workspace is resolved |
 |------|--------------------------|
 | One-shot (`topagent "task"`) | Current working directory, or `--workspace` |
-| Telegram (`topagent setup`) | Interactive prompt with default, or `--workspace` |
+| Telegram (`topagent install`) | Interactive prompt with default, or `--workspace` |
 | Foreground Telegram (`topagent telegram`) | Current directory, or `--workspace` |
 
 The workspace must exist and be a directory. The agent creates a `.topagent/` subdirectory inside it for the versioned workspace-state marker, notes, tools, memory files, recovery artifacts, and chat transcript evidence.
@@ -204,58 +203,21 @@ workspace/.topagent/
   procedures/                # governed reusable procedures (markdown)
   trajectories/              # local saved trajectory records (JSON)
   exports/trajectories/      # reviewed trajectory export packages (JSON)
-  exports/legacy-plans/      # migrated old plans; evidence/export only
-  checkpoints/               # automatic workspace checkpoints for restore
-  tools/                     # generated custom tools (manifests + scripts)
+  run-snapshots/             # automatic workspace run snapshots for restore
   telegram-history/          # per-chat transcript evidence files (JSON)
-  hooks.toml                  # workspace lifecycle hooks (optional)
-  external-tools.json         # workspace external tool definitions (if present)
 ```
 
 Created automatically as needed. Not removed by `topagent uninstall`.
 
-`workspace-state.json` currently stores schema version `1`. TopAgent refuses future schema versions it does not understand instead of guessing. Current setup and memory initialization apply a bounded migration:
-
-- old `.topagent/topics/*.md` and `.topagent/lessons/*.md` files become `.topagent/notes/*.md`
-- old topic/lesson references in `MEMORY.md` are rewritten to `notes/...`
-- old operator preference topic files become `.topagent/USER.md`
-- old `.topagent/plans/*` files move to `.topagent/exports/legacy-plans/` and are not prompt memory
+`workspace-state.json` stores the current schema version `1` and state model marker. TopAgent accepts only that current state model.
 
 The supported state model is intentionally split by role:
 
 - Hot-path prompt memory: `USER.md` and `MEMORY.md`
 - Lazy prompt context: relevant `notes/` and active `procedures/`, both capped
-- Evidence/export only: `trajectories/`, `exports/trajectories/`, and migrated `exports/legacy-plans/`
-- Run recovery state: `checkpoints/`
+- Evidence/export only: `trajectories/` and `exports/trajectories/`
+- Run recovery state: `run-snapshots/`
 - Transport evidence: `telegram-history/`
-- Workspace runtime/tool config: `hooks.toml`, `external-tools.json`, and `tools/`
-
-If a generated tool has an invalid manifest, is missing `script.sh`, is missing its stored script hash, or its current `script.sh` no longer matches the verified hash, TopAgent keeps the artifact on disk but reports it as a workspace warning instead of silently loading it.
-
-`.topagent/external-tools.json` is the only supported workspace external-tool config file.
-
-External tool entries must declare the same centralized sandbox policy explicitly:
-
-```json
-[
-  {
-    "name": "repo_todos",
-    "description": "search TODOs inside the repo",
-    "command": "rg",
-    "argv_template": ["TODO", "{path}"],
-    "sandbox": "workspace"
-  },
-  {
-    "name": "system_uptime",
-    "description": "show host uptime",
-    "command": "uptime",
-    "argv_template": [],
-    "sandbox": "host"
-  }
-]
-```
-
-If `sandbox` is omitted, TopAgent rejects the external-tool config. Generated tools do not have this toggle; they always use the workspace sandbox policy when `bwrap` is available.
 
 ## Persistence and reset
 
@@ -277,14 +239,14 @@ If `sandbox` is omitted, TopAgent rejects the external-tool config. Generated to
 - Tiny by design
 - One-line pointer entries only
 - Safe to inject at task start
-- Should reference topic files or durable facts, not transcript dumps
+- Should reference `notes/` or `procedures/` files, not transcript dumps
 
 #### 3. Workspace notes
 
 `workspace/.topagent/notes/*.md`
 
 - Store compact durable notes by concern
-- Loaded only when the current task matches the topic
+- Loaded only when the current task matches the note title, tags, or index pointer
 - Good fits: architecture, runtime behavior, security constraints, open issues
 - Bad fits: shell logs, command dumps, transient plans, cheap repo summaries
 - `topagent memory status` shows counts as "Notes: N note(s)"
@@ -329,7 +291,7 @@ When a new Telegram message arrives, TopAgent:
 
 1. Loads the capped operator model from `USER.md`
 2. Loads `MEMORY.md`
-3. Selects only the small set of procedures and workspace notes whose topic/tags overlap the task
+3. Selects only the small set of procedures and workspace notes whose title/tags overlap the task
 4. Searches the raw transcript only when the task appears to refer to prior chat context
 5. Carries a small trust summary alongside that memory so transcript/external content does not silently become trusted intent
 6. Injects a small memory briefing that explicitly tells the model to treat memory as hints and re-check current code/runtime state
@@ -367,72 +329,9 @@ Workspace notes are saved under `.topagent/notes/`. Notes persist across runs an
 
 ### Config
 
-The env file at `~/.config/topagent/services/topagent-telegram.env` stores the API key, bot token, model, workspace path, tool-authoring mode, and runtime limits (`max_steps`, `max_retries`, `timeout_secs`). It has mode 0600 (owner-readable only). The installed systemd unit reads this env file at startup, so `topagent setup`, `topagent model set`, and `topagent model pick` all update the next service run without duplicating those settings in `ExecStart`.
+The env file at `~/.config/topagent/services/topagent-telegram.env` stores the API key, bot token, model, workspace path, and runtime limits (`max_steps`, `max_retries`, `timeout_secs`). It has mode 0600 (owner-readable only). The installed systemd unit reads this env file at startup, so `topagent install`, `topagent model set`, and `topagent model pick` all update the next service run without duplicating those settings in `ExecStart`.
 
 The OpenRouter discovery cache lives separately at `~/.config/topagent/cache/openrouter-models.json`. It is only a convenience cache for install/list/refresh and is not the active model source of truth.
-
-## Workspace Lifecycle Hooks
-
-TopAgent supports optional deterministic lifecycle hooks configured via `.topagent/hooks.toml`. Hooks intercept four lifecycle boundaries:
-
-| Event | When it fires | Can block? | Can annotate? | Can request verify? |
-|-------|--------------|-----------|--------------|-------------------|
-| `on_session_start` | Before the first step loop iteration | No | Yes | No |
-| `pre_tool` | Before each tool execution (after approval/trust gates) | Yes | Yes | No |
-| `post_write` | After write/edit tools complete | No | Yes | Yes |
-| `pre_final` | Before the final response is emitted | No | Yes | Yes |
-
-### Configuration
-
-```toml
-# .topagent/hooks.toml
-
-[[hooks]]
-event = "pre_tool"
-command = "sh .topagent/check-bash.sh"
-filter = ["bash"]
-label = "bash safety guard"
-timeout_secs = 5
-
-[[hooks]]
-event = "post_write"
-command = "sh .topagent/fmt-check.sh"
-filter = ["*.rs"]
-label = "rust format check"
-```
-
-### Hook protocol
-
-Hooks receive a JSON object on stdin:
-
-```json
-{
-  "event": "pre_tool",
-  "subject": "bash",
-  "detail": "{\"command\": \"rm -rf /\"}"
-}
-```
-
-Hooks return a verdict on stdout as JSON or shorthand:
-
-```json
-{"action": "allow"}
-{"action": "block", "reason": "rm -rf not allowed"}
-{"action": "annotate", "note": "remember to run fmt"}
-{"action": "request_verify", "command": "cargo fmt --check"}
-```
-
-Shorthand: `block: reason`, `note: text`, `verify: command`.
-
-Empty output or unrecognized text defaults to `allow`. Non-zero exit code defaults to `allow` (broken hooks do not silently block the agent).
-
-### Safety guarantees
-
-- Hooks run **after** all safety gates (planning, verification, memory trust, approval). A permissive hook cannot bypass approval or trust enforcement.
-- Hook output is clamped: notes to 1024 bytes, reasons to 256 bytes, total hook output to 2048 bytes.
-- Hook timeout is capped at 10 seconds.
-- No hooks configured (no `.topagent/hooks.toml`) means zero extra cost on every run.
-- Hooks cannot spawn agents, replay context, or become a second planner.
 
 ## TOPAGENT.md
 
@@ -490,7 +389,7 @@ Which diagnostic command to use:
 - `topagent status` — Is the service installed and running? (install health + running state)
 - `topagent doctor` — Is everything healthy? (deep diagnostics: workspace health, config validation, tool checks)
 - `topagent config inspect` — What provider/model/keys am I actually using? (resolved runtime contract)
-- `topagent run status` — What happened in my last run? (checkpoint, transcripts, recovery guidance)
+- `topagent run status` — What happened in my last run? (run snapshot, transcripts, recovery guidance)
 
 Run `topagent config inspect` for a compact, secret-safe view of the resolved runtime contract:
 
@@ -511,14 +410,13 @@ Key values are never shown — only `present` or `missing`. Use this command fir
 
 - Try a different model: `topagent model set <model-id>`
 - Refresh the cached starter list first when you want fresh options: `topagent model refresh`
-- Use `--model <id>` for one-shot runs or foreground Telegram without changing the installed service (model changes only affect the persisted default; to change provider, re-run `topagent setup`)
-- Enable generated-tool authoring explicitly when needed: `--tool-authoring on`
+- Use `--model <id>` for one-shot runs or foreground Telegram without changing the installed service (model changes only affect the persisted default; to change provider, run `topagent install`)
 - Add a `TOPAGENT.md` with project-specific guidance
 - Break large tasks into smaller, more specific instructions
 
 ### Sandbox warnings
 
-If you see `bwrap unavailable` in the logs, workspace-sandboxed commands run without filesystem sandboxing. That includes `bash`, generated tools, and any external tool configured with `"sandbox": "workspace"`. Install bubblewrap for sandboxed execution:
+If you see `bwrap unavailable` in the logs, workspace-sandboxed bash commands run without filesystem sandboxing. Install bubblewrap for sandboxed execution:
 
 ```bash
 sudo apt install -y bubblewrap
@@ -545,21 +443,20 @@ Code-changing runs end with a structured delivery summary that explicitly surfac
 
 TopAgent commands fall into three operator-facing lanes. Understanding the lane helps operators know when to use each command and what side effects to expect.
 
-### Setup and lifecycle
+### Install and lifecycle
 
 Commands that install, configure, upgrade, or remove the TopAgent service. These change durable state (config files, systemd units, installed binaries).
 
 | Command | When to use |
 |---------|-------------|
-| `topagent install` / `topagent setup` | First-time setup or reconfiguring an existing install |
+| `topagent install` | First-time install or reconfiguring an existing install |
 | `topagent upgrade` | Download and install a newer release binary |
 | `topagent uninstall` | Remove service, config, and binary |
 | `topagent service start/stop/restart` | Control the background Telegram service |
-| `topagent service install` | Install service unit without the full interactive flow |
 
 ### Diagnostics and inspection
 
-Commands that read and display state without side effects unless noted. `topagent memory status` may apply the bounded workspace-state migration described above; `topagent run restore` mutates files by design.
+Commands that read and display state without side effects unless noted. `topagent memory status` may create missing current workspace-state paths; `topagent run restore` mutates files by design.
 
 | Command | When to use |
 |---------|-------------|
@@ -567,9 +464,9 @@ Commands that read and display state without side effects unless noted. `topagen
 | `topagent config inspect` | What provider/model/keys am I actually using? (resolved runtime contract) |
 | `topagent model status` | Show the configured and effective model |
 | `topagent doctor` | Is everything healthy? (deep diagnostics: workspace health, config validation, tool checks) |
-| `topagent run status` | What happened in my last run? (checkpoint, transcripts, recovery guidance) |
+| `topagent run status` | What happened in my last run? (run snapshot, transcripts, recovery guidance) |
 | `topagent run diff` | Preview what restore would change |
-| `topagent run restore` | Roll back to the latest checkpoint (clears transcripts) |
+| `topagent run restore` | Roll back to the latest run snapshot (clears transcripts) |
 
 ### Memory and learning management
 
@@ -591,8 +488,8 @@ Commands that inspect and govern the workspace's durable learning artifacts. The
 The source-of-truth commands are:
 
 - Runtime contract: `topagent config inspect` owns provider, effective model, API key presence, workspace, Telegram admission, and runtime options.
-- Install/service health: `topagent status` owns setup presence, managed service files, service enabled/running state, and configured default model.
-- Run recovery: `topagent run status` owns latest checkpoint, transcript count, and restore guidance.
+- Install/service health: `topagent status` owns installation presence, managed service files, service enabled/running state, and configured default model.
+- Run recovery: `topagent run status` owns latest run snapshot, transcript count, and restore guidance.
 - Workspace learning: `topagent memory status` owns workspace schema, operator model, memory index, notes, procedures, trajectories, and exports.
 
-Changing the configured model with `topagent model set <model-id>` updates the managed env file's model value, preserves the provider and other managed values, and restarts the Telegram service only if it is installed. Changing provider remains a setup flow: re-run `topagent setup`.
+Changing the configured model with `topagent model set <model-id>` updates the managed env file's model value, preserves the provider and other managed values, and restarts the Telegram service only if it is installed. Changing provider remains part of the install flow: run `topagent install`.

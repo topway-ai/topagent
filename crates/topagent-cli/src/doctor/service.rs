@@ -2,7 +2,7 @@ use crate::config::defaults::{
     CliParams, TOPAGENT_MODEL_KEY, TOPAGENT_PROVIDER_KEY, TOPAGENT_SERVICE_MANAGED_KEY,
 };
 use crate::config::model_selection::{
-    ModelResolutionSource, SelectedProvider, provider_or_default, resolve_runtime_model_selection,
+    provider_or_default, resolve_runtime_model_selection, ModelResolutionSource, SelectedProvider,
 };
 use crate::doctor::types::{CheckLevel, CheckResult};
 use crate::managed_files::{is_topagent_managed_file, read_managed_env_metadata};
@@ -218,10 +218,10 @@ fn check_service_install(
 
     if !unit_exists && !env_exists {
         checks.push(CheckResult {
-            name: "service install",
+            name: "managed service files",
             level: CheckLevel::Warning,
             detail: "neither unit file nor env file installed".to_string(),
-            hint: Some("run `topagent install` to set up the Telegram service".to_string()),
+            hint: Some("run `topagent install` to install the Telegram service".to_string()),
         });
         return;
     }
@@ -239,7 +239,7 @@ fn check_service_install(
 
     if managed_unit && managed_env {
         checks.push(CheckResult {
-            name: "service install",
+            name: "managed service files",
             level: CheckLevel::Ok,
             detail: "unit file and env file installed and managed".to_string(),
             hint: None,
@@ -259,7 +259,7 @@ fn check_service_install(
             issues.push("env file missing");
         }
         checks.push(CheckResult {
-            name: "service install",
+            name: "managed service files",
             level: CheckLevel::Warning,
             detail: issues.join("; "),
             hint: Some("run `topagent install` to repair".to_string()),
@@ -283,7 +283,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let mut checks = Vec::new();
         check_model_config(&params, &service_paths().unwrap(), &mut checks);

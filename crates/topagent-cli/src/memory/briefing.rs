@@ -17,7 +17,7 @@ use super::{
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct TopicLoad {
+struct MemoryLoad {
     section: Option<String>,
     loaded_items: Vec<String>,
     loaded_files: Vec<String>,
@@ -150,11 +150,11 @@ fn render_operator_section(
     memory: &WorkspaceMemory,
     contract: &BehaviorContract,
     instruction: &str,
-) -> Result<TopicLoad> {
+) -> Result<MemoryLoad> {
     let profile = load_operator_profile(&memory.workspace_root)
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     if profile.preferences.is_empty() {
-        return Ok(TopicLoad::default());
+        return Ok(MemoryLoad::default());
     }
 
     let mut scored = profile
@@ -206,7 +206,7 @@ fn render_operator_section(
         loaded_items.push(record.key.clone());
     }
 
-    Ok(TopicLoad {
+    Ok(MemoryLoad {
         section: (!section.is_empty()).then_some(section),
         loaded_items,
         loaded_files: Vec::new(),
@@ -219,7 +219,7 @@ fn render_procedure_section(
     contract: &BehaviorContract,
     instruction: &str,
     entries: &[MemoryIndexEntry],
-) -> Result<TopicLoad> {
+) -> Result<MemoryLoad> {
     let mut scored_entries = entries
         .iter()
         .filter(|entry| entry.kind() == MemoryIndexEntryKind::Procedure)
@@ -231,7 +231,7 @@ fn render_procedure_section(
     scored_entries.sort_by(|(left_score, left_entry), (right_score, right_entry)| {
         right_score
             .cmp(left_score)
-            .then_with(|| left_entry.topic.cmp(&right_entry.topic))
+            .then_with(|| left_entry.title.cmp(&right_entry.title))
     });
 
     let mut section = String::new();
@@ -290,7 +290,7 @@ fn render_procedure_section(
         loaded_files.push(format!(".topagent/procedures/{}", procedure.filename));
     }
 
-    Ok(TopicLoad {
+    Ok(MemoryLoad {
         section: (!section.is_empty()).then_some(section),
         loaded_items,
         loaded_files,
@@ -303,7 +303,7 @@ fn render_durable_notes_section(
     contract: &BehaviorContract,
     instruction: &str,
     entries: &[MemoryIndexEntry],
-) -> Result<TopicLoad> {
+) -> Result<MemoryLoad> {
     let mut scored_entries = entries
         .iter()
         .filter(|entry| entry.kind() != MemoryIndexEntryKind::Procedure)
@@ -315,7 +315,7 @@ fn render_durable_notes_section(
     scored_entries.sort_by(|(left_score, left_entry), (right_score, right_entry)| {
         right_score
             .cmp(left_score)
-            .then_with(|| left_entry.topic.cmp(&right_entry.topic))
+            .then_with(|| left_entry.title.cmp(&right_entry.title))
     });
 
     let mut section = String::new();
@@ -355,22 +355,22 @@ fn render_durable_notes_section(
         section.push_str(&format!(
             "[{}] {} ({})\n{}\n",
             entry.status,
-            entry.topic,
+            entry.title,
             display_memory_file(&entry.file),
             excerpt
         ));
-        loaded_items.push(entry.topic.clone());
+        loaded_items.push(entry.title.clone());
 
         let note = format!(
             "{} | {} | {} | advisory | matched: score {}",
-            kind_label, entry.file, entry.topic, score
+            kind_label, entry.file, entry.title, score
         );
         if provenance_notes.len() < 4 {
             provenance_notes.push(compact_provenance_note(&note));
         }
     }
 
-    Ok(TopicLoad {
+    Ok(MemoryLoad {
         section: (!section.is_empty()).then_some(section),
         loaded_items,
         loaded_files: Vec::new(),
@@ -384,11 +384,10 @@ fn resolve_memory_path(
     file: &str,
 ) -> Option<PathBuf> {
     let normalized = normalize_memory_file(file);
-    let relative = if allowed_memory_prefix(contract, &normalized) {
-        normalized
-    } else {
-        format!("{}/{}", contract.memory.note_file_relative_dir, normalized)
-    };
+    if !allowed_memory_prefix(contract, &normalized) {
+        return None;
+    }
+    let relative = normalized;
 
     let relative_path = Path::new(&relative);
     if relative_path.is_absolute() {
@@ -453,7 +452,7 @@ fn render_index_section(
         let mut line = format!(
             "- [{}] {} -> {}",
             entry.status,
-            entry.topic,
+            entry.title,
             display_memory_file(&entry.file)
         );
         if !entry.note.is_empty() {
@@ -604,7 +603,7 @@ fn match_windows(
 }
 
 fn score_entry_relevance(instruction: &str, entry: &MemoryIndexEntry) -> usize {
-    let mut haystack = entry.topic.clone();
+    let mut haystack = entry.title.clone();
     haystack.push(' ');
     haystack.push_str(&entry.file);
     haystack.push(' ');

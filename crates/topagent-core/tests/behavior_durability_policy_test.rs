@@ -49,11 +49,10 @@ fn test_durable_promotion_policy_respects_low_trust_and_corroboration() {
 fn test_should_attach_proof_of_work_matches_output_policy() {
     let contract = BehaviorContract::default();
 
-    assert!(!contract.should_attach_proof_of_work(0, 0, 0, 0));
-    assert!(contract.should_attach_proof_of_work(1, 0, 0, 0));
-    assert!(contract.should_attach_proof_of_work(0, 1, 0, 0));
-    assert!(contract.should_attach_proof_of_work(0, 0, 1, 0));
-    assert!(contract.should_attach_proof_of_work(0, 0, 0, 1));
+    assert!(!contract.should_attach_proof_of_work(0, 0, 0));
+    assert!(contract.should_attach_proof_of_work(1, 0, 0));
+    assert!(contract.should_attach_proof_of_work(0, 1, 0));
+    assert!(contract.should_attach_proof_of_work(0, 0, 1));
 }
 
 #[test]

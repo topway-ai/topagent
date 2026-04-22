@@ -33,7 +33,6 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 | `model` | ModelRoute |
 | `runtime` | RuntimeOptions (step limits, timeouts, truncation thresholds) |
 | `tools/` | Tool trait, ToolRegistry, built-in tools (read, write, edit, bash, git_*) |
-| `tool_genesis` | Workspace-local generated-tool seam; cheap runtime inventory loading, invocation-time revalidation, and explicit authoring/repair/maintenance are separate owners |
 | `tool_spec` | Tool specification (name, description, parameters) |
 | `context` | ExecutionContext (workspace root, cancel token, secrets), ToolContext |
 | `secrets` | SecretRegistry: value-based and pattern-based redaction |
@@ -41,8 +40,6 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 | `project` | Load `TOPAGENT.md` project instructions |
 | `prompt` | Policy-driven system prompt rendering from the behavior contract, run state, plan, memory, and tool surface |
 | `provenance` | Compact source/trust labels and low-trust promotion/action policy inputs |
-| `hooks` | Narrow deterministic lifecycle hooks: workspace-local manifest, typed event model (OnSessionStart, PreTool, PostWrite, PreFinal), bounded execution, and dispatch |
-| `external` | Workspace external tool registry loaded from `.topagent/external-tools.json` |
 | `channel/` | Telegram adapter and channel error types |
 | `cancel` | CancellationToken for graceful shutdown |
 | `progress` | Progress update types for UI feedback |
@@ -55,13 +52,13 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 | Module | Responsibility |
 |--------|---------------|
 | `main` | Entry point: parses CLI args, converts to params, dispatches to command handlers |
-| `commands` | CLI command types, dispatch, and rendering; `commands/types` owns all clap definitions, `commands/dispatch` owns the top-level match, per-domain modules (`memory_cli`, `procedure_cli`) own CLI rendering, `config` and `run` own their subcommand handlers (the `run` module dispatches checkpoint recovery subcommands: `run status`, `run diff`, `run restore`; trajectory commands live under `memory trajectory`), `oneshot` owns the one-shot runner, and `artifact_util` shares file-list and path-resolution helpers |
+| `commands` | CLI command types, dispatch, and rendering; `commands/types` owns all clap definitions, `commands/dispatch` owns the top-level match, per-domain modules (`memory_cli`, `procedure_cli`) own CLI rendering, `config` and `run` own their subcommand handlers (the `run` module dispatches run snapshot recovery subcommands: `run status`, `run diff`, `run restore`; trajectory commands live under `memory trajectory`), `oneshot` owns the one-shot runner, and `artifact_util` shares file-list and path-resolution helpers |
 | `config` | CliParams struct, parameter validation, route/options construction |
 | `operational_paths` | Shared config-home, service unit, and managed env path ownership for the operational control plane |
-| `run_setup` | Shared agent/provider/context assembly for one-shot CLI and Telegram runs |
+| `run_context` | Shared agent/provider/context assembly for one-shot CLI and Telegram runs |
 | `telegram` | Telegram polling and per-chat management; `runtime` owns the polling loop, `session` owns per-chat running state and transcript store, `router` dispatches messages and callback queries, `commands` handles slash-command logic, `history` owns transcript I/O, `approval` handles callback data and keyboard rendering, `admission` gates DM access, and `delivery` sends messages |
 | `memory` | Workspace memory facade; `memory/briefing` handles bounded prompt briefing, `memory/promotion` handles verified-task governance, and sibling modules keep procedures, trajectories, and consolidation file-backed and narrow |
-| `service/` | Operational control plane split by ownership: `install` handles setup and model prompts, `model` handles persisted model changes, `state` owns shared status/config reads, `lifecycle` owns systemd/status/uninstall, and `managed_env` owns the single managed env truth |
+| `service/` | Operational control plane split by ownership: `install` handles install/reconfigure prompts, `model` handles persisted model changes, `state` owns shared status/config reads, `lifecycle` owns systemd/status/uninstall, and `managed_env` owns the single managed env truth |
 | `managed_files` | Managed file guards, env file I/O, safe file removal |
 | `progress` | LiveProgress: CLI and Telegram progress formatting |
 
@@ -76,19 +73,16 @@ CLI parses args
   -> build workspace memory briefing from .topagent/MEMORY.md + relevant procedures + relevant workspace notes
   -> classify run-level trust context from operator instruction + loaded memory/transcript sources
   -> create ExecutionContext with workspace + cancel token + operator model + workspace memory briefing + trust context
-  -> read explicit tool-authoring mode from CLI/service config
   -> create Agent with provider + tools + options
   -> agent.run(ctx, instruction)
-     -> load TOPAGENT.md, workspace external tools, cheap generated-tool runtime inventory, bounded runtime generated-tool warnings
-     -> load workspace lifecycle hooks from .topagent/hooks.toml (zero cost if absent)
-     -> render policy-driven system prompt (+ project instructions + workspace memory briefing + bounded runtime generated-tool warnings + lifecycle hook summary + compact run-state artifacts)
+     -> load TOPAGENT.md
+     -> render policy-driven system prompt (+ project instructions + workspace memory briefing + compact run-state artifacts)
      -> classify task complexity -> activate planning gate if non-trivial
      -> enter step loop:
         1. send conversation to LLM
         2. LLM returns text (final answer) or tool calls
-        3. tool calls: run preflight (planning gate, verification gate, provenance-aware approval/memory enforcement, workspace lifecycle hooks)
+        3. tool calls: run preflight (planning gate, verification gate, provenance-aware approval/memory enforcement)
         4. execute tool, record result in session
-           - generated tools loaded from workspace inventory are revalidated on use instead of paying for deep health scans on every startup
         5. if a fetch-like shell command introduced low-trust external content, keep that influence in run state
         5. repeat until text response or max steps
 -> append proof-of-work (changed files, diff summary, trust notes when low-trust content shaped the run)
@@ -145,8 +139,8 @@ topagent install
   -> write env file to ~/.config/topagent/services/topagent-telegram.env (mode 0600, includes model + runtime settings)
   -> write systemd unit to ~/.config/systemd/user/topagent-telegram.service
   -> systemctl --user daemon-reload
-  -> fresh setup: systemctl --user enable --now topagent-telegram.service
-  -> reconfigure existing setup: systemctl --user enable topagent-telegram.service && systemctl --user restart topagent-telegram.service
+  -> fresh install: systemctl --user enable --now topagent-telegram.service
+  -> reconfigure existing install: systemctl --user enable topagent-telegram.service && systemctl --user restart topagent-telegram.service
 ```
 
 ### Secret, approval, and sandbox safety
@@ -164,13 +158,11 @@ Secrets are protected at multiple layers:
    - read-write access only to the workspace and `/tmp`
    - network access disabled (`--unshare-net`)
 
-Generated tools use the same workspace sandbox policy as bash. Workspace external tools use the same centralized sandbox policy model, and every entry in `.topagent/external-tools.json` must declare its intent explicitly with `"sandbox": "workspace"` or `"sandbox": "host"`.
-
 5. **Path validation**: file tools reject absolute paths and parent directory traversal (`../`)
 
 6. **Reply redaction**: Telegram replies are scanned for secrets before sending
 
-7. **Approval enforcement**: risky actions such as destructive bash commands, `git_commit`, host-sandbox external tools, and generated-tool deletion must pass the central approval gate before execution
+7. **Approval enforcement**: risky actions such as destructive bash commands and `git_commit` must pass the central approval gate before execution
 
 8. **Provenance-aware trust boundaries**:
    - direct operator instructions, generated memory artifacts, transcripts, and fetched content are labeled at ingress with a small source/trust model
@@ -182,7 +174,7 @@ Generated tools use the same workspace sandbox policy as bash. Workspace externa
 
 ### Memory and persistence flow
 
-TopAgent uses a versioned `.topagent/workspace-state.json` marker for workspace schema ownership. Schema version `1` recognizes the current workspace-state model and migrates old `topics/` and `lessons/` files into `notes/`; old `plans/` move to `exports/legacy-plans/` as evidence/export artifacts, never prompt memory.
+TopAgent uses `.topagent/workspace-state.json` as the current workspace schema marker. Schema version `1` is the only accepted workspace-state model.
 
 TopAgent uses three prompt-memory layers, plus procedures (governed reuse) and trajectories (export artifacts) as separate categories:
 
@@ -227,7 +219,6 @@ Curated consolidation keeps the index practical:
 - Trajectories are export artifacts, not prompt memory. Saving more trajectories must not make normal task startup heavier.
 - Provenance/trust metadata stays lightweight and attached at key boundaries only. It must not become deep always-on analysis over every artifact.
 - Durable artifact count must not imply linear growth in prompt assembly cost, retrieval cost, approval checks, or planning work.
-- Lifecycle hooks are zero-cost when absent. No `.topagent/hooks.toml` means no manifest parse, no dispatch, and no prompt section. When present, hooks run only at their declared event boundary and are bounded by timeout and output caps.
 
 ### Planning flow
 

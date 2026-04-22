@@ -1,5 +1,4 @@
 use std::path::Path;
-use topagent_core::tool_genesis::ToolGenesis;
 
 use crate::doctor::lint::{
     extract_note_from_index_line, lint_memory_md_content, lint_user_md_content,
@@ -8,9 +7,6 @@ use crate::doctor::types::{CheckLevel, CheckResult};
 use crate::memory::{
     MEMORY_INDEX_RELATIVE_PATH, MEMORY_MD_SIZE_ERROR, MEMORY_MD_SIZE_WARN, USER_MD_SIZE_ERROR,
     USER_MD_SIZE_WARN,
-};
-pub(crate) use crate::workspace_state::{
-    EXTERNAL_TOOLS_RELATIVE_PATH, HOOKS_MANIFEST_RELATIVE_PATH, TOOLS_DIR_RELATIVE_PATH,
 };
 use crate::workspace_state::{inspect_workspace_state, WORKSPACE_STATE_RELATIVE_PATH};
 
@@ -41,7 +37,7 @@ pub(crate) fn check_workspace_layout(workspace: &Path, checks: &mut Vec<CheckRes
         return;
     }
 
-    if state.missing_required_paths.is_empty() && state.legacy_paths.is_empty() {
+    if state.missing_required_paths.is_empty() {
         checks.push(CheckResult {
             name: "workspace layout",
             level: CheckLevel::Ok,
@@ -62,18 +58,12 @@ pub(crate) fn check_workspace_layout(workspace: &Path, checks: &mut Vec<CheckRes
                 state.missing_required_paths.join(", ")
             ));
         }
-        if !state.legacy_paths.is_empty() {
-            details.push(format!(
-                "legacy paths pending migration: {}",
-                state.legacy_paths.join(", ")
-            ));
-        }
         checks.push(CheckResult {
             name: "workspace layout",
             level: CheckLevel::Warning,
             detail: details.join("; "),
             hint: Some(
-                "run a task or `topagent memory status` to apply bounded workspace-state migration"
+                "run a task or `topagent memory status` to create the current workspace layout"
                     .to_string(),
             ),
         });
@@ -286,199 +276,6 @@ fn check_user_md(workspace: &Path, checks: &mut Vec<CheckResult>) {
     });
 }
 
-pub(crate) fn check_generated_tools(workspace: &Path, checks: &mut Vec<CheckResult>) {
-    let tools_dir = workspace.join(TOOLS_DIR_RELATIVE_PATH);
-    if !tools_dir.exists() {
-        checks.push(CheckResult {
-            name: "generated tools",
-            level: CheckLevel::Ok,
-            detail: "no .topagent/tools/ directory".to_string(),
-            hint: None,
-        });
-        return;
-    }
-
-    let genesis = ToolGenesis::new(workspace.to_path_buf());
-    match genesis.runtime_generated_tool_inventory() {
-        Ok(inventory) => {
-            if inventory.warnings.is_empty() {
-                checks.push(CheckResult {
-                    name: "generated tools",
-                    level: CheckLevel::Ok,
-                    detail: format!(
-                        "{} tool(s) verified, 0 warnings",
-                        inventory.verified_tools.len()
-                    ),
-                    hint: None,
-                });
-            } else {
-                let warning_names: Vec<_> = inventory
-                    .warnings
-                    .iter()
-                    .take(3)
-                    .map(|w| format!("{}: {}", w.name, w.message))
-                    .collect();
-                let mut detail = format!(
-                    "{} verified, {} warning(s)",
-                    inventory.verified_tools.len(),
-                    inventory.warnings.len()
-                );
-                if !warning_names.is_empty() {
-                    detail.push_str("; ");
-                    detail.push_str(&warning_names.join(", "));
-                }
-                checks.push(CheckResult {
-                    name: "generated tools",
-                    level: CheckLevel::Warning,
-                    detail,
-                    hint: Some(
-                        "repair or recreate broken tools with --tool-authoring on".to_string(),
-                    ),
-                });
-            }
-        }
-        Err(err) => {
-            checks.push(CheckResult {
-                name: "generated tools",
-                level: CheckLevel::Error,
-                detail: format!("inventory scan failed: {}", err),
-                hint: None,
-            });
-        }
-    }
-}
-
-pub(crate) fn check_external_tools(workspace: &Path, checks: &mut Vec<CheckResult>) {
-    let path = workspace.join(EXTERNAL_TOOLS_RELATIVE_PATH);
-    if !path.exists() {
-        checks.push(CheckResult {
-            name: "external tools",
-            level: CheckLevel::Ok,
-            detail: "no .topagent/external-tools.json".to_string(),
-            hint: None,
-        });
-        return;
-    }
-
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(err) => {
-            checks.push(CheckResult {
-                name: "external tools",
-                level: CheckLevel::Error,
-                detail: format!("cannot read: {}", err),
-                hint: None,
-            });
-            return;
-        }
-    };
-
-    let parsed: Vec<serde_json::Value> = match serde_json::from_str(&raw) {
-        Ok(values) => values,
-        Err(err) => {
-            checks.push(CheckResult {
-                name: "external tools",
-                level: CheckLevel::Error,
-                detail: format!("invalid JSON: {}", err),
-                hint: Some("fix or remove .topagent/external-tools.json".to_string()),
-            });
-            return;
-        }
-    };
-
-    let mut missing_sandbox = Vec::new();
-    for entry in &parsed {
-        let name = entry
-            .get("name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("(unnamed)");
-        if entry.get("sandbox").is_none() {
-            missing_sandbox.push(name.to_string());
-        }
-    }
-
-    if missing_sandbox.is_empty() {
-        checks.push(CheckResult {
-            name: "external tools",
-            level: CheckLevel::Ok,
-            detail: format!("{} tool(s), all have sandbox policy", parsed.len()),
-            hint: None,
-        });
-    } else {
-        checks.push(CheckResult {
-            name: "external tools",
-            level: CheckLevel::Error,
-            detail: format!(
-                "{} tool(s) missing required `sandbox` field: {}",
-                missing_sandbox.len(),
-                missing_sandbox.join(", ")
-            ),
-            hint: Some(
-                "each external tool must declare \"sandbox\": \"workspace\" or \"sandbox\": \"host\""
-                    .to_string(),
-            ),
-        });
-    }
-}
-
-pub(crate) fn check_hooks_manifest(workspace: &Path, checks: &mut Vec<CheckResult>) {
-    let path = workspace.join(HOOKS_MANIFEST_RELATIVE_PATH);
-    if !path.exists() {
-        checks.push(CheckResult {
-            name: "hooks manifest",
-            level: CheckLevel::Ok,
-            detail: "no .topagent/hooks.toml (optional)".to_string(),
-            hint: None,
-        });
-        return;
-    }
-
-    let raw = match std::fs::read_to_string(&path) {
-        Ok(raw) => raw,
-        Err(err) => {
-            checks.push(CheckResult {
-                name: "hooks manifest",
-                level: CheckLevel::Error,
-                detail: format!("cannot read: {}", err),
-                hint: None,
-            });
-            return;
-        }
-    };
-
-    match raw.parse::<toml::Value>() {
-        Ok(_) => {
-            let event_count = count_hook_events(&raw);
-            checks.push(CheckResult {
-                name: "hooks manifest",
-                level: CheckLevel::Ok,
-                detail: format!("valid TOML, {} hook(s) defined", event_count),
-                hint: None,
-            });
-        }
-        Err(err) => {
-            checks.push(CheckResult {
-                name: "hooks manifest",
-                level: CheckLevel::Error,
-                detail: format!("invalid TOML: {}", err),
-                hint: Some("fix or remove .topagent/hooks.toml".to_string()),
-            });
-        }
-    }
-}
-
-fn count_hook_events(raw: &str) -> usize {
-    let parsed: toml::Value = match raw.parse() {
-        Ok(v) => v,
-        Err(_) => return 0,
-    };
-    parsed
-        .get("hooks")
-        .and_then(|v| v.as_array())
-        .map(|arr| arr.len())
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,66 +328,6 @@ mod tests {
     }
 
     #[test]
-    fn test_doctor_reports_malformed_hooks() {
-        let temp = healthy_workspace();
-        std::fs::write(
-            temp.path().join(HOOKS_MANIFEST_RELATIVE_PATH),
-            "this is not valid toml [[[",
-        )
-        .unwrap();
-        let mut checks = Vec::new();
-        check_hooks_manifest(temp.path(), &mut checks);
-        assert!(checks
-            .iter()
-            .any(|c| c.level == CheckLevel::Error && c.name == "hooks manifest"));
-    }
-
-    #[test]
-    fn test_doctor_reports_malformed_external_tools() {
-        let temp = healthy_workspace();
-        std::fs::write(
-            temp.path().join(EXTERNAL_TOOLS_RELATIVE_PATH),
-            "this is not json",
-        )
-        .unwrap();
-        let mut checks = Vec::new();
-        check_external_tools(temp.path(), &mut checks);
-        assert!(checks
-            .iter()
-            .any(|c| c.level == CheckLevel::Error && c.name == "external tools"));
-    }
-
-    #[test]
-    fn test_doctor_reports_external_tools_missing_sandbox() {
-        let temp = healthy_workspace();
-        std::fs::write(
-            temp.path().join(EXTERNAL_TOOLS_RELATIVE_PATH),
-            r#"[{"name":"bad_tool","description":"no sandbox","command":"echo","argv_template":["hello"]}]"#,
-        )
-        .unwrap();
-        let mut checks = Vec::new();
-        check_external_tools(temp.path(), &mut checks);
-        assert!(checks.iter().any(|c| c.level == CheckLevel::Error
-            && c.name == "external tools"
-            && c.detail.contains("sandbox")));
-    }
-
-    #[test]
-    fn test_doctor_valid_external_tools_ok() {
-        let temp = healthy_workspace();
-        std::fs::write(
-            temp.path().join(EXTERNAL_TOOLS_RELATIVE_PATH),
-            r#"[{"name":"good_tool","description":"has sandbox","command":"echo","argv_template":["hello"],"sandbox":"workspace"}]"#,
-        )
-        .unwrap();
-        let mut checks = Vec::new();
-        check_external_tools(temp.path(), &mut checks);
-        assert!(checks
-            .iter()
-            .any(|c| c.level == CheckLevel::Ok && c.name == "external tools"));
-    }
-
-    #[test]
     fn test_doctor_does_not_mutate_state() {
         let temp = healthy_workspace();
         let memory_path = temp.path().join(MEMORY_INDEX_RELATIVE_PATH);
@@ -625,7 +362,7 @@ mod tests {
         let mut content = String::from("# TopAgent Memory Index\n\n");
         for i in 0..=MEMORY_MD_MAX_ENTRIES {
             content.push_str(&format!(
-                "- topic: thing_{i} | file: notes/thing_{i}.md | status: verified | note: ok\n"
+                "- title: thing_{i} | file: notes/thing_{i}.md | status: verified | note: ok\n"
             ));
         }
         std::fs::write(temp.path().join(MEMORY_INDEX_RELATIVE_PATH), &content).unwrap();
@@ -677,52 +414,6 @@ mod tests {
         assert!(checks
             .iter()
             .any(|c| c.name == "USER.md" && c.detail.contains("parse error")));
-    }
-
-    #[test]
-    fn test_doctor_valid_hooks_ok() {
-        let temp = healthy_workspace();
-        std::fs::write(
-            temp.path().join(HOOKS_MANIFEST_RELATIVE_PATH),
-            r#"[[hooks]]
-event = "pre_tool"
-command = "echo ok"
-label = "test hook""#,
-        )
-        .unwrap();
-        let mut checks = Vec::new();
-        check_hooks_manifest(temp.path(), &mut checks);
-        assert!(checks
-            .iter()
-            .any(|c| c.level == CheckLevel::Ok && c.name == "hooks manifest"));
-    }
-
-    #[test]
-    fn test_doctor_generated_tools_with_warning() {
-        let temp = healthy_workspace();
-        let tools_dir = temp.path().join(TOOLS_DIR_RELATIVE_PATH).join("bad_tool");
-        std::fs::create_dir_all(&tools_dir).unwrap();
-        std::fs::write(
-            tools_dir.join("manifest.json"),
-            r#"{"name":"bad_tool","description":"test","argv_template":[],"verified":true}"#,
-        )
-        .unwrap();
-
-        let mut checks = Vec::new();
-        check_generated_tools(temp.path(), &mut checks);
-        assert!(checks
-            .iter()
-            .any(|c| c.level == CheckLevel::Warning && c.name == "generated tools"));
-    }
-
-    #[test]
-    fn test_doctor_no_generated_tools_ok() {
-        let temp = healthy_workspace();
-        let mut checks = Vec::new();
-        check_generated_tools(temp.path(), &mut checks);
-        assert!(checks
-            .iter()
-            .any(|c| c.level == CheckLevel::Ok && c.name == "generated tools"));
     }
 
     #[test]

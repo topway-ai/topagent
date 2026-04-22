@@ -1,5 +1,4 @@
 use super::{BashCommandClass, BehaviorContract, PlanningPolicy, PreExecutionState, TaskPolicy};
-use crate::external::ExternalToolEffect;
 use crate::plan::TaskMode;
 use crate::runtime::RuntimeOptions;
 
@@ -212,7 +211,6 @@ impl BehaviorContract {
         &self,
         tool_name: &str,
         bash_command: Option<&str>,
-        external_effect: Option<ExternalToolEffect>,
         plan_exists: bool,
     ) -> Option<String> {
         if self.is_planning_tool(tool_name) {
@@ -239,22 +237,6 @@ impl BehaviorContract {
             );
         }
 
-        if let Some(effect) = external_effect {
-            if plan_exists {
-                return None;
-            }
-
-            return match effect {
-                ExternalToolEffect::ReadOnly => None,
-                ExternalToolEffect::VerificationOnly => Some(
-                    "Planning required for this task. Create a plan before running verification tools.".to_string(),
-                ),
-                ExternalToolEffect::ExecutionStarted => Some(
-                    "Planning required for this task. Create a plan before running execution tools.".to_string(),
-                ),
-            };
-        }
-
         if !self.is_mutation_tool(tool_name) {
             return None;
         }
@@ -272,7 +254,6 @@ impl BehaviorContract {
         &self,
         tool_name: &str,
         bash_command: Option<&str>,
-        external_effect: Option<ExternalToolEffect>,
         state: &PreExecutionState,
     ) -> Option<String> {
         if !state.planning_required_for_task
@@ -291,12 +272,6 @@ impl BehaviorContract {
                     "A plan exists, but no concrete execution step has run yet. Execute at least one plan step before verification commands.".to_string(),
                 );
             }
-        }
-
-        if matches!(external_effect, Some(ExternalToolEffect::VerificationOnly)) {
-            return Some(
-                "A plan exists, but no concrete execution step has run yet. Execute at least one plan step before verification tools.".to_string(),
-            );
         }
 
         None

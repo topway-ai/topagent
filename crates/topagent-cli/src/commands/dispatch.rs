@@ -11,8 +11,8 @@ use crate::telegram::run_telegram;
 
 use super::config::run_config_inspect;
 use super::oneshot::run_one_shot;
-use super::run::{run_checkpoint_diff, run_checkpoint_restore, run_session_status};
-use super::types::{Commands, ConfigCommands, RunCommands, ToolAuthoringMode};
+use super::run::{run_session_status, run_snapshot_diff, run_snapshot_restore};
+use super::types::{Commands, ConfigCommands, RunCommands};
 
 pub(crate) fn dispatch(
     command: Option<Commands>,
@@ -31,12 +31,12 @@ pub(crate) fn dispatch(
         Some(Commands::Procedure { command }) => run_procedure_command(command, params.workspace),
         Some(Commands::Run { command }) => match command {
             RunCommands::Status => run_session_status(params.workspace),
-            RunCommands::Diff => run_checkpoint_diff(params.workspace),
-            RunCommands::Restore => run_checkpoint_restore(params.workspace),
+            RunCommands::Diff => run_snapshot_diff(params.workspace),
+            RunCommands::Restore => run_snapshot_restore(params.workspace),
         },
         Some(Commands::Upgrade { use_cargo }) => run_upgrade(use_cargo),
         Some(Commands::Uninstall { purge }) => run_uninstall(purge),
-        Some(Commands::Service { command }) => run_service_command(command, params),
+        Some(Commands::Service { command }) => run_service_command(command),
         Some(Commands::Telegram { token }) => run_telegram(token, params),
         None => {
             let instruction = instruction.ok_or_else(|| {
@@ -58,7 +58,6 @@ pub(crate) fn cli_to_params(
         max_steps: cli.max_steps,
         max_retries: cli.max_retries,
         timeout_secs: cli.timeout_secs,
-        generated_tool_authoring: cli.tool_authoring.map(ToolAuthoringMode::is_enabled),
     };
     (cli.command, cli.instruction, params)
 }

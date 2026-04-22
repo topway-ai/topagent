@@ -153,8 +153,7 @@ pub(crate) fn parse_saved_procedure(path: &Path) -> Result<Option<ParsedProcedur
             },
         ),
         source_task: parse_named_field(&raw, "**Source Task:**"),
-        source_note: parse_named_field(&raw, "**Source Note:**")
-            .or_else(|| parse_named_field(&raw, "**Source Lesson:**")),
+        source_note: parse_named_field(&raw, "**Source Note:**"),
         source_trajectory: parse_named_field(&raw, "**Source Trajectory:**"),
         supersedes: parse_named_field(&raw, "**Supersedes:**"),
         superseded_by: parse_named_field(&raw, "**Superseded By:**"),

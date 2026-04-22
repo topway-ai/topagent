@@ -1,20 +1,20 @@
 pub(crate) const PRODUCT_NAME: &str = "TopAgent";
 
-pub(crate) const HELP_STATUS: &str = "Show TopAgent setup, service, and model status.";
+pub(crate) const HELP_STATUS: &str = "Show TopAgent installation, service, and model status.";
 pub(crate) const HELP_DOCTOR: &str =
-    "Run health diagnostics on setup, config, workspace, and tools.";
+    "Run health diagnostics on installation, config, workspace, and tools.";
 pub(crate) const HELP_CONFIG_INSPECT: &str =
     "Show the resolved runtime contract (provider, model, keys, workspace, options).";
 pub(crate) const HELP_RUN_STATUS: &str =
-    "Show execution-session state: checkpoint, transcripts, and recovery guidance.";
+    "Show execution-session state: run snapshot, transcripts, and recovery guidance.";
 pub(crate) const HELP_RUN_DIFF: &str =
-    "Preview the diff between the latest checkpoint and the current workspace.";
+    "Preview the diff between the latest run snapshot and the current workspace.";
 pub(crate) const HELP_RUN_RESTORE: &str =
-    "Restore the latest checkpoint and clear persisted Telegram transcripts.";
+    "Restore the latest run snapshot and clear persisted Telegram transcripts.";
 
 pub(crate) const HELP_MODEL_STATUS: &str = "Show the configured default and effective model.";
 pub(crate) const HELP_MODEL_SET: &str =
-    "Set the configured model (does not change provider; to change provider, re-run setup).";
+    "Set the configured model (does not change provider; to change provider, run topagent install).";
 pub(crate) const HELP_MODEL_PICK: &str = "Pick the configured model interactively.";
 pub(crate) const HELP_MODEL_LIST: &str = "Show the cached model list.";
 pub(crate) const HELP_MODEL_REFRESH: &str = "Refresh the cached model list.";
@@ -153,12 +153,12 @@ pub(crate) const LIFECYCLE_LANES: &[LifecycleLane] = &[
     LifecycleLane {
         name: "install/service health",
         source_of_truth_command: "topagent status",
-        owns: "setup presence, managed service files, service enabled/running state, configured default model",
+        owns: "installation presence, managed service files, service enabled/running state, configured default model",
     },
     LifecycleLane {
         name: "run recovery",
         source_of_truth_command: "topagent run status",
-        owns: "latest checkpoint, transcript count, and restore guidance",
+        owns: "latest run snapshot, transcript count, and restore guidance",
     },
     LifecycleLane {
         name: "workspace learning",

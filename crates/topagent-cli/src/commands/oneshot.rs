@@ -1,22 +1,22 @@
 use anyhow::{Context, Result};
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::sync::{
-    Arc,
     atomic::{AtomicUsize, Ordering},
+    Arc,
 };
 use std::time::Duration;
 use topagent_core::{
-    ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest, CancellationToken, ProgressCallback,
-    ProgressUpdate, WorkspaceCheckpointStore, context::ExecutionContext,
+    context::ExecutionContext, ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest,
+    CancellationToken, ProgressCallback, ProgressUpdate, WorkspaceRunSnapshotStore,
 };
 use tracing::{error, info, warn};
 
-use crate::config::defaults::CliParams;
 use crate::config::defaults::load_persisted_telegram_defaults;
+use crate::config::defaults::CliParams;
 use crate::config::runtime::resolve_one_shot_config;
-use crate::memory::{PromotionContext, promote_verified_task};
+use crate::memory::{promote_verified_task, PromotionContext};
 use crate::progress::LiveProgress;
-use crate::run_setup::{build_agent, prepare_run_context, prepare_workspace_memory};
+use crate::run_context::{build_agent, prepare_run_context, prepare_workspace_memory};
 
 pub(crate) fn run_one_shot(params: CliParams, instruction: String) -> Result<()> {
     let persisted_defaults = load_persisted_telegram_defaults().unwrap_or_default();
@@ -33,7 +33,7 @@ pub(crate) fn run_one_shot(params: CliParams, instruction: String) -> Result<()>
     let mut ctx = ExecutionContext::new(workspace.clone())
         .with_cancel_token(cancel_token.clone())
         .with_approval_mailbox(approval_mailbox)
-        .with_workspace_checkpoint_store(WorkspaceCheckpointStore::new(workspace));
+        .with_workspace_run_snapshot_store(WorkspaceRunSnapshotStore::new(workspace));
     let workspace_memory = prepare_workspace_memory(ctx.workspace_root.clone());
     let prepared_run = prepare_run_context(&ctx, &workspace_memory, &instruction, None);
     let loaded_procedure_files = prepared_run.loaded_procedure_files.clone();
@@ -245,11 +245,9 @@ mod tests {
         let approved = prompt_for_cli_approval_with_io(&request, &mut reader, &mut output).unwrap();
 
         assert!(approved);
-        assert!(
-            String::from_utf8(output)
-                .unwrap()
-                .contains("Approve this action?")
-        );
+        assert!(String::from_utf8(output)
+            .unwrap()
+            .contains("Approve this action?"));
     }
 
     #[test]

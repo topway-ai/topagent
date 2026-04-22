@@ -1,6 +1,6 @@
-use crate::checkpoint::{CheckpointCaptureMetadata, CheckpointCaptureSource};
 use crate::context::ToolContext;
 use crate::file_util::atomic_write;
+use crate::run_snapshot::{RunSnapshotCaptureMetadata, RunSnapshotCaptureSource};
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -35,10 +35,13 @@ impl crate::tools::Tool for WriteTool {
         let args: WriteArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
         let full_path = ctx.exec.resolve_path(&args.path)?;
-        if let Some(checkpoint_store) = ctx.exec.checkpoint_store() {
-            checkpoint_store.capture_file(
+        if let Some(run_snapshot_store) = ctx.exec.run_snapshot_store() {
+            run_snapshot_store.capture_file(
                 &args.path,
-                CheckpointCaptureMetadata::new(CheckpointCaptureSource::Write, "structured write"),
+                RunSnapshotCaptureMetadata::new(
+                    RunSnapshotCaptureSource::Write,
+                    "structured write",
+                ),
             )?;
         }
         atomic_write(&full_path, &args.content)?;
@@ -53,8 +56,8 @@ impl crate::tools::Tool for WriteTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checkpoint::WorkspaceCheckpointStore;
     use crate::context::{ExecutionContext, ToolContext};
+    use crate::run_snapshot::WorkspaceRunSnapshotStore;
     use crate::runtime::RuntimeOptions;
     use crate::tools::Tool;
     use std::fs;
@@ -107,13 +110,13 @@ mod tests {
     }
 
     #[test]
-    fn test_write_captures_preexisting_file_for_checkpoint_restore() {
+    fn test_write_captures_preexisting_file_for_run_snapshot_restore() {
         let temp = TempDir::new().unwrap();
         let original_path = temp.path().join("test.txt");
         fs::write(&original_path, "before").unwrap();
 
         let exec = ExecutionContext::new(temp.path().to_path_buf())
-            .with_workspace_checkpoint_store(WorkspaceCheckpointStore::new(
+            .with_workspace_run_snapshot_store(WorkspaceRunSnapshotStore::new(
                 temp.path().to_path_buf(),
             ));
         let runtime = RuntimeOptions::default();
@@ -126,7 +129,7 @@ mod tests {
         )
         .unwrap();
 
-        exec.checkpoint_store()
+        exec.run_snapshot_store()
             .unwrap()
             .restore_latest()
             .unwrap()

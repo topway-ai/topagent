@@ -27,7 +27,7 @@ pub(crate) struct ConsolidationReport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct MemoryIndexEntry {
-    pub(super) topic: String,
+    pub(super) title: String,
     pub(super) file: String,
     pub(super) status: String,
     pub(super) tags: Vec<String>,
@@ -42,7 +42,6 @@ pub(super) enum MemoryIndexEntryKind {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum DurableMemoryCategory {
-    OperatorPreference,
     ReusableProcedure,
     DurableNote,
 }
@@ -227,7 +226,7 @@ impl MemoryCandidate {
 
         Self {
             entry: MemoryIndexEntry {
-                topic: note_file.title,
+                title: note_file.title,
                 file: format!("notes/{}", note_file.filename),
                 status: "verified".to_string(),
                 tags,
@@ -269,7 +268,7 @@ impl MemoryCandidate {
 
         Self {
             entry: MemoryIndexEntry {
-                topic: procedure.title,
+                title: procedure.title,
                 file: format!("procedures/{}", procedure.filename),
                 status: if is_live {
                     "verified".to_string()
@@ -296,7 +295,7 @@ fn parse_index_entry(line: &str) -> Option<MemoryIndexEntry> {
         return None;
     }
 
-    let mut topic = None;
+    let mut title = None;
     let mut file = None;
     let mut status = "tentative".to_string();
     let mut tags = Vec::new();
@@ -308,7 +307,7 @@ fn parse_index_entry(line: &str) -> Option<MemoryIndexEntry> {
         let value = value.trim();
 
         match key.as_str() {
-            "topic" => topic = Some(value.to_string()),
+            "title" => title = Some(value.to_string()),
             "file" => file = Some(normalize_memory_file(value)),
             "status" => status = normalize_status(value),
             "tags" => {
@@ -323,14 +322,14 @@ fn parse_index_entry(line: &str) -> Option<MemoryIndexEntry> {
         }
     }
 
-    let topic = topic?;
+    let title = title?;
     let file = file?;
-    if topic.is_empty() || file.is_empty() {
+    if title.is_empty() || file.is_empty() {
         return None;
     }
 
     Some(MemoryIndexEntry {
-        topic,
+        title,
         file,
         status,
         tags,
@@ -343,7 +342,7 @@ fn canonical_entry_key(entry: &MemoryIndexEntry) -> String {
     tags.sort();
     format!(
         "{}|{}|{}|{}|{}",
-        entry.topic.trim().to_ascii_lowercase(),
+        entry.title.trim().to_ascii_lowercase(),
         normalize_memory_file(&entry.file),
         normalize_status(&entry.status),
         tags.join(","),
@@ -354,15 +353,15 @@ fn canonical_entry_key(entry: &MemoryIndexEntry) -> String {
 fn merge_group_key(candidate: &MemoryCandidate) -> String {
     match candidate.source {
         MemorySourceKind::SavedNote => {
-            format!("note|{}", candidate.entry.topic.trim().to_ascii_lowercase())
+            format!("note|{}", candidate.entry.title.trim().to_ascii_lowercase())
         }
         MemorySourceKind::SavedProcedure => format!(
             "procedure|{}",
-            candidate.entry.topic.trim().to_ascii_lowercase()
+            candidate.entry.title.trim().to_ascii_lowercase()
         ),
         MemorySourceKind::ManualIndex => format!(
             "{}|{}",
-            candidate.entry.topic.trim().to_ascii_lowercase(),
+            candidate.entry.title.trim().to_ascii_lowercase(),
             normalize_memory_file(&candidate.entry.file)
         ),
     }
@@ -390,19 +389,6 @@ fn classify_entry_category(entry: &MemoryIndexEntry) -> DurableMemoryCategory {
         return DurableMemoryCategory::DurableNote;
     }
 
-    let lower_topic = entry.topic.to_ascii_lowercase();
-    if entry.file.starts_with("lessons/")
-        || entry.file.starts_with("notes/")
-        || entry.tags.iter().any(|tag| {
-            matches!(
-                tag.as_str(),
-                "note" | "notes" | "lesson" | "lessons" | "reusable"
-            )
-        })
-    {
-        return DurableMemoryCategory::DurableNote;
-    }
-
     if entry.file.starts_with("procedures/")
         || entry
             .tags
@@ -412,22 +398,11 @@ fn classify_entry_category(entry: &MemoryIndexEntry) -> DurableMemoryCategory {
         return DurableMemoryCategory::ReusableProcedure;
     }
 
-    if lower_topic.contains("operator")
-        || lower_topic.contains("preference")
-        || entry
-            .tags
-            .iter()
-            .any(|tag| matches!(tag.as_str(), "operator" | "preference" | "style"))
-    {
-        return DurableMemoryCategory::OperatorPreference;
-    }
-
     DurableMemoryCategory::DurableNote
 }
 
 fn candidate_priority(candidate: &MemoryCandidate) -> (usize, usize, usize, i64, &str) {
     let category = match candidate.category {
-        DurableMemoryCategory::OperatorPreference => 4,
         DurableMemoryCategory::ReusableProcedure => 3,
         DurableMemoryCategory::DurableNote => 2,
     };
@@ -441,7 +416,7 @@ fn candidate_priority(candidate: &MemoryCandidate) -> (usize, usize, usize, i64,
         status_rank(&candidate.entry.status),
         source,
         candidate.saved_at.unwrap_or_default(),
-        candidate.entry.topic.as_str(),
+        candidate.entry.title.as_str(),
     )
 }
 
@@ -602,8 +577,8 @@ fn render_index_document(
 
 fn render_index_entry(entry: &MemoryIndexEntry) -> String {
     let mut line = format!(
-        "- topic: {} | file: {} | status: {}",
-        entry.topic,
+        "- title: {} | file: {} | status: {}",
+        entry.title,
         display_memory_file(&entry.file),
         normalize_status(&entry.status)
     );
@@ -805,7 +780,7 @@ mod tests {
         let rewritten = fs::read_to_string(temp.path().join(MEMORY_INDEX_RELATIVE_PATH)).unwrap();
 
         assert_eq!(report.promoted_procedures, 1);
-        assert!(rewritten.contains("topic: Approval Mailbox Procedure"));
+        assert!(rewritten.contains("title: Approval Mailbox Procedure"));
         assert!(rewritten.contains("file: procedures/1700000300-approval-mailbox.md"));
         assert!(rewritten.contains("status: verified"));
         assert!(rewritten.contains("tags:"));
@@ -834,7 +809,7 @@ mod tests {
         assert!(report.stale_entries_pruned >= 1);
         assert_eq!(
             rewritten
-                .matches("topic: Approval Mailbox Procedure")
+                .matches("title: Approval Mailbox Procedure")
                 .count(),
             1
         );

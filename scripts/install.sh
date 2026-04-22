@@ -8,7 +8,7 @@ TOPAGENT_INSTALL_ROOT="${TOPAGENT_INSTALL_ROOT:-}"
 TOPAGENT_INSTALL_VERSION="${TOPAGENT_INSTALL_VERSION:-}"
 TOPAGENT_INSTALL_RELEASE_BASE_URL="${TOPAGENT_INSTALL_RELEASE_BASE_URL:-https://github.com/topway-ai/topagent/releases}"
 TOPAGENT_INSTALL_USE_CARGO="${TOPAGENT_INSTALL_USE_CARGO:-}"
-TOPAGENT_SKIP_SETUP="${TOPAGENT_SKIP_SETUP:-}"
+TOPAGENT_SKIP_INSTALL="${TOPAGENT_SKIP_INSTALL:-}"
 
 say() {
   printf '==> %s\n' "$*"
@@ -126,10 +126,10 @@ install_topagent_from_release() {
   rm -rf "$temp_dir"
 }
 
-run_post_install_setup() {
+run_post_install_config() {
   local installed_bin="$1"
 
-  if [[ -n "$TOPAGENT_SKIP_SETUP" ]]; then
+  if [[ -n "$TOPAGENT_SKIP_INSTALL" ]]; then
     return 1
   fi
 
@@ -137,12 +137,12 @@ run_post_install_setup() {
     return 1
   fi
 
-  say "Starting interactive TopAgent setup"
+  say "Starting interactive TopAgent install"
   if "$installed_bin" install </dev/tty >/dev/tty 2>/dev/tty; then
     return 0
   fi
 
-  say "TopAgent was installed, but interactive setup did not complete. Run:"
+  say "TopAgent was installed, but interactive install did not complete. Run:"
   printf '  %s install\n' "$installed_bin"
   return 1
 }
@@ -162,7 +162,7 @@ main() {
     install_topagent_from_release
   fi
 
-  if ! run_post_install_setup "$installed_bin"; then
+  if ! run_post_install_config "$installed_bin"; then
     cat <<EOF
 
 TopAgent installed.

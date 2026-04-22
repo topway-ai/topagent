@@ -21,8 +21,6 @@ pub struct ApprovalTriggerRule {
 pub enum ApprovalTriggerKind {
     GitCommit,
     DestructiveShellMutation,
-    HostExternalExecution,
-    GeneratedToolDeletion,
 }
 
 impl ApprovalTriggerKind {
@@ -30,8 +28,6 @@ impl ApprovalTriggerKind {
         match self {
             Self::GitCommit => "git commit",
             Self::DestructiveShellMutation => "shell mutation",
-            Self::HostExternalExecution => "host external tool execution",
-            Self::GeneratedToolDeletion => "generated tool deletion",
         }
     }
 }

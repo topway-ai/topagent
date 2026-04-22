@@ -219,12 +219,7 @@ fn normalize_memory_file(file: &str) -> String {
 }
 
 fn display_memory_file(file: &str) -> String {
-    let normalized = normalize_memory_file(file);
-    if normalized.starts_with("notes/") || normalized.starts_with("procedures/") {
-        normalized
-    } else {
-        format!("notes/{normalized}")
-    }
+    normalize_memory_file(file)
 }
 
 fn allowed_memory_prefix(contract: &BehaviorContract, normalized: &str) -> bool {
@@ -256,7 +251,7 @@ fn limit_text_block(text: &str, max_bytes: usize) -> String {
         end -= 1;
     }
     let mut limited = trimmed[..end].trim_end().to_string();
-    limited.push_str("\n[Topic excerpt truncated]");
+    limited.push_str("\n[Note excerpt truncated]");
     limited
 }
 
@@ -328,7 +323,7 @@ mod tests {
         tools::default_tools, Agent, ExecutionContext, InfluenceMode, Message, Plan,
         ProviderResponse, Role, RunTrustContext, RuntimeOptions, ScriptedProvider, SecretRegistry,
         SourceKind, SourceLabel, TaskMode, TaskResult, ToolTraceStep, VerificationCommand,
-        WorkspaceCheckpointStore,
+        WorkspaceRunSnapshotStore,
     };
 
     fn write_memory_index(workspace: &Path, body: &str) {
@@ -511,7 +506,7 @@ path = "src/lib.rs"
         let temp = TempDir::new().unwrap();
         write_memory_index(
             temp.path(),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: verified | note: keep this\n- topic: architecture | file: notes/architecture.md | status: verified | note: keep this\n",
+            "# TopAgent Memory Index\n\n- title: architecture | file: notes/architecture.md | status: verified | note: keep this\n- title: architecture | file: notes/architecture.md | status: verified | note: keep this\n",
         );
 
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
@@ -519,7 +514,7 @@ path = "src/lib.rs"
         let rewritten = fs::read_to_string(temp.path().join(MEMORY_INDEX_RELATIVE_PATH)).unwrap();
 
         assert_eq!(report.duplicates_removed, 1);
-        assert_eq!(rewritten.matches("topic: architecture").count(), 1);
+        assert_eq!(rewritten.matches("title: architecture").count(), 1);
     }
 
     #[test]
@@ -528,7 +523,7 @@ path = "src/lib.rs"
         let mut body = String::from("# TopAgent Memory Index\n\n");
         for idx in 0..40 {
             body.push_str(&format!(
-                "- topic: topic-{idx} | file: notes/topic-{idx}.md | status: verified | note: durable note {idx} with enough text to make the line non-trivial\n",
+                "- title: title-{idx} | file: notes/title-{idx}.md | status: verified | note: durable note {idx} with enough text to make the line non-trivial\n",
             ));
         }
         write_memory_index(temp.path(), &body);
@@ -547,11 +542,11 @@ path = "src/lib.rs"
     }
 
     #[test]
-    fn test_topic_files_are_lazy_loaded_by_relevance() {
+    fn test_notes_are_lazy_loaded_by_relevance() {
         let temp = TempDir::new().unwrap();
         write_memory_index(
             temp.path(),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: verified | tags: runtime, session | note: agent lifecycle and session model\n- topic: security | file: notes/security.md | status: verified | tags: secret, redaction, telegram | note: do not persist secrets or redacted content\n",
+            "# TopAgent Memory Index\n\n- title: architecture | file: notes/architecture.md | status: verified | tags: runtime, session | note: agent lifecycle and session model\n- title: security | file: notes/security.md | status: verified | tags: secret, redaction, telegram | note: do not persist secrets or redacted content\n",
         );
         write_note(
             temp.path(),
@@ -633,7 +628,7 @@ path = "src/lib.rs"
         let temp = TempDir::new().unwrap();
         write_memory_index(
             temp.path(),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: tentative | note: old assumption\n",
+            "# TopAgent Memory Index\n\n- title: architecture | file: notes/architecture.md | status: tentative | note: old assumption\n",
         );
 
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
@@ -655,7 +650,7 @@ path = "src/lib.rs"
         .unwrap();
         write_memory_index(
             temp.path(),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: verified | note: runtime details\n",
+            "# TopAgent Memory Index\n\n- title: architecture | file: notes/architecture.md | status: verified | note: runtime details\n",
         );
         write_note(
             temp.path(),
@@ -749,7 +744,7 @@ path = "src/lib.rs"
         let temp = TempDir::new().unwrap();
         write_memory_index(
             temp.path(),
-            "# TopAgent Memory Index\n\n- topic: approval flow | file: notes/approval.md | status: verified | note: current repo approval flow\n",
+            "# TopAgent Memory Index\n\n- title: approval flow | file: notes/approval.md | status: verified | note: current repo approval flow\n",
         );
         write_note(temp.path(), "approval.md", "# Approval\nrepo flow");
         fs::create_dir_all(temp.path().join(MEMORY_TRAJECTORIES_RELATIVE_DIR)).unwrap();
@@ -832,7 +827,7 @@ path = "src/lib.rs"
                 when_to_use: "Use for restoring approval mailbox state.".to_string(),
                 prerequisites: vec!["Stay within the workspace.".to_string()],
                 steps: vec![
-                    "Restore the checkpoint.".to_string(),
+                    "Restore the run snapshot.".to_string(),
                     "Rebuild anchors.".to_string(),
                 ],
                 pitfalls: vec!["Do not keep stale transcript state.".to_string()],
@@ -1274,7 +1269,7 @@ path = "src/lib.rs"
                 when_to_use: "Use for restoring approval mailbox state.".to_string(),
                 prerequisites: vec!["Stay within the workspace.".to_string()],
                 steps: vec![
-                    "Restore the checkpoint.".to_string(),
+                    "Restore the run snapshot.".to_string(),
                     "Rebuild anchors.".to_string(),
                 ],
                 pitfalls: vec!["Do not keep stale transcript state.".to_string()],
@@ -1423,7 +1418,7 @@ path = "src/lib.rs"
         let temp = TempDir::new().unwrap();
         write_memory_index(
             temp.path(),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: verified | note: runtime details\n",
+            "# TopAgent Memory Index\n\n- title: architecture | file: notes/architecture.md | status: verified | note: runtime details\n",
         );
         write_note(
             temp.path(),
@@ -1530,7 +1525,7 @@ path = "src/lib.rs"
 
         assert_eq!(report.promoted_notes, 1);
         assert!(report.normalized_dates >= 1);
-        assert!(rewritten.contains("topic: Approval Mailbox"));
+        assert!(rewritten.contains("title: Approval Mailbox"));
         assert!(rewritten.contains("file: notes/1700000000-approval-mailbox.md"));
         assert!(rewritten.contains("saved 2023-11-14"));
     }
@@ -1540,7 +1535,7 @@ path = "src/lib.rs"
         let temp = TempDir::new().unwrap();
         write_memory_index(
             temp.path(),
-            "# TopAgent Memory Index\n\n- topic: approval mailbox | file: notes/approval.md | status: verified | tags: approval | note: operator approval gates runtime mutations\n- topic: approval mailbox | file: notes/approval.md | status: stale | tags: approval | note: runtime still allows mutation without approval\n",
+            "# TopAgent Memory Index\n\n- title: approval mailbox | file: notes/approval.md | status: verified | tags: approval | note: operator approval gates runtime mutations\n- title: approval mailbox | file: notes/approval.md | status: stale | tags: approval | note: runtime still allows mutation without approval\n",
         );
 
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
@@ -1549,7 +1544,7 @@ path = "src/lib.rs"
 
         assert_eq!(report.contradictions_resolved, 1);
         assert_eq!(report.stale_entries_pruned, 1);
-        assert_eq!(rewritten.matches("topic: approval mailbox").count(), 1);
+        assert_eq!(rewritten.matches("title: approval mailbox").count(), 1);
         assert!(rewritten.contains("status: verified"));
         assert!(!rewritten.contains("status: stale"));
     }
@@ -1644,10 +1639,10 @@ path = "src/lib.rs"
     fn test_restore_followed_by_read_only_run_has_no_false_proof_or_promotion() {
         let (temp, base_ctx) = create_temp_crate();
         let memory = WorkspaceMemory::new(temp.path().to_path_buf());
-        let checkpoint_store = WorkspaceCheckpointStore::new(temp.path().to_path_buf());
+        let run_snapshot_store = WorkspaceRunSnapshotStore::new(temp.path().to_path_buf());
         let write_ctx = base_ctx
             .clone()
-            .with_workspace_checkpoint_store(checkpoint_store.clone());
+            .with_workspace_run_snapshot_store(run_snapshot_store.clone());
         let options = RuntimeOptions::default();
 
         let mut first_agent = Agent::with_options(
@@ -1663,15 +1658,15 @@ path = "src/lib.rs"
             .run(&write_ctx, "update src/lib.rs and verify")
             .unwrap();
         assert!(first_result.contains("verified update"));
-        assert!(checkpoint_store
+        assert!(run_snapshot_store
             .latest_status()
             .unwrap()
-            .expect("checkpoint should exist")
+            .expect("run snapshot should exist")
             .captured_paths
             .iter()
             .any(|path| path == "src/lib.rs"));
 
-        let restore_report = checkpoint_store
+        let restore_report = run_snapshot_store
             .restore_latest()
             .unwrap()
             .expect("restore should succeed");

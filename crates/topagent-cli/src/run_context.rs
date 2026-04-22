@@ -1,8 +1,8 @@
 use crate::memory::WorkspaceMemory;
 use std::path::PathBuf;
 use topagent_core::{
-    Agent, Message, ModelRoute, OpenRouterProvider, RuntimeOptions, classify_operator_instruction,
-    context::ExecutionContext, hooks::HookRegistry, tools::default_tools,
+    classify_operator_instruction, context::ExecutionContext, tools::default_tools, Agent, Message,
+    ModelRoute, OpenRouterProvider, RuntimeOptions,
 };
 use tracing::warn;
 
@@ -60,8 +60,6 @@ pub(crate) fn prepare_run_context(
         }
     }
     run_ctx = run_ctx.with_run_trust_context(trust_context);
-    let hook_registry = HookRegistry::load_from_workspace(&base_ctx.workspace_root);
-    run_ctx = run_ctx.with_hook_registry(hook_registry);
     PreparedRunContext {
         run_ctx,
         loaded_procedure_files,
@@ -92,7 +90,7 @@ mod tests {
         fs::create_dir_all(&notes_dir).unwrap();
         fs::write(
             temp.path().join(".topagent/MEMORY.md"),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: verified | tags: runtime | note: runtime details\n",
+            "# TopAgent Memory Index\n\n- title: architecture | file: notes/architecture.md | status: verified | tags: runtime | note: runtime details\n",
         )
         .unwrap();
         fs::write(
@@ -111,32 +109,5 @@ mod tests {
         assert!(memory_context.contains("Always-Loaded Index"));
         assert!(memory_context.contains("# Architecture"));
         assert!(prepared.loaded_procedure_files.is_empty());
-    }
-
-    #[test]
-    fn test_build_agent_respects_tool_authoring_option() {
-        let disabled = build_agent(
-            &ModelRoute::default(),
-            "test-key",
-            RuntimeOptions::default(),
-        );
-        assert!(
-            !disabled
-                .tool_specs()
-                .iter()
-                .any(|spec| spec.name == "create_tool")
-        );
-
-        let enabled = build_agent(
-            &ModelRoute::default(),
-            "test-key",
-            RuntimeOptions::default().with_generated_tool_authoring(true),
-        );
-        assert!(
-            enabled
-                .tool_specs()
-                .iter()
-                .any(|spec| spec.name == "create_tool")
-        );
     }
 }

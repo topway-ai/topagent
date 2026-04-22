@@ -1,25 +1,25 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::{Arc, mpsc};
+use std::sync::{mpsc, Arc};
 use std::thread;
 use std::time::Duration;
 use topagent_core::{
-    Agent, ApprovalEntry, ApprovalMailbox, ApprovalMailboxMode, CancellationToken, Message,
-    ProgressCallback, ProgressUpdate, RuntimeOptions, TelegramAdapter, WorkspaceCheckpointStore,
-    context::ExecutionContext, model::ModelRoute,
+    context::ExecutionContext, model::ModelRoute, Agent, ApprovalEntry, ApprovalMailbox,
+    ApprovalMailboxMode, CancellationToken, Message, ProgressCallback, ProgressUpdate,
+    RuntimeOptions, TelegramAdapter, WorkspaceRunSnapshotStore,
 };
 use tracing::{error, info, warn};
 
 use crate::config::defaults::TELEGRAM_BOUND_DM_USER_ID_KEY;
 use crate::managed_files::read_managed_env_metadata;
-use crate::memory::{PromotionContext, WorkspaceMemory, promote_verified_task};
+use crate::memory::{promote_verified_task, PromotionContext, WorkspaceMemory};
 use crate::progress::LiveProgress;
-use crate::run_setup::{
-    PreparedRunContext, build_agent, prepare_run_context, prepare_workspace_memory,
+use crate::run_context::{
+    build_agent, prepare_run_context, prepare_workspace_memory, PreparedRunContext,
 };
 use crate::telegram::approval::{approval_reply_markup, format_approval_resolution};
 use crate::telegram::delivery::{send_telegram, send_telegram_with_markup};
-use crate::telegram::history::{ChatHistoryStore, persist_visible_exchange_to_store};
+use crate::telegram::history::{persist_visible_exchange_to_store, ChatHistoryStore};
 
 use super::admission::DmAdmission;
 
@@ -84,10 +84,6 @@ impl ChatSessionManager {
 
     pub(crate) fn create_agent(&self) -> Agent {
         build_agent(&self.route, &self.api_key, self.options.clone())
-    }
-
-    pub(crate) fn tool_authoring_enabled(&self) -> bool {
-        self.options.enable_generated_tool_authoring
     }
 
     pub(crate) fn model_label_for_help(&self) -> String {
@@ -191,8 +187,8 @@ impl ChatSessionManager {
         let transcript = self.load_redacted_transcript(chat_id);
         let prepared = prepare_run_context(ctx, &self.memory, instruction, Some(&transcript));
         PreparedRunContext {
-            run_ctx: prepared.run_ctx.with_workspace_checkpoint_store(
-                WorkspaceCheckpointStore::new(ctx.workspace_root.clone()),
+            run_ctx: prepared.run_ctx.with_workspace_run_snapshot_store(
+                WorkspaceRunSnapshotStore::new(ctx.workspace_root.clone()),
             ),
             loaded_procedure_files: prepared.loaded_procedure_files,
         }
@@ -586,12 +582,12 @@ pub(crate) fn current_model_label_for_help(
 mod tests {
     use super::*;
     use crate::config::defaults::{TELEGRAM_ALLOWED_DM_USERNAME_KEY, TOPAGENT_SERVICE_MANAGED_KEY};
-    use crate::memory::procedures::{ProcedureDraft, save_procedure};
+    use crate::memory::procedures::{save_procedure, ProcedureDraft};
     use crate::memory::{
         MEMORY_PROCEDURES_RELATIVE_DIR, MEMORY_TRAJECTORIES_RELATIVE_DIR,
         TELEGRAM_HISTORY_RELATIVE_DIR,
     };
-    use crate::telegram::history::{ChatHistoryStore, persist_agent_history_to_store};
+    use crate::telegram::history::{persist_agent_history_to_store, ChatHistoryStore};
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
@@ -659,13 +655,11 @@ mod tests {
 
         assert!(manager.stop_chat(42));
         assert!(cancel_token.is_cancelled());
-        assert!(
-            updates
-                .lock()
-                .unwrap()
-                .iter()
-                .any(|update| update == &ProgressUpdate::stopping())
-        );
+        assert!(updates
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|update| update == &ProgressUpdate::stopping()));
     }
 
     #[test]
@@ -838,8 +832,8 @@ mod tests {
     }
 
     #[test]
-    fn test_memory_context_retrieves_targeted_transcript_snippet_instead_of_restoring_whole_history()
-     {
+    fn test_memory_context_retrieves_targeted_transcript_snippet_instead_of_restoring_whole_history(
+    ) {
         let workspace = TempDir::new().unwrap();
         let chat_id = 4242;
         let original_manager = test_manager(workspace.path().to_path_buf());
@@ -867,13 +861,11 @@ mod tests {
 
         assert!(memory_context.contains("maple comet"));
         assert!(!memory_context.contains("cedar echo"));
-        assert!(
-            workspace
-                .path()
-                .join(TELEGRAM_HISTORY_RELATIVE_DIR)
-                .join("chat-4242.json")
-                .is_file()
-        );
+        assert!(workspace
+            .path()
+            .join(TELEGRAM_HISTORY_RELATIVE_DIR)
+            .join("chat-4242.json")
+            .is_file());
 
         #[cfg(unix)]
         {
@@ -1233,60 +1225,6 @@ mod tests {
     }
 
     #[test]
-    fn test_create_agent_respects_global_tool_authoring_setting() {
-        let workspace = TempDir::new().unwrap();
-        let disabled_manager = test_manager(workspace.path().to_path_buf());
-        let disabled_specs = disabled_manager.create_agent().tool_specs();
-        assert!(!disabled_specs.iter().any(|spec| spec.name == "create_tool"));
-
-        let enabled_manager = ChatSessionManager::new(
-            ModelRoute::openrouter("test-model"),
-            "test-model".to_string(),
-            "test-key".to_string(),
-            RuntimeOptions::default().with_generated_tool_authoring(true),
-            workspace.path().to_path_buf(),
-            topagent_core::SecretRegistry::new(),
-            None,
-            None,
-            None,
-        );
-        let enabled_specs = enabled_manager.create_agent().tool_specs();
-        assert!(enabled_specs.iter().any(|spec| spec.name == "create_tool"));
-        assert!(enabled_specs.iter().any(|spec| spec.name == "repair_tool"));
-    }
-
-    #[test]
-    fn test_reset_chat_does_not_create_tool_authoring_settings_state() {
-        let workspace = TempDir::new().unwrap();
-        let chat_id = 3003;
-        let mut manager = test_manager(workspace.path().to_path_buf());
-
-        let mut agent = manager.create_agent();
-        agent.restore_conversation_messages(vec![
-            Message::user("Remember the answer is 17."),
-            Message::assistant("Stored."),
-        ]);
-        manager.persist_agent_history(chat_id, &agent);
-
-        let history_path = workspace
-            .path()
-            .join(TELEGRAM_HISTORY_RELATIVE_DIR)
-            .join("chat-3003.json");
-        let settings_path = workspace
-            .path()
-            .join(".topagent")
-            .join("telegram-settings")
-            .join("chat-3003.json");
-        assert!(history_path.is_file());
-        assert!(!settings_path.exists());
-
-        manager.reset_chat(chat_id);
-
-        assert!(!history_path.exists());
-        assert!(!settings_path.exists());
-    }
-
-    #[test]
     fn test_check_dm_admission_is_case_insensitive() {
         let workspace = TempDir::new().unwrap();
         let manager = ChatSessionManager::new(
@@ -1559,7 +1497,7 @@ mod tests {
     #[test]
     fn test_run_telegram_uses_config_admission_fields_not_defaults() {
         use crate::config::defaults::{
-            TELEGRAM_ALLOWED_DM_USERNAME_KEY, TELEGRAM_BOUND_DM_USER_ID_KEY, TelegramModeDefaults,
+            TelegramModeDefaults, TELEGRAM_ALLOWED_DM_USERNAME_KEY, TELEGRAM_BOUND_DM_USER_ID_KEY,
         };
         use std::collections::HashMap;
 
@@ -1589,7 +1527,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let config =
             crate::config::runtime::resolve_telegram_mode_config(None, params, defaults.clone())

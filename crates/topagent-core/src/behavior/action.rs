@@ -5,12 +5,6 @@ pub(super) fn default_tool_policy() -> ToolPolicy {
         repo_awareness_tools: &["git_status", "git_branch", "git_diff"],
         planning_tools: &["update_plan"],
         memory_write_tools: &["save_note", "manage_operator_preference"],
-        generated_tool_authoring_tools: &[
-            "create_tool",
-            "repair_tool",
-            "list_generated_tools",
-            "delete_generated_tool",
-        ],
         research_safe_bash_prefixes: &[
             "cd ",
             "pushd ",
@@ -85,7 +79,6 @@ pub(super) fn default_tool_policy() -> ToolPolicy {
 pub(super) fn default_mutation_policy() -> MutationPolicy {
     MutationPolicy {
         mutation_tools: &["write", "edit", "git_commit", "git_add"],
-        generated_tool_surface_tools: &["create_tool", "repair_tool", "delete_generated_tool"],
         destructive_shell_tokens: &[
             "rm ",
             "mv ",
@@ -209,10 +202,6 @@ impl ToolPolicy {
         self.memory_write_tools.contains(&name)
     }
 
-    pub(crate) fn is_generated_tool_authoring_tool(&self, name: &str) -> bool {
-        self.generated_tool_authoring_tools.contains(&name)
-    }
-
     fn classify_bash_command(&self, mutation: &MutationPolicy, cmd: &str) -> BashCommandClass {
         let trimmed = cmd.trim();
 
@@ -307,10 +296,6 @@ impl MutationPolicy {
     pub(crate) fn is_mutation_tool(&self, name: &str) -> bool {
         self.mutation_tools.contains(&name)
     }
-
-    pub(crate) fn mutates_generated_tool_surface(&self, name: &str) -> bool {
-        self.generated_tool_surface_tools.contains(&name)
-    }
 }
 
 impl BehaviorContract {
@@ -332,13 +317,5 @@ impl BehaviorContract {
 
     pub fn is_memory_write_tool(&self, name: &str) -> bool {
         self.tools.is_memory_write_tool(name)
-    }
-
-    pub fn is_generated_tool_authoring_tool(&self, name: &str) -> bool {
-        self.tools.is_generated_tool_authoring_tool(name)
-    }
-
-    pub fn mutates_generated_tool_surface(&self, name: &str) -> bool {
-        self.mutation.mutates_generated_tool_surface(name)
     }
 }

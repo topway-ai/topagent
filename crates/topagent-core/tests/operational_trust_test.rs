@@ -1,15 +1,16 @@
 use std::fs;
 use tempfile::TempDir;
 use topagent_core::{
-    checkpoint::{CheckpointCaptureMetadata, CheckpointCaptureSource, WorkspaceCheckpointStore},
-    hooks::HookRegistry,
     provenance::{DurablePromotionKind, InfluenceMode, RunTrustContext, SourceKind, SourceLabel},
+    run_snapshot::{
+        RunSnapshotCaptureMetadata, RunSnapshotCaptureSource, WorkspaceRunSnapshotStore,
+    },
     BehaviorContract,
 };
 
-fn create_temp_workspace() -> (TempDir, WorkspaceCheckpointStore) {
+fn create_temp_workspace() -> (TempDir, WorkspaceRunSnapshotStore) {
     let temp = TempDir::new().unwrap();
-    let store = WorkspaceCheckpointStore::new(temp.path().to_path_buf());
+    let store = WorkspaceRunSnapshotStore::new(temp.path().to_path_buf());
     (temp, store)
 }
 
@@ -73,9 +74,9 @@ fn test_restore_clears_workspace_mutations_but_preserves_durable_notes() {
     fs::write(temp.path().join("config.toml"), "key = \"before\"").unwrap();
 
     store
-        .capture_workspace(CheckpointCaptureMetadata::new(
-            CheckpointCaptureSource::Write,
-            "pre-change checkpoint",
+        .capture_workspace(RunSnapshotCaptureMetadata::new(
+            RunSnapshotCaptureSource::Write,
+            "pre-change run snapshot",
         ))
         .expect("capture_workspace should succeed");
 
@@ -87,11 +88,11 @@ fn test_restore_clears_workspace_mutations_but_preserves_durable_notes() {
 
     assert!(
         report.restored_files.contains(&"config.toml".to_string()),
-        "config.toml should be restored to checkpoint state"
+        "config.toml should be restored to run snapshot state"
     );
     assert!(
         report.restored_files.contains(&"src/lib.rs".to_string()),
-        "src/lib.rs should be restored to checkpoint state"
+        "src/lib.rs should be restored to run snapshot state"
     );
     assert!(
         report.removed_files.contains(&"new_file.txt".to_string()),
@@ -101,12 +102,12 @@ fn test_restore_clears_workspace_mutations_but_preserves_durable_notes() {
     assert_eq!(
         fs::read_to_string(temp.path().join("src/lib.rs")).unwrap(),
         "fn before() -> u32 { 1 }",
-        "restored file should match checkpoint"
+        "restored file should match run snapshot"
     );
     assert_eq!(
         fs::read_to_string(temp.path().join("config.toml")).unwrap(),
         "key = \"before\"",
-        "restored config should match checkpoint"
+        "restored config should match run snapshot"
     );
     assert!(
         !temp.path().join("new_file.txt").exists(),
@@ -134,7 +135,7 @@ fn test_restore_preserves_memory_index_and_user_model() {
 
     fs::write(
         topagent_dir.join("MEMORY.md"),
-        "# TopAgent Memory Index\n\n- topic: arch | file: notes/arch.md | status: verified\n",
+        "# TopAgent Memory Index\n\n- title: arch | file: notes/arch.md | status: verified\n",
     )
     .unwrap();
 
@@ -149,7 +150,7 @@ fn test_restore_preserves_memory_index_and_user_model() {
     store
         .capture_file(
             "main.rs",
-            CheckpointCaptureMetadata::new(CheckpointCaptureSource::Write, "before mutation"),
+            RunSnapshotCaptureMetadata::new(RunSnapshotCaptureSource::Write, "before mutation"),
         )
         .unwrap();
 
@@ -181,7 +182,7 @@ fn test_restore_preserves_memory_index_and_user_model() {
 }
 
 #[test]
-fn test_restore_clears_checkpoint_itself() {
+fn test_restore_clears_run_snapshot_itself() {
     let (temp, store) = create_temp_workspace();
 
     fs::write(temp.path().join("data.txt"), "before").unwrap();
@@ -189,13 +190,13 @@ fn test_restore_clears_checkpoint_itself() {
     store
         .capture_file(
             "data.txt",
-            CheckpointCaptureMetadata::new(CheckpointCaptureSource::Write, "test"),
+            RunSnapshotCaptureMetadata::new(RunSnapshotCaptureSource::Write, "test"),
         )
         .unwrap();
 
     assert!(
         store.latest_status().unwrap().is_some(),
-        "checkpoint should exist after capture"
+        "run snapshot should exist after capture"
     );
 
     fs::write(temp.path().join("data.txt"), "after").unwrap();
@@ -205,7 +206,7 @@ fn test_restore_clears_checkpoint_itself() {
 
     assert!(
         store.latest_status().unwrap().is_none(),
-        "checkpoint should be gone after restore"
+        "run snapshot should be gone after restore"
     );
 }
 
@@ -336,36 +337,6 @@ fn test_memory_write_allows_trusted_context() {
 }
 
 #[test]
-fn test_hooks_cannot_bypass_durable_promotion_block() {
-    let temp = TempDir::new().unwrap();
-    let hooks_dir = temp.path().join(".topagent");
-    fs::create_dir_all(&hooks_dir).unwrap();
-    fs::write(
-        hooks_dir.join("hooks.toml"),
-        r#"
-[[hooks]]
-event = "pre_tool"
-command = "echo '{\"action\": \"allow\"}'"
-label = "permissive hook"
-"#,
-    )
-    .unwrap();
-
-    let registry = HookRegistry::load_from_workspace(temp.path());
-    assert!(!registry.is_empty());
-
-    let contract = BehaviorContract::default();
-    let low = low_trust_context();
-
-    assert!(
-        contract
-            .durable_promotion_block_reason(DurablePromotionKind::Note, &low, false)
-            .is_some(),
-        "permissive hooks must not bypass durable promotion blocking under low trust"
-    );
-}
-
-#[test]
 fn test_status_reflects_latest_capture_not_stale_data() {
     let (temp, store) = create_temp_workspace();
 
@@ -373,7 +344,7 @@ fn test_status_reflects_latest_capture_not_stale_data() {
     store
         .capture_file(
             "v1.txt",
-            CheckpointCaptureMetadata::new(CheckpointCaptureSource::Write, "first"),
+            RunSnapshotCaptureMetadata::new(RunSnapshotCaptureSource::Write, "first"),
         )
         .unwrap();
 
@@ -382,7 +353,7 @@ fn test_status_reflects_latest_capture_not_stale_data() {
     assert!(!status.captures.is_empty());
     assert_eq!(
         status.captures.last().unwrap().source,
-        CheckpointCaptureSource::Write
+        RunSnapshotCaptureSource::Write
     );
     assert_eq!(status.captures.last().unwrap().reason, "first");
 
@@ -390,7 +361,7 @@ fn test_status_reflects_latest_capture_not_stale_data() {
     store
         .capture_file(
             "v2.txt",
-            CheckpointCaptureMetadata::new(CheckpointCaptureSource::Bash, "second"),
+            RunSnapshotCaptureMetadata::new(RunSnapshotCaptureSource::Bash, "second"),
         )
         .unwrap();
 
@@ -400,7 +371,7 @@ fn test_status_reflects_latest_capture_not_stale_data() {
     assert!(!status.captures.is_empty());
     assert_eq!(
         status.captures.last().unwrap().source,
-        CheckpointCaptureSource::Bash
+        RunSnapshotCaptureSource::Bash
     );
     assert_eq!(status.captures.last().unwrap().reason, "second");
 }
@@ -411,11 +382,11 @@ fn test_restore_then_modify_then_second_restore_works_correctly() {
 
     fs::write(temp.path().join("important.txt"), "original content").unwrap();
 
-    let store1 = WorkspaceCheckpointStore::new(temp.path().to_path_buf());
+    let store1 = WorkspaceRunSnapshotStore::new(temp.path().to_path_buf());
     store1
         .capture_file(
             "important.txt",
-            CheckpointCaptureMetadata::new(CheckpointCaptureSource::Write, "initial state"),
+            RunSnapshotCaptureMetadata::new(RunSnapshotCaptureSource::Write, "initial state"),
         )
         .unwrap();
 
@@ -436,13 +407,13 @@ fn test_restore_then_modify_then_second_restore_works_correctly() {
     )
     .unwrap();
 
-    let store2 = WorkspaceCheckpointStore::new(temp.path().to_path_buf());
+    let store2 = WorkspaceRunSnapshotStore::new(temp.path().to_path_buf());
     store2
         .capture_file(
             "important.txt",
-            CheckpointCaptureMetadata::new(
-                CheckpointCaptureSource::Edit,
-                "post-restore checkpoint",
+            RunSnapshotCaptureMetadata::new(
+                RunSnapshotCaptureSource::Edit,
+                "post-restore run snapshot",
             ),
         )
         .unwrap();
@@ -459,7 +430,7 @@ fn test_restore_then_modify_then_second_restore_works_correctly() {
     assert_eq!(
         fs::read_to_string(temp.path().join("important.txt")).unwrap(),
         "after restore - good state",
-        "second restore should go back to the last checkpoint state"
+        "second restore should go back to the last run snapshot state"
     );
 }
 
@@ -494,12 +465,12 @@ fn test_provenance_context_survives_merge() {
 }
 
 #[test]
-fn test_hidden_checkpoint_paths_are_not_captured() {
+fn test_hidden_run_snapshot_paths_are_not_captured() {
     let (temp, store) = create_temp_workspace();
 
-    let checkpoints_dir = temp.path().join(".topagent/checkpoints");
-    fs::create_dir_all(&checkpoints_dir).unwrap();
-    fs::write(checkpoints_dir.join("manifest.json"), "{}").unwrap();
+    let snapshots_dir = temp.path().join(".topagent/run-snapshots");
+    fs::create_dir_all(&snapshots_dir).unwrap();
+    fs::write(snapshots_dir.join("manifest.json"), "{}").unwrap();
 
     let git_dir = temp.path().join(".git");
     fs::create_dir_all(&git_dir).unwrap();
@@ -508,8 +479,8 @@ fn test_hidden_checkpoint_paths_are_not_captured() {
     fs::write(temp.path().join("real_file.txt"), "content").unwrap();
 
     store
-        .capture_workspace(CheckpointCaptureMetadata::new(
-            CheckpointCaptureSource::Write,
+        .capture_workspace(RunSnapshotCaptureMetadata::new(
+            RunSnapshotCaptureSource::Write,
             "workspace scan",
         ))
         .unwrap();
@@ -527,7 +498,7 @@ fn test_hidden_checkpoint_paths_are_not_captured() {
         !status
             .captured_paths
             .iter()
-            .any(|p| p.contains(".topagent/checkpoints")),
-        "checkpoint paths should not be captured"
+            .any(|p| p.contains(".topagent/run-snapshots")),
+        "run snapshot paths should not be captured"
     );
 }

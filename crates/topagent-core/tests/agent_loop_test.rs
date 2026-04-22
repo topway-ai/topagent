@@ -1,13 +1,11 @@
-use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 use tempfile::TempDir;
 use topagent_core::{
     context::ExecutionContext,
-    tool_genesis::{ToolGenesis, VerificationSpec},
     tools::{BashTool, EditTool, GitDiffTool, ReadTool, Tool, WriteTool},
     Agent, CancellationToken, Content, DeliveryOutcome, Error, ExecutionStage, Message, ModelRoute,
     ProgressKind, ProgressUpdate, Provider, ProviderResponse, Role, RuntimeOptions, TaskResult,
-    ToolCallEntry, ToolSpec, WorkspaceCheckpointStore,
+    ToolCallEntry, ToolSpec, WorkspaceRunSnapshotStore,
 };
 
 fn make_test_context() -> (ExecutionContext, TempDir) {
@@ -33,12 +31,6 @@ fn make_tools_with_git() -> Vec<Box<dyn Tool>> {
         Box::new(BashTool::new()) as Box<dyn Tool>,
         Box::new(GitDiffTool::new()) as Box<dyn Tool>,
     ]
-}
-
-fn write_workspace_external_tools(temp: &TempDir, contents: &str) {
-    let topagent_dir = temp.path().join(".topagent");
-    std::fs::create_dir_all(&topagent_dir).unwrap();
-    std::fs::write(topagent_dir.join("external-tools.json"), contents).unwrap();
 }
 
 struct TransientFailProvider {
@@ -311,11 +303,11 @@ fn test_agent_executes_tool_and_continues() {
 }
 
 #[test]
-fn test_risky_bash_emits_checkpoint_progress_update() {
+fn test_risky_bash_emits_run_snapshot_progress_update() {
     let temp = TempDir::new().unwrap();
     let root = temp.path().to_path_buf();
     let ctx = ExecutionContext::new(root.clone())
-        .with_workspace_checkpoint_store(WorkspaceCheckpointStore::new(root));
+        .with_workspace_run_snapshot_store(WorkspaceRunSnapshotStore::new(root));
     let responses = vec![
         ProviderResponse::ToolCall {
             id: "1".into(),
@@ -335,7 +327,7 @@ fn test_risky_bash_emits_checkpoint_progress_update() {
     let updates = updates.lock().unwrap();
     assert!(updates.iter().any(|u| {
         u.message
-            .contains("Checkpointed workspace before risky shell command")
+            .contains("Snapshotted workspace before risky shell command")
     }));
     assert!(updates
         .iter()
@@ -783,265 +775,6 @@ fn test_runtime_options_builder() {
 }
 
 #[test]
-fn test_agent_loads_external_tools_from_workspace_state_dir() {
-    let temp = TempDir::new().unwrap();
-    write_workspace_external_tools(
-        &temp,
-        r#"[
-            {"name": "greet", "description": "Say hello", "command": "echo", "argv_template": ["hello", "{name}"], "sandbox": "host"},
-            {"name": "version", "description": "Get version", "command": "echo", "argv_template": ["v1.0.0"], "sandbox": "workspace"}
-        ]"#,
-    );
-
-    let root = temp.path().to_path_buf();
-    let ctx = ExecutionContext::new(root);
-
-    struct TestProvider;
-    impl Provider for TestProvider {
-        fn complete(
-            &self,
-            _messages: &[Message],
-            _route: &topagent_core::ModelRoute,
-        ) -> topagent_core::Result<ProviderResponse> {
-            Ok(ProviderResponse::Message(Message::assistant("done")))
-        }
-    }
-
-    let mut agent = Agent::new(Box::new(TestProvider), make_tools());
-    let result = agent.run(&ctx, "test");
-
-    assert!(result.is_ok());
-    let external = agent.external_tools();
-    assert!(external.get("greet").is_some());
-    assert!(external.get("version").is_some());
-}
-
-#[test]
-fn test_agent_external_tools_file_missing_is_ok() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().to_path_buf();
-    let ctx = ExecutionContext::new(root);
-
-    struct TestProvider;
-    impl Provider for TestProvider {
-        fn complete(
-            &self,
-            _messages: &[Message],
-            _route: &topagent_core::ModelRoute,
-        ) -> topagent_core::Result<ProviderResponse> {
-            Ok(ProviderResponse::Message(Message::assistant("done")))
-        }
-    }
-
-    let mut agent = Agent::new(Box::new(TestProvider), make_tools());
-    let result = agent.run(&ctx, "test");
-
-    assert!(result.is_ok());
-    let external = agent.external_tools();
-    assert!(external.is_empty());
-}
-
-#[test]
-fn test_repeated_runs_do_not_duplicate_genesis_tools() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().to_path_buf();
-    let ctx = ExecutionContext::new(root);
-
-    struct TestProvider;
-    impl Provider for TestProvider {
-        fn complete(
-            &self,
-            _messages: &[Message],
-            _route: &topagent_core::ModelRoute,
-        ) -> topagent_core::Result<ProviderResponse> {
-            Ok(ProviderResponse::Message(Message::assistant("done")))
-        }
-    }
-
-    let options = RuntimeOptions::default().with_generated_tool_authoring(true);
-    let mut agent = Agent::with_options(Box::new(TestProvider), make_tools(), options);
-
-    let specs_first_run = agent.tool_specs();
-
-    agent.run(&ctx, "first run").unwrap();
-    let specs_second_run = agent.tool_specs();
-
-    agent.run(&ctx, "second run").unwrap();
-    let specs_third_run = agent.tool_specs();
-
-    assert_eq!(
-        specs_first_run.len(),
-        specs_second_run.len(),
-        "tool count should not change between runs"
-    );
-    assert_eq!(
-        specs_first_run.len(),
-        specs_third_run.len(),
-        "tool count should not change after third run"
-    );
-
-    let tool_names: Vec<&str> = specs_first_run.iter().map(|s| s.name.as_str()).collect();
-    assert!(
-        tool_names.contains(&"create_tool"),
-        "create_tool should be registered when authoring is enabled"
-    );
-    assert!(
-        tool_names.contains(&"repair_tool"),
-        "repair_tool should be registered"
-    );
-    assert!(
-        tool_names.contains(&"list_generated_tools"),
-        "list_generated_tools should be registered"
-    );
-    assert!(
-        !tool_names.contains(&"design_tool"),
-        "proposal-layer tools should not be registered"
-    );
-}
-
-#[test]
-fn test_genesis_tools_become_external_after_verification() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().to_path_buf();
-    let genesis = ToolGenesis::new(root.clone());
-    genesis
-        .create_tool(
-            "my_tool",
-            "a verified tool",
-            "echo hello",
-            vec![],
-            vec![],
-            Some(VerificationSpec {
-                verification_inputs: BTreeMap::new(),
-                expected_exit: 0,
-                expected_output_contains: Some("hello".to_string()),
-            }),
-        )
-        .unwrap();
-
-    let ctx = ExecutionContext::new(root);
-
-    struct TestProvider;
-    impl Provider for TestProvider {
-        fn complete(
-            &self,
-            _messages: &[Message],
-            _route: &topagent_core::ModelRoute,
-        ) -> topagent_core::Result<ProviderResponse> {
-            Ok(ProviderResponse::Message(Message::assistant("done")))
-        }
-    }
-
-    let mut agent = Agent::new(Box::new(TestProvider), make_tools());
-    agent.run(&ctx, "test").unwrap();
-
-    let external = agent.external_tools();
-    assert!(
-        external.get("my_tool").is_some(),
-        "verified generated tool should be loaded as external tool"
-    );
-}
-
-#[test]
-fn test_generated_tool_is_usable_without_waiting_for_next_run() {
-    let (ctx, _temp) = make_test_context();
-    let responses = vec![
-        ProviderResponse::ToolCall {
-            id: "create".into(),
-            name: "create_tool".into(),
-            args: serde_json::json!({
-                "name": "hello_tool",
-                "description": "echo a greeting",
-                "script": "printf 'hello %s\\n' \"$1\"",
-                "inputs": [
-                    {"name": "name", "description": "name to greet"}
-                ],
-                "argv_template": ["{name}"],
-                "verification_inputs": {"name": "world"},
-                "expected_output_contains": "hello world"
-            }),
-        },
-        ProviderResponse::ToolCall {
-            id: "use".into(),
-            name: "hello_tool".into(),
-            args: serde_json::json!({"name": "codex"}),
-        },
-        ProviderResponse::Message(Message::assistant("done".to_string())),
-    ];
-    let provider = topagent_core::ScriptedProvider::new(responses);
-    let options = RuntimeOptions::default().with_generated_tool_authoring(true);
-    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
-
-    let result = agent.run(&ctx, "create a helper tool and use it immediately");
-    assert!(result.is_ok());
-
-    let messages = agent.conversation_messages();
-    assert!(messages.iter().any(|message| {
-        matches!(
-            &message.content,
-            Content::ToolResult { result, .. } if result.contains("hello codex")
-        )
-    }));
-}
-
-#[test]
-fn test_agent_external_tools_file_invalid_fails() {
-    let temp = TempDir::new().unwrap();
-    write_workspace_external_tools(&temp, "invalid json {");
-
-    let root = temp.path().to_path_buf();
-    let ctx = ExecutionContext::new(root);
-
-    struct TestProvider;
-    impl Provider for TestProvider {
-        fn complete(
-            &self,
-            _messages: &[Message],
-            _route: &topagent_core::ModelRoute,
-        ) -> topagent_core::Result<ProviderResponse> {
-            Ok(ProviderResponse::Message(Message::assistant("done")))
-        }
-    }
-
-    let mut agent = Agent::new(Box::new(TestProvider), make_tools());
-    let result = agent.run(&ctx, "test");
-
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_agent_external_tools_file_missing_sandbox_fails() {
-    let temp = TempDir::new().unwrap();
-    write_workspace_external_tools(
-        &temp,
-        r#"[{"name": "broken", "description": "Broken tool", "command": "echo", "argv_template": ["hello"]}]"#,
-    );
-
-    let root = temp.path().to_path_buf();
-    let ctx = ExecutionContext::new(root);
-
-    struct TestProvider;
-    impl Provider for TestProvider {
-        fn complete(
-            &self,
-            _messages: &[Message],
-            _route: &topagent_core::ModelRoute,
-        ) -> topagent_core::Result<ProviderResponse> {
-            Ok(ProviderResponse::Message(Message::assistant("done")))
-        }
-    }
-
-    let mut agent = Agent::new(Box::new(TestProvider), make_tools());
-    let result = agent.run(&ctx, "test");
-
-    assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("missing field `sandbox`"));
-}
-
-#[test]
 fn test_agent_multiple_tool_calls_execute_sequentially() {
     let (ctx, _temp) = make_test_context();
     std::fs::write(ctx.resolve_path("a.txt").unwrap(), "content A").unwrap();
@@ -1281,265 +1014,6 @@ fn test_workspace_memory_context_is_included_in_system_prompt() {
     assert!(
         system_prompt.contains("Treat memory as hints, not truth"),
         "expected memory skepticism note in system prompt: {}",
-        system_prompt
-    );
-}
-
-#[test]
-fn test_generated_tool_warnings_are_included_in_system_prompt() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().to_path_buf();
-    let genesis = ToolGenesis::new(root.clone());
-    genesis
-        .create_tool(
-            "broken_tool",
-            "broken generated tool",
-            "echo ok",
-            vec![],
-            vec![],
-            Some(VerificationSpec {
-                verification_inputs: BTreeMap::new(),
-                expected_exit: 0,
-                expected_output_contains: Some("ok".to_string()),
-            }),
-        )
-        .unwrap();
-    std::fs::remove_file(root.join(".topagent/tools/broken_tool/script.sh")).unwrap();
-    let ctx = ExecutionContext::new(root);
-
-    struct CheckPromptProvider {
-        pub captured_messages: Arc<RwLock<Vec<Message>>>,
-    }
-    impl CheckPromptProvider {
-        fn new() -> Self {
-            Self {
-                captured_messages: Arc::new(RwLock::new(Vec::new())),
-            }
-        }
-    }
-    impl Provider for CheckPromptProvider {
-        fn complete(
-            &self,
-            messages: &[Message],
-            _route: &topagent_core::ModelRoute,
-        ) -> topagent_core::Result<ProviderResponse> {
-            let mut captured = self.captured_messages.write().unwrap();
-            captured.extend(messages.to_vec());
-            Ok(ProviderResponse::Message(Message::assistant("done")))
-        }
-    }
-
-    let provider = CheckPromptProvider::new();
-    let provider_ref = Arc::clone(&provider.captured_messages);
-    let mut agent = Agent::new(Box::new(provider), make_tools());
-    let _ = agent.run(&ctx, "inspect the repository");
-    let captured = provider_ref.read().unwrap();
-    let system_prompt = captured.first().and_then(|m| m.as_text()).unwrap_or("");
-
-    assert!(
-        system_prompt.contains("Generated Tool Warnings"),
-        "expected generated tool warnings section in system prompt: {}",
-        system_prompt
-    );
-    assert!(
-        system_prompt.contains("broken_tool: missing script.sh"),
-        "expected missing generated tool script warning in system prompt: {}",
-        system_prompt
-    );
-    assert!(
-        !system_prompt.contains("- create_tool:"),
-        "generic tasks should not advertise tool authoring tools: {}",
-        system_prompt
-    );
-}
-
-#[test]
-fn test_generated_tool_script_drift_does_not_warn_on_normal_startup() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().to_path_buf();
-    let genesis = ToolGenesis::new(root.clone());
-    genesis
-        .create_tool(
-            "drifted_tool",
-            "drifted generated tool",
-            "echo original",
-            vec![],
-            vec![],
-            Some(VerificationSpec {
-                verification_inputs: BTreeMap::new(),
-                expected_exit: 0,
-                expected_output_contains: Some("original".to_string()),
-            }),
-        )
-        .unwrap();
-    std::fs::write(
-        root.join(".topagent/tools/drifted_tool/script.sh"),
-        "echo tampered",
-    )
-    .unwrap();
-    let ctx = ExecutionContext::new(root);
-
-    struct CheckPromptProvider {
-        captured_messages: Arc<RwLock<Vec<Message>>>,
-    }
-    impl Provider for CheckPromptProvider {
-        fn complete(
-            &self,
-            messages: &[Message],
-            _route: &topagent_core::ModelRoute,
-        ) -> topagent_core::Result<ProviderResponse> {
-            self.captured_messages
-                .write()
-                .unwrap()
-                .extend(messages.to_vec());
-            Ok(ProviderResponse::Message(Message::assistant("done")))
-        }
-    }
-
-    let provider = CheckPromptProvider {
-        captured_messages: Arc::new(RwLock::new(Vec::new())),
-    };
-    let captured = Arc::clone(&provider.captured_messages);
-    let mut agent = Agent::new(Box::new(provider), make_tools());
-    let result = agent.run(&ctx, "inspect the repository");
-    assert!(result.is_ok());
-
-    let system_prompt = captured
-        .read()
-        .unwrap()
-        .first()
-        .and_then(|message| message.as_text())
-        .unwrap_or("")
-        .to_string();
-    assert!(
-        !system_prompt.contains("drifted_tool: script.sh changed after verification"),
-        "normal startup should not deep-scan drifted generated tools: {}",
-        system_prompt
-    );
-    assert!(
-        agent.external_tools().get("drifted_tool").is_some(),
-        "runtime inventory should still load the generated tool cheaply"
-    );
-}
-
-#[test]
-fn test_generated_tool_revalidation_blocks_tampered_tool_on_use() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().to_path_buf();
-    let genesis = ToolGenesis::new(root.clone());
-    genesis
-        .create_tool(
-            "drifted_tool",
-            "drifted generated tool",
-            "echo original",
-            vec![],
-            vec![],
-            Some(VerificationSpec {
-                verification_inputs: BTreeMap::new(),
-                expected_exit: 0,
-                expected_output_contains: Some("original".to_string()),
-            }),
-        )
-        .unwrap();
-    std::fs::write(
-        root.join(".topagent/tools/drifted_tool/script.sh"),
-        "echo tampered",
-    )
-    .unwrap();
-    let ctx = ExecutionContext::new(root);
-
-    let provider = topagent_core::ScriptedProvider::new(vec![
-        ProviderResponse::ToolCall {
-            id: "use".into(),
-            name: "drifted_tool".into(),
-            args: serde_json::json!({}),
-        },
-        ProviderResponse::Message(Message::assistant("reported unavailable")),
-    ]);
-    let mut agent = Agent::new(Box::new(provider), make_tools());
-    let result = agent.run(&ctx, "use the generated tool");
-    assert!(result.is_ok());
-
-    let messages = agent.conversation_messages();
-    assert!(messages.iter().any(|message| {
-        matches!(
-            &message.content,
-            Content::ToolResult { result, .. }
-                if result.contains("generated tool 'drifted_tool' is unavailable")
-                    && result.contains("script.sh changed after approval")
-        )
-    }));
-    assert!(
-        agent.external_tools().get("drifted_tool").is_none(),
-        "tampered generated tool should be removed from the active runtime inventory after failed revalidation"
-    );
-}
-
-#[test]
-fn test_generated_tool_warnings_are_capped_in_system_prompt() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().to_path_buf();
-    let genesis = ToolGenesis::new(root.clone());
-    for index in 0..6 {
-        let name = format!("broken_tool_{index}");
-        genesis
-            .create_tool(
-                &name,
-                "broken generated tool",
-                "echo ok",
-                vec![],
-                vec![],
-                Some(VerificationSpec {
-                    verification_inputs: BTreeMap::new(),
-                    expected_exit: 0,
-                    expected_output_contains: Some("ok".to_string()),
-                }),
-            )
-            .unwrap();
-        std::fs::remove_file(root.join(format!(".topagent/tools/{name}/script.sh"))).unwrap();
-    }
-    let ctx = ExecutionContext::new(root);
-
-    struct CheckPromptProvider {
-        captured_messages: Arc<RwLock<Vec<Message>>>,
-    }
-    impl Provider for CheckPromptProvider {
-        fn complete(
-            &self,
-            messages: &[Message],
-            _route: &topagent_core::ModelRoute,
-        ) -> topagent_core::Result<ProviderResponse> {
-            self.captured_messages
-                .write()
-                .unwrap()
-                .extend(messages.to_vec());
-            Ok(ProviderResponse::Message(Message::assistant("done")))
-        }
-    }
-
-    let provider = CheckPromptProvider {
-        captured_messages: Arc::new(RwLock::new(Vec::new())),
-    };
-    let captured = Arc::clone(&provider.captured_messages);
-    let mut agent = Agent::new(Box::new(provider), make_tools());
-    let result = agent.run(&ctx, "inspect the repository");
-    assert!(result.is_ok());
-
-    let system_prompt = captured
-        .read()
-        .unwrap()
-        .first()
-        .and_then(|message| message.as_text())
-        .unwrap_or("")
-        .to_string();
-    assert!(system_prompt.contains("broken_tool_0: missing script.sh"));
-    assert!(system_prompt.contains("broken_tool_3: missing script.sh"));
-    assert!(!system_prompt.contains("broken_tool_4: missing script.sh"));
-    assert!(
-        system_prompt.contains(
-            "2 more generated tools are unavailable but omitted from the default warning surface."
-        ),
-        "expected capped runtime warning summary in system prompt: {}",
         system_prompt
     );
 }
@@ -2373,32 +1847,6 @@ fn test_blocked_then_plan_then_complete_has_single_final_completed_state() {
 }
 
 #[test]
-fn test_external_tool_blocked_before_plan() {
-    let temp = tempfile::TempDir::new().unwrap();
-    write_workspace_external_tools(
-        &temp,
-        r#"[{"name": "my_tool", "description": "test", "command": "echo", "argv_template": ["hello"], "sandbox": "host"}]"#,
-    );
-    std::fs::write(temp.path().join("test.txt"), "content").unwrap();
-
-    let root = temp.path().to_path_buf();
-    let ctx = ExecutionContext::new(root);
-
-    let options = RuntimeOptions::new().with_require_plan(true);
-    let provider = BasicTestProvider::new(vec![
-        ProviderResponse::ToolCall {
-            id: "1".to_string(),
-            name: "my_tool".to_string(),
-            args: serde_json::json!({}),
-        },
-        ProviderResponse::Message(Message::assistant("Done".to_string())),
-    ]);
-    let mut agent = Agent::with_options(Box::new(provider), make_tools(), options);
-    let result = agent.run(&ctx, "refactor the entire codebase");
-    assert!(result.is_ok());
-}
-
-#[test]
 fn test_read_only_task_no_file_change_evidence() {
     let (ctx, _temp) = make_test_context();
     std::fs::write(ctx.resolve_path("test.txt").unwrap(), "hello").unwrap();
@@ -2419,40 +1867,6 @@ fn test_read_only_task_no_file_change_evidence() {
     let output = result.unwrap();
     assert!(output.contains("File contains hello"));
     assert!(!output.contains("Files Changed"));
-}
-
-#[test]
-fn test_generated_tool_warnings_appear_in_final_output() {
-    let temp = TempDir::new().unwrap();
-    let root = temp.path().to_path_buf();
-    let genesis = ToolGenesis::new(root.clone());
-    genesis
-        .create_tool(
-            "broken_tool",
-            "broken generated tool",
-            "echo ok",
-            vec![],
-            vec![],
-            Some(VerificationSpec {
-                verification_inputs: BTreeMap::new(),
-                expected_exit: 0,
-                expected_output_contains: Some("ok".to_string()),
-            }),
-        )
-        .unwrap();
-    std::fs::remove_file(root.join(".topagent/tools/broken_tool/script.sh")).unwrap();
-    let ctx = ExecutionContext::new(root);
-
-    let provider = topagent_core::ScriptedProvider::new(vec![ProviderResponse::Message(
-        Message::assistant("No changes needed"),
-    )]);
-    let mut agent = Agent::new(Box::new(provider), make_tools());
-
-    let result = agent.run(&ctx, "inspect the repository");
-    assert!(result.is_ok());
-    let output = result.unwrap();
-    assert!(output.contains("Workspace Warnings"));
-    assert!(output.contains("broken_tool: missing script.sh"));
 }
 
 struct BasicTestProvider {
@@ -2540,68 +1954,6 @@ fn test_bash_mutation_tracked_in_proof_of_work() {
     assert!(
         output.contains("new_file.txt"),
         "bash-created file should appear in proof of work: {}",
-        output
-    );
-}
-
-#[test]
-fn test_external_tool_mutation_tracked() {
-    let temp = TempDir::new().unwrap();
-    std::process::Command::new("git")
-        .args(["init"])
-        .current_dir(temp.path())
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["config", "user.email", "test@test.com"])
-        .current_dir(temp.path())
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["config", "user.name", "Test"])
-        .current_dir(temp.path())
-        .output()
-        .unwrap();
-
-    // Create initial commit
-    std::fs::write(temp.path().join("README.md"), "# Initial").unwrap();
-    std::process::Command::new("git")
-        .args(["add", "."])
-        .current_dir(temp.path())
-        .output()
-        .unwrap();
-    std::process::Command::new("git")
-        .args(["commit", "-m", "initial"])
-        .current_dir(temp.path())
-        .output()
-        .unwrap();
-
-    // Create external tool that touches a file
-    write_workspace_external_tools(
-        &temp,
-        r#"[{"name": "create_file", "description": "Create a file", "command": "touch", "argv_template": ["{filename}"], "sandbox": "host"}]"#,
-    );
-
-    let root = temp.path().to_path_buf();
-    let ctx = ExecutionContext::new(root);
-
-    let responses = vec![
-        ProviderResponse::ToolCall {
-            id: "1".into(),
-            name: "create_file".into(),
-            args: serde_json::json!({"filename": "external_created.txt"}),
-        },
-        ProviderResponse::Message(Message::assistant("External tool executed".to_string())),
-    ];
-    let provider = topagent_core::ScriptedProvider::new(responses);
-    let mut agent = Agent::new(Box::new(provider), make_tools());
-
-    let result = agent.run(&ctx, "create a file with external tool");
-    assert!(result.is_ok());
-    let output = result.unwrap();
-    assert!(
-        output.contains("external_created.txt"),
-        "external-tool-created file should appear in proof of work: {}",
         output
     );
 }
@@ -2796,13 +2148,8 @@ fn test_agent_uses_configured_base_route_for_provider_calls() {
 }
 
 #[test]
-fn test_agent_syncs_internal_and_external_tools_to_provider() {
-    let (ctx, temp) = make_test_context();
-    write_workspace_external_tools(
-        &temp,
-        r#"[{"name": "workspace_helper", "description": "workspace helper", "command": "echo", "argv_template": ["{target}"], "sandbox": "host"}]"#,
-    );
-
+fn test_agent_syncs_current_tools_to_provider() {
+    let (ctx, _temp) = make_test_context();
     let provider = RecordingProvider::new(ProviderResponse::Message(Message::assistant("done")));
     let tool_names = provider.tool_names_handle();
     let mut agent = Agent::with_route(
@@ -2818,53 +2165,8 @@ fn test_agent_syncs_internal_and_external_tools_to_provider() {
     let tool_names = tool_names.read().unwrap().clone();
     assert!(tool_names.contains(&"read".to_string()));
     assert!(tool_names.contains(&"update_plan".to_string()));
-    assert!(!tool_names.contains(&"create_tool".to_string()));
-    assert!(!tool_names.contains(&"repair_tool".to_string()));
-    assert!(!tool_names.contains(&"list_generated_tools".to_string()));
-    assert!(!tool_names.contains(&"delete_generated_tool".to_string()));
-    assert!(tool_names.contains(&"workspace_helper".to_string()));
-    assert!(!tool_names.contains(&"design_tool".to_string()));
-    assert!(!tool_names.contains(&"list_tool_proposals".to_string()));
-}
-
-#[test]
-fn test_agent_exposes_tool_authoring_tools_when_runtime_option_enabled() {
-    let (ctx, _temp) = make_test_context();
-    let provider = RecordingProvider::new(ProviderResponse::Message(Message::assistant("done")));
-    let tool_names = provider.tool_names_handle();
-    let options = RuntimeOptions::default().with_generated_tool_authoring(true);
-    let mut agent = Agent::with_route(
-        Box::new(provider),
-        ModelRoute::default(),
-        make_tools(),
-        options,
-    );
-
-    let result = agent.run(&ctx, "inspect the repository");
-    assert!(result.is_ok());
-
-    let tool_names = tool_names.read().unwrap().clone();
-    assert!(tool_names.contains(&"create_tool".to_string()));
-    assert!(tool_names.contains(&"repair_tool".to_string()));
-    assert!(tool_names.contains(&"list_generated_tools".to_string()));
-    assert!(tool_names.contains(&"delete_generated_tool".to_string()));
-}
-
-#[test]
-fn test_tool_authoring_tools_are_not_registered_when_runtime_option_disabled() {
-    let (ctx, _temp) = make_test_context();
-    let provider = RecordingProvider::new(ProviderResponse::Message(Message::assistant("done")));
-    let tool_names = provider.tool_names_handle();
-    let mut agent = Agent::new(Box::new(provider), make_tools());
-
-    let result = agent.run(&ctx, "inspect the repository");
-    assert!(result.is_ok());
-
-    let tool_names = tool_names.read().unwrap().clone();
-    assert!(!tool_names.contains(&"create_tool".to_string()));
-    assert!(!tool_names.contains(&"repair_tool".to_string()));
-    assert!(!tool_names.contains(&"list_generated_tools".to_string()));
-    assert!(!tool_names.contains(&"delete_generated_tool".to_string()));
+    assert!(tool_names.contains(&"bash".to_string()));
+    assert!(tool_names.contains(&"write".to_string()));
 }
 
 #[test]

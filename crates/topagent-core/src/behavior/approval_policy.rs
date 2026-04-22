@@ -3,8 +3,6 @@ use crate::approval::{
     ApprovalEnforcement, ApprovalPolicy, ApprovalRequestDraft, ApprovalTriggerKind,
     ApprovalTriggerRule,
 };
-use crate::command_exec::CommandSandboxPolicy;
-use crate::external::ExternalToolEffect;
 use crate::provenance::RunTrustContext;
 
 pub(super) fn default_approval_policy() -> ApprovalPolicy {
@@ -22,18 +20,6 @@ pub(super) fn default_approval_policy() -> ApprovalPolicy {
                 label: "shell mutation",
                 enforcement: ApprovalEnforcement::RequiredWhenAvailable,
                 rationale: "shell mutations can bypass safer structured tools",
-            },
-            ApprovalTriggerRule {
-                kind: ApprovalTriggerKind::HostExternalExecution,
-                label: "host-sandbox external tool execution",
-                enforcement: ApprovalEnforcement::RequiredWhenAvailable,
-                rationale: "host tools reach beyond the workspace sandbox",
-            },
-            ApprovalTriggerRule {
-                kind: ApprovalTriggerKind::GeneratedToolDeletion,
-                label: "delete_generated_tool",
-                enforcement: ApprovalEnforcement::RequiredWhenAvailable,
-                rationale: "tool deletion removes workspace-local operator tooling",
             },
         ],
     }
@@ -80,8 +66,6 @@ impl BehaviorContract {
         tool_name: &str,
         args: &serde_json::Value,
         bash_command: Option<&str>,
-        external_effect: Option<ExternalToolEffect>,
-        external_sandbox: Option<CommandSandboxPolicy>,
         trust_context: Option<&RunTrustContext>,
     ) -> Option<ApprovalRequestDraft> {
         let low_trust_summary = trust_context.and_then(|trust| trust.low_trust_action_summary(2));
@@ -116,48 +100,9 @@ impl BehaviorContract {
                     .to_string(),
                 "Runs a filesystem-changing shell command directly through the shell.".to_string(),
                 Some(
-                    "Use `topagent run restore` for the latest workspace checkpoint, then inspect git diff for any remaining shell-side effects."
+                    "Use `topagent run restore` for the latest workspace run snapshot, then inspect git diff for any remaining shell-side effects."
                         .to_string(),
                 ),
-                low_trust_summary.as_deref(),
-            );
-        }
-
-        if external_sandbox == Some(CommandSandboxPolicy::Host) {
-            let effect = match external_effect.unwrap_or(ExternalToolEffect::ReadOnly) {
-                ExternalToolEffect::ReadOnly => {
-                    "Runs a host-scoped external tool outside the workspace sandbox."
-                }
-                ExternalToolEffect::VerificationOnly => {
-                    "Runs a host-scoped verification tool outside the workspace sandbox."
-                }
-                ExternalToolEffect::ExecutionStarted => {
-                    "Runs a host-scoped execution tool outside the workspace sandbox."
-                }
-            };
-            return self.approval.build_request(
-                ApprovalTriggerKind::HostExternalExecution,
-                format!("host external tool: {tool_name}"),
-                format!("{tool_name}({})", compact_json(args)),
-                "May reach beyond the workspace sandbox and affect host-visible state.".to_string(),
-                effect.to_string(),
-                None,
-                low_trust_summary.as_deref(),
-            );
-        }
-
-        if tool_name == "delete_generated_tool" {
-            let name = args
-                .get("name")
-                .and_then(|value| value.as_str())
-                .unwrap_or("<missing tool name>");
-            return self.approval.build_request(
-                ApprovalTriggerKind::GeneratedToolDeletion,
-                format!("delete generated tool: {name}"),
-                format!("delete_generated_tool(name={name:?})"),
-                "Removes a workspace-local tool from .topagent/tools/.".to_string(),
-                "Deletes the generated tool until it is recreated.".to_string(),
-                Some("Use create_tool or repair_tool to restore the tool later.".to_string()),
                 low_trust_summary.as_deref(),
             );
         }
@@ -173,9 +118,4 @@ fn compact_action_text(text: &str, limit: usize) -> String {
     } else {
         format!("{}...", &compact[..limit.saturating_sub(3)])
     }
-}
-
-fn compact_json(value: &serde_json::Value) -> String {
-    let rendered = serde_json::to_string(value).unwrap_or_else(|_| "{}".to_string());
-    compact_action_text(&rendered, 100)
 }

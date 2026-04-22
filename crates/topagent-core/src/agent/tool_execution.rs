@@ -1,11 +1,8 @@
 use super::{extract_exit_code, Agent};
 use crate::behavior::BashCommandClass;
-use crate::checkpoint::WorkspaceCheckpointStatus;
 use crate::context::{ExecutionContext, ToolContext};
-use crate::external::ExternalToolEffect;
-use crate::hooks::{dispatch_hooks, HookEvent, HookInput};
 use crate::provenance::fetched_content_source;
-use crate::tool_genesis::{revalidate_runtime_tool, GeneratedToolRevalidationOutcome};
+use crate::run_snapshot::WorkspaceRunSnapshotStatus;
 use crate::tools::risky_shell_changed_path_hints;
 use crate::{Message, ProgressUpdate, Result};
 
@@ -30,12 +27,7 @@ impl Agent {
         name: String,
         args: serde_json::Value,
     ) -> Result<()> {
-        let is_external = self.external_tools.get(&name).is_some();
-
         if self.tools.get(&name).is_none() {
-            if is_external {
-                return self.execute_external_tool_call(ctx, instruction, id, name, args);
-            }
             self.record_tool_result(
                 id,
                 name.clone(),
@@ -47,7 +39,7 @@ impl Agent {
 
         self.run_state.track_active_file(&name, &args);
         let bash_args = if name == "bash" { Some(&args) } else { None };
-        if let Some(block) = self.run_preflight(ctx, &name, &args, bash_args, None, None)? {
+        if let Some(block) = self.run_preflight(ctx, &name, &args, bash_args)? {
             self.record_tool_result(id, name, args, block.message);
             if block.is_planning_block {
                 self.note_planning_block(ctx, instruction)?;
@@ -57,8 +49,8 @@ impl Agent {
 
         let tool = self.tools.get(&name).unwrap();
         let changed_before = self.run_state.changed_files();
-        let checkpoint_status_before = if name == "bash" {
-            ctx.checkpoint_store()
+        let snapshot_status_before = if name == "bash" {
+            ctx.run_snapshot_store()
                 .and_then(|store| store.latest_status().ok().flatten())
         } else {
             None
@@ -137,11 +129,6 @@ impl Agent {
 
         self.run_state.track_changed_file(&name, &args);
 
-        // PostWrite hooks: run after write/edit tools complete
-        if matches!(name.as_str(), "write" | "edit") {
-            self.run_post_write_hooks(ctx, &name, &args);
-        }
-
         if self.behavior.is_mutation_tool(&name) {
             self.run_state.reconcile_changed_files(&ctx.workspace_root);
             self.mark_execution_started();
@@ -154,10 +141,6 @@ impl Agent {
 
         if self.behavior.is_memory_write_tool(&name) {
             self.durable_memory_written_this_run = true;
-        }
-
-        if self.behavior.mutates_generated_tool_surface(&name) {
-            self.reload_workspace_tools(&ctx.workspace_root)?;
         }
 
         let result = match ctx.secrets().redact(&raw_result) {
@@ -180,136 +163,10 @@ impl Agent {
             bash_cmd.as_deref(),
             bash_exit_code,
             &changed_before,
-            checkpoint_status_before.as_ref(),
+            snapshot_status_before.as_ref(),
         );
         self.record_tool_result(id, name, args, result);
         Ok(())
-    }
-
-    fn execute_external_tool_call(
-        &mut self,
-        ctx: &ExecutionContext,
-        instruction: &str,
-        id: String,
-        name: String,
-        args: serde_json::Value,
-    ) -> Result<()> {
-        let external_effect = self.external_tools.get(&name).unwrap().effect();
-        let external_sandbox = self.external_tools.get(&name).unwrap().sandbox_policy();
-        let changed_before = self.run_state.changed_files();
-
-        if let Some(block) = self.run_preflight(
-            ctx,
-            &name,
-            &args,
-            None,
-            Some(external_effect),
-            Some(external_sandbox),
-        )? {
-            self.record_tool_result(id, name, args, block.message);
-            if block.is_planning_block {
-                self.note_planning_block(ctx, instruction)?;
-            }
-            return Ok(());
-        }
-
-        if let Some(outcome) = self
-            .generated_tool_runtime_guard(&name)
-            .map(revalidate_runtime_tool)
-        {
-            let reason = match outcome {
-                GeneratedToolRevalidationOutcome::Usable => None,
-                GeneratedToolRevalidationOutcome::NeedsRepair { reason }
-                | GeneratedToolRevalidationOutcome::Invalid { reason } => Some(reason),
-            };
-            if let Some(reason) = reason {
-                let repair_hint = if self.behavior.generated_tools.authoring_enabled {
-                    "repair or recreate it before calling it again"
-                } else {
-                    "re-enable generated-tool authoring and repair or recreate it before calling it again"
-                };
-                self.mark_generated_tool_unavailable(&name, reason.clone());
-                self.record_tool_result(
-                    id,
-                    name.clone(),
-                    args,
-                    format!(
-                        "error: generated tool '{}' is unavailable: {}. {}",
-                        name, reason, repair_hint
-                    ),
-                );
-                return Ok(());
-            }
-        }
-
-        self.emit_progress(Self::external_tool_progress(&name, external_effect));
-        self.check_cancelled(ctx)?;
-        let tool_ctx = ToolContext::new(ctx, &self.options);
-        let external_tool = self.external_tools.get(&name).unwrap();
-        let result = external_tool.execute(&args, &tool_ctx);
-        self.check_cancelled(ctx)?;
-        let found_new_change = self.run_state.reconcile_changed_files(&ctx.workspace_root);
-        if found_new_change && self.execution_stage == super::ExecutionStage::Research {
-            self.execution_stage = super::ExecutionStage::Edit;
-        }
-        if found_new_change {
-            self.maybe_escalate_to_planning();
-        }
-
-        let result_str = match result {
-            Ok(r) => {
-                self.run_state
-                    .record_tool_trace(&name, &args, None, &self.behavior);
-                if matches!(r.effect, ExternalToolEffect::ExecutionStarted) {
-                    self.mark_execution_started();
-                }
-                r.output
-            }
-            Err(e) => {
-                self.record_tool_result(
-                    id,
-                    name,
-                    args,
-                    format!("error: external tool execution failed: {}", e),
-                );
-                return Ok(());
-            }
-        };
-        let result_str = match ctx.secrets().redact(&result_str) {
-            std::borrow::Cow::Owned(s) => s,
-            std::borrow::Cow::Borrowed(_) => result_str,
-        };
-        self.emit_external_tool_post_progress(&changed_before);
-        self.record_tool_result(id, name, args, result_str);
-        Ok(())
-    }
-
-    fn run_post_write_hooks(
-        &mut self,
-        ctx: &ExecutionContext,
-        tool_name: &str,
-        args: &serde_json::Value,
-    ) {
-        let registry = ctx.hook_registry();
-        if registry.is_empty() {
-            return;
-        }
-        let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
-        let input = HookInput {
-            event: HookEvent::PostWrite,
-            subject: path.to_string(),
-            detail: tool_name.to_string(),
-        };
-        let result = dispatch_hooks(registry, HookEvent::PostWrite, &input, &ctx.workspace_root);
-        // PostWrite cannot block (the write already happened). It can annotate
-        // or request verification.
-        if let Some(context) = result.annotation_context() {
-            self.run_state.record_hook_note(context);
-        }
-        for cmd in &result.verify_commands {
-            self.run_state
-                .record_hook_note(format!("Hook requested verification: {}", cmd));
-        }
     }
 
     fn tool_progress(&self, name: &str, args: &serde_json::Value) -> ProgressUpdate {
@@ -341,18 +198,6 @@ impl Agent {
         }
 
         ProgressUpdate::running_tool(name)
-    }
-
-    fn external_tool_progress(name: &str, effect: ExternalToolEffect) -> ProgressUpdate {
-        match effect {
-            ExternalToolEffect::VerificationOnly => {
-                ProgressUpdate::working(format!("Running verification tool: {}", name))
-            }
-            ExternalToolEffect::ExecutionStarted => {
-                ProgressUpdate::working(format!("Running execution tool: {}", name))
-            }
-            ExternalToolEffect::ReadOnly => ProgressUpdate::running_tool(name),
-        }
     }
 
     fn extract_file_path(args: &serde_json::Value) -> Option<&str> {
@@ -408,12 +253,12 @@ impl Agent {
         }
     }
 
-    fn bash_checkpoint_progress_update(
+    fn bash_run_snapshot_progress_update(
         &self,
         ctx: &ExecutionContext,
-        before: Option<&WorkspaceCheckpointStatus>,
+        before: Option<&WorkspaceRunSnapshotStatus>,
     ) -> Option<ProgressUpdate> {
-        let after = ctx.checkpoint_store()?.latest_status().ok().flatten()?;
+        let after = ctx.run_snapshot_store()?.latest_status().ok().flatten()?;
         let before_count = before.map_or(0, |status| status.captures.len());
         if after.captures.len() <= before_count {
             return None;
@@ -422,7 +267,7 @@ impl Agent {
         let capture = after.captures.last()?;
         let detail = capture.detail.as_deref().unwrap_or(capture.reason.as_str());
         Some(ProgressUpdate::working(format!(
-            "Checkpointed workspace before risky shell command: {}",
+            "Snapshotted workspace before risky shell command: {}",
             Self::summarize_progress_text(detail, 96)
         )))
     }
@@ -436,7 +281,7 @@ impl Agent {
         bash_cmd: Option<&str>,
         bash_exit_code: Option<i32>,
         changed_before: &[String],
-        checkpoint_status_before: Option<&WorkspaceCheckpointStatus>,
+        snapshot_status_before: Option<&WorkspaceRunSnapshotStatus>,
     ) {
         if matches!(name, "write" | "edit") {
             if let Some(path) = Self::extract_file_path(args) {
@@ -457,7 +302,7 @@ impl Agent {
                     }
                     BashCommandClass::MutationRisk => {
                         if let Some(update) =
-                            self.bash_checkpoint_progress_update(ctx, checkpoint_status_before)
+                            self.bash_run_snapshot_progress_update(ctx, snapshot_status_before)
                         {
                             self.emit_progress(update);
                         }
@@ -473,17 +318,6 @@ impl Agent {
                     BashCommandClass::ResearchSafe => {}
                 }
             }
-        }
-    }
-
-    fn emit_external_tool_post_progress(&self, changed_before: &[String]) {
-        let changed_after = self.run_state.changed_files();
-        let new_files = Self::new_changed_files(changed_before, &changed_after)
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        if let Some(update) = Self::changed_files_progress_update(&new_files) {
-            self.emit_progress(update);
         }
     }
 }

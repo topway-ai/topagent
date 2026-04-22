@@ -124,7 +124,7 @@ fn test_cli_config_inspect_shows_expected_fields() {
         .stdout(predicates::str::contains("Opencode:"))
         .stdout(predicates::str::contains("Bot token:"))
         .stdout(predicates::str::contains("DM access:"))
-        .stdout(predicates::str::contains("Tool authoring:"));
+        .stdout(predicates::str::contains("Timeout:"));
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn test_cli_config_inspect_does_not_reveal_api_key_value() {
 }
 
 #[test]
-fn test_cli_config_inspect_graceful_without_setup() {
+fn test_cli_config_inspect_graceful_without_install() {
     // In a clean isolated environment (no persisted service config), inspect
     // should still succeed and show missing for keys and token.
     let (_temp, mut cmd) = isolated_topagent_command();
@@ -219,15 +219,6 @@ fn test_cli_install_appears_in_help() {
         .assert()
         .success()
         .stdout(predicates::str::contains("install"));
-}
-
-#[test]
-fn test_cli_setup_alias_appears_in_help() {
-    let mut cmd = Command::cargo_bin("topagent").unwrap();
-    cmd.arg("--help")
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("setup"));
 }
 
 #[test]
@@ -314,7 +305,16 @@ fn test_cli_service_help_mentions_lifecycle_commands() {
         .success()
         .stdout(predicates::str::contains("start"))
         .stdout(predicates::str::contains("stop"))
-        .stdout(predicates::str::contains("restart"));
+        .stdout(predicates::str::contains("restart"))
+        .stdout(predicates::str::contains("  install ").not());
+}
+
+#[test]
+fn test_cli_service_install_is_not_a_supported_spelling() {
+    let mut cmd = Command::cargo_bin("topagent").unwrap();
+    cmd.args(["service", "install", "--help"])
+        .assert()
+        .failure();
 }
 
 #[test]
@@ -357,7 +357,7 @@ fn test_cli_memory_lint_clean_workspace_ok() {
     std::fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
     std::fs::write(
         temp.path().join(".topagent/MEMORY.md"),
-        "# TopAgent Memory Index\n\n- topic: arch | file: notes/arch.md | status: verified | note: layout\n",
+        "# TopAgent Memory Index\n\n- title: arch | file: notes/arch.md | status: verified | note: layout\n",
     )
     .unwrap();
     let (_isolated, mut cmd) = isolated_topagent_command();
@@ -443,45 +443,7 @@ fn test_cli_memory_status_initializes_workspace_state_schema() {
 }
 
 #[test]
-fn test_cli_memory_status_migrates_legacy_workspace_layout() {
-    let temp = TempDir::new().unwrap();
-    let topagent = temp.path().join(".topagent");
-    std::fs::create_dir_all(topagent.join("topics")).unwrap();
-    std::fs::create_dir_all(topagent.join("lessons")).unwrap();
-    std::fs::create_dir_all(topagent.join("plans")).unwrap();
-    std::fs::write(topagent.join("topics/runtime.md"), "# Runtime\n").unwrap();
-    std::fs::write(topagent.join("lessons/deploy.md"), "# Deploy\n").unwrap();
-    std::fs::write(topagent.join("plans/transient.md"), "# Temporary plan\n").unwrap();
-    std::fs::write(
-        topagent.join("MEMORY.md"),
-        "# TopAgent Memory Index\n\n- topic: runtime | file: topics/runtime.md | status: verified | note: service\n- topic: deploy | file: lessons/deploy.md | status: verified | note: release\n",
-    )
-    .unwrap();
-
-    let (_isolated, mut cmd) = isolated_topagent_command();
-    cmd.arg("--workspace")
-        .arg(temp.path())
-        .args(["memory", "status"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("Workspace schema: v1"));
-
-    assert!(topagent.join("notes/runtime.md").is_file());
-    assert!(topagent.join("notes/deploy.md").is_file());
-    assert!(topagent.join("exports/legacy-plans/transient.md").is_file());
-    assert!(!topagent.join("topics/runtime.md").exists());
-    assert!(!topagent.join("lessons/deploy.md").exists());
-    assert!(!topagent.join("plans/transient.md").exists());
-
-    let index = std::fs::read_to_string(topagent.join("MEMORY.md")).unwrap();
-    assert!(index.contains("file: notes/runtime.md"));
-    assert!(index.contains("file: notes/deploy.md"));
-    assert!(!index.contains("file: topics/"));
-    assert!(!index.contains("file: lessons/"));
-}
-
-#[test]
-fn test_cli_run_status_reports_no_checkpoint_for_fresh_workspace() {
+fn test_cli_run_status_reports_no_run_snapshot_for_fresh_workspace() {
     let temp = TempDir::new().unwrap();
     let (_isolated, mut cmd) = isolated_topagent_command();
     cmd.arg("--workspace")
@@ -489,7 +451,7 @@ fn test_cli_run_status_reports_no_checkpoint_for_fresh_workspace() {
         .args(["run", "status"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("Checkpoint:"));
+        .stdout(predicates::str::contains("Run snapshot:"));
 }
 
 #[test]
@@ -507,12 +469,11 @@ fn test_readme_documents_uninstall() {
 }
 
 #[test]
-fn test_readme_documents_product_setup_commands() {
+fn test_readme_documents_product_install_commands() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
     let readme = std::fs::read_to_string(repo_root.join("README.md")).unwrap();
 
-    assert!(readme.contains("topagent setup"));
     assert!(readme.contains("topagent install"));
     assert!(readme.contains("topagent status"));
     assert!(readme.contains("topagent model status"));
@@ -525,10 +486,11 @@ fn test_readme_documents_product_setup_commands() {
     assert!(readme.contains("topagent memory trajectory list"));
     assert!(readme.contains("topagent memory trajectory review <id>"));
     assert!(readme.contains("topagent memory trajectory export <id>"));
-    // Verify no stale top-level trajectory commands leaked into README
     assert!(
-        !readme.lines().any(|line| line.trim().starts_with("topagent trajectory")),
-        "README.md still has old top-level `topagent trajectory` command(s) (should be `topagent memory trajectory`)"
+        !readme
+            .lines()
+            .any(|line| line.trim().starts_with("topagent trajectory")),
+        "README.md documents top-level `topagent trajectory`; use `topagent memory trajectory`"
     );
     assert!(readme.contains("topagent uninstall"));
     assert!(readme.contains("topagent service start"));
@@ -558,7 +520,7 @@ fn test_install_script_points_users_to_topagent_install() {
 
     assert!(script.contains("$installed_bin install"));
     assert!(script.contains("$installed_bin status"));
-    assert!(script.contains("Starting interactive TopAgent setup"));
+    assert!(script.contains("Starting interactive TopAgent install"));
 }
 
 #[test]
@@ -586,18 +548,6 @@ fn test_release_workflow_exists_and_uses_tag_trigger() {
 }
 
 #[test]
-fn test_operations_docs_explain_external_tool_sandbox_rollout() {
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
-    let operations = std::fs::read_to_string(repo_root.join("docs/operations.md")).unwrap();
-
-    assert!(operations.contains("\"sandbox\": \"workspace\""));
-    assert!(operations.contains("\"sandbox\": \"host\""));
-    assert!(operations.contains("If `sandbox` is omitted, TopAgent rejects"));
-    assert!(operations.contains("only supported workspace external-tool config file"));
-}
-
-#[test]
 fn test_operations_docs_cover_model_management() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
@@ -611,7 +561,7 @@ fn test_operations_docs_cover_model_management() {
 }
 
 #[test]
-fn test_operations_docs_cover_checkpoint_management() {
+fn test_operations_docs_cover_run_recovery_management() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
     let operations = std::fs::read_to_string(repo_root.join("docs/operations.md")).unwrap();
@@ -624,12 +574,12 @@ fn test_operations_docs_cover_checkpoint_management() {
     assert!(operations.contains("topagent procedure prune"));
     assert!(operations.contains("topagent memory trajectory review"));
     assert!(operations.contains("topagent memory trajectory export"));
-    assert!(operations.contains(".topagent/checkpoints"));
+    assert!(operations.contains(".topagent/run-snapshots"));
     assert!(operations.contains("clears persisted Telegram transcripts"));
 }
 
 #[test]
-fn test_operations_docs_cover_workspace_state_schema_and_migration() {
+fn test_operations_docs_cover_current_workspace_state_schema() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
     let operations = std::fs::read_to_string(repo_root.join("docs/operations.md")).unwrap();
@@ -638,9 +588,6 @@ fn test_operations_docs_cover_workspace_state_schema_and_migration() {
     for required in [
         "workspace-state.json",
         "schema version `1`",
-        ".topagent/topics",
-        ".topagent/lessons",
-        ".topagent/exports/legacy-plans",
         "Hot-path prompt memory",
         "Evidence/export only",
         "Transport evidence",
@@ -652,8 +599,7 @@ fn test_operations_docs_cover_workspace_state_schema_and_migration() {
     }
 
     assert!(readme.contains(".topagent/workspace-state.json"));
-    assert!(readme.contains(".topagent/exports/legacy-plans/"));
-    assert!(readme.contains("migrated into `.topagent/notes/`"));
+    assert!(readme.contains(".topagent/notes/"));
 }
 
 #[test]
@@ -668,7 +614,7 @@ fn test_operations_docs_cover_lifecycle_sources_of_truth() {
         "Run recovery: `topagent run status`",
         "Workspace learning: `topagent memory status`",
         "Changing the configured model with `topagent model set <model-id>`",
-        "re-run `topagent setup`",
+        "run `topagent install`",
     ] {
         assert!(
             operations.contains(required),
@@ -765,7 +711,7 @@ fn test_cli_help_uses_surface_constants_for_key_commands() {
         String::from_utf8(cmd.arg("--help").assert().get_output().stdout.clone()).unwrap();
 
     assert!(
-        help_output.contains("setup, service, and model status"),
+        help_output.contains("installation, service, and model status"),
         "status help should mention its purpose"
     );
     assert!(
@@ -777,38 +723,40 @@ fn test_cli_help_uses_surface_constants_for_key_commands() {
         "config inspect help should mention its purpose"
     );
     assert!(
-        help_output.contains("workspace checkpoint"),
-        "run subcommand help should mention checkpoint"
+        help_output.contains("workspace run snapshot"),
+        "run subcommand help should mention run snapshot"
     );
 }
 
 #[test]
-fn test_cli_docs_consistency_no_stale_top_level_trajectory_or_checkpoint_in_operations() {
+fn test_cli_docs_consistency_no_top_level_trajectory_or_run_snapshot_in_operations() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
     let operations = std::fs::read_to_string(repo_root.join("docs/operations.md")).unwrap();
 
-    // Trajectory commands must live under `memory trajectory`, not as top-level
     assert!(
-        !operations.lines().any(|line| line.trim().starts_with("topagent trajectory")),
-        "operations.md still has stale top-level `topagent trajectory` command(s) (should be `topagent memory trajectory`)"
+        !operations
+            .lines()
+            .any(|line| line.trim().starts_with("topagent trajectory")),
+        "operations.md documents top-level `topagent trajectory`; use `topagent memory trajectory`"
     );
-    // Checkpoint restore must live under `run restore`, not as top-level
     assert!(
-        !operations.contains("topagent checkpoint restore"),
-        "operations.md still has stale `topagent checkpoint restore` (should be `topagent run restore`)"
+        !operations.contains("topagent run snapshot restore"),
+        "operations.md documents `topagent run snapshot restore`; use `topagent run restore`"
     );
 }
 
 #[test]
-fn test_cli_docs_consistency_no_stale_checkpoint_in_readme() {
+fn test_cli_docs_consistency_no_top_level_run_snapshot_in_readme() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
     let readme = std::fs::read_to_string(repo_root.join("README.md")).unwrap();
 
     assert!(
-        !readme.lines().any(|line| line.trim().starts_with("topagent checkpoint")),
-        "README.md still has stale `topagent checkpoint` command(s) (should be `topagent run diff` / `topagent run restore`)"
+        !readme
+            .lines()
+            .any(|line| line.trim().starts_with("topagent run snapshot")),
+        "README.md documents top-level `topagent run snapshot`; use `topagent run`"
     );
 }
 
@@ -863,7 +811,7 @@ fn test_model_set_does_not_change_provider_is_documented() {
         "operations.md must document that model set preserves the provider"
     );
     assert!(
-        operations.contains("re-run") && operations.contains("topagent setup"),
-        "operations.md must document that provider change requires re-running setup"
+        operations.contains("run `topagent install`"),
+        "operations.md must document that provider change uses topagent install"
     );
 }

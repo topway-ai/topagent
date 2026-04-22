@@ -7,15 +7,15 @@ use crate::config::defaults::{
     CliParams, OPENROUTER_API_KEY_KEY, TOPAGENT_MODEL_KEY, TOPAGENT_PROVIDER_KEY,
 };
 use crate::config::model_selection::{
-    ModelResolutionSource, SelectedProvider, current_configured_model, provider_or_default,
-    resolve_model_choice,
+    current_configured_model, provider_or_default, resolve_model_choice, ModelResolutionSource,
+    SelectedProvider,
 };
 use crate::managed_files::{assert_managed_or_absent, read_managed_env_metadata};
 use crate::openrouter_models::{
     fetch_openrouter_top_models, humanize_age, load_cached_openrouter_models,
     openrouter_model_cache_path, save_cached_openrouter_models,
 };
-use crate::operational_paths::{ServicePaths, service_paths};
+use crate::operational_paths::{service_paths, ServicePaths};
 
 use super::install::prompt_for_install_model;
 use super::lifecycle::restart_service_if_installed;
@@ -62,8 +62,12 @@ fn run_model_status(params: CliParams) -> Result<()> {
         state.model_selection.effective.source.label()
     );
     println!(
-        "Setup installed: {}",
-        if state.setup_installed { "yes" } else { "no" }
+        "Installation present: {}",
+        if state.installation_present {
+            "yes"
+        } else {
+            "no"
+        }
     );
     println!(
         "Service installed: {}",
@@ -110,9 +114,9 @@ fn run_model_set(model_id: String) -> Result<()> {
 fn run_model_pick(params: CliParams) -> Result<()> {
     let paths = service_paths()?;
     if !paths.env_path.exists() {
-        return Err(anyhow::anyhow!(
-            format!("{PRODUCT_NAME} is not set up yet. Run `topagent setup` first.")
-        ));
+        return Err(anyhow::anyhow!(format!(
+            "{PRODUCT_NAME} is not installed yet. Run `topagent install` first."
+        )));
     }
     assert_managed_or_absent(&paths.env_path, "service env file")?;
 
@@ -266,9 +270,9 @@ fn update_configured_model(
     selection_source: Option<ModelResolutionSource>,
 ) -> Result<ModelUpdateReport> {
     if !paths.env_path.exists() {
-        return Err(anyhow::anyhow!(
-            format!("{PRODUCT_NAME} is not installed yet. Run `topagent install` first.")
-        ));
+        return Err(anyhow::anyhow!(format!(
+            "{PRODUCT_NAME} is not installed yet. Run `topagent install` first."
+        )));
     }
     assert_managed_or_absent(&paths.env_path, "service env file")?;
 

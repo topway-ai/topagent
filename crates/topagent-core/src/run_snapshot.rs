@@ -8,19 +8,19 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-const CHECKPOINT_VERSION: u32 = 1;
-const MAX_STORED_CHECKPOINTS: usize = 3;
+const RUN_SNAPSHOT_VERSION: u32 = 1;
+const MAX_STORED_RUN_SNAPSHOTS: usize = 3;
 const WORKSPACE_ROOT_PATH: &str = ".";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CheckpointCaptureSource {
+pub enum RunSnapshotCaptureSource {
     Write,
     Edit,
     Bash,
 }
 
-impl CheckpointCaptureSource {
+impl RunSnapshotCaptureSource {
     pub fn label(self) -> &'static str {
         match self {
             Self::Write => "write",
@@ -31,14 +31,14 @@ impl CheckpointCaptureSource {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CheckpointCaptureMetadata {
-    pub source: CheckpointCaptureSource,
+pub struct RunSnapshotCaptureMetadata {
+    pub source: RunSnapshotCaptureSource,
     pub reason: String,
     pub detail: Option<String>,
 }
 
-impl CheckpointCaptureMetadata {
-    pub fn new(source: CheckpointCaptureSource, reason: impl Into<String>) -> Self {
+impl RunSnapshotCaptureMetadata {
+    pub fn new(source: RunSnapshotCaptureSource, reason: impl Into<String>) -> Self {
         Self {
             source,
             reason: reason.into(),
@@ -58,76 +58,80 @@ impl CheckpointCaptureMetadata {
 }
 
 #[derive(Debug, Clone)]
-pub struct WorkspaceCheckpointStore {
+pub struct WorkspaceRunSnapshotStore {
     workspace_root: PathBuf,
     session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceCheckpointCaptureStatus {
-    pub source: CheckpointCaptureSource,
+pub struct WorkspaceRunSnapshotCaptureStatus {
+    pub source: RunSnapshotCaptureSource,
     pub reason: String,
     pub detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceCheckpointStatus {
+pub struct WorkspaceRunSnapshotStatus {
     pub id: String,
     pub created_at_unix_millis: u128,
-    pub captures: Vec<WorkspaceCheckpointCaptureStatus>,
+    pub captures: Vec<WorkspaceRunSnapshotCaptureStatus>,
     pub captured_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceCheckpointRestoreReport {
-    pub checkpoint_id: String,
+pub struct WorkspaceRunSnapshotRestoreReport {
+    pub snapshot_id: String,
     pub restored_files: Vec<String>,
     pub removed_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedCheckpointManifest {
+struct PersistedRunSnapshotManifest {
     version: u32,
     session_id: String,
     created_at_unix_millis: u128,
     #[serde(default)]
-    captures: Vec<PersistedCheckpointCapture>,
-    entries: Vec<PersistedCheckpointEntry>,
+    captures: Vec<PersistedRunSnapshotCapture>,
+    entries: Vec<PersistedRunSnapshotEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedCheckpointCapture {
-    source: CheckpointCaptureSource,
+struct PersistedRunSnapshotCapture {
+    source: RunSnapshotCaptureSource,
     reason: String,
     detail: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PersistedCheckpointEntry {
+struct PersistedRunSnapshotEntry {
     path: String,
-    state: PersistedCheckpointEntryState,
+    state: PersistedRunSnapshotEntryState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-enum PersistedCheckpointEntryState {
+enum PersistedRunSnapshotEntryState {
     Existing { snapshot_rel_path: String },
     ExistingDirectory,
     Missing,
 }
 
-impl WorkspaceCheckpointStore {
+impl WorkspaceRunSnapshotStore {
     pub fn new(workspace_root: PathBuf) -> Self {
         Self {
             workspace_root,
-            session_id: format!("chk-{}-{}", std::process::id(), unix_timestamp_millis()),
+            session_id: format!(
+                "run-snap-{}-{}",
+                std::process::id(),
+                unix_timestamp_millis()
+            ),
         }
     }
 
     pub fn capture_file(
         &self,
         relative_path: &str,
-        metadata: CheckpointCaptureMetadata,
+        metadata: RunSnapshotCaptureMetadata,
     ) -> Result<usize> {
         self.capture_paths(&[relative_path.to_string()], metadata)
     }
@@ -135,7 +139,7 @@ impl WorkspaceCheckpointStore {
     pub fn capture_paths(
         &self,
         relative_paths: &[String],
-        metadata: CheckpointCaptureMetadata,
+        metadata: RunSnapshotCaptureMetadata,
     ) -> Result<usize> {
         if relative_paths.is_empty() {
             return Ok(0);
@@ -144,7 +148,7 @@ impl WorkspaceCheckpointStore {
         let mut manifest = self.load_or_create_session_manifest()?;
         manifest
             .captures
-            .push(PersistedCheckpointCapture::from(metadata));
+            .push(PersistedRunSnapshotCapture::from(metadata));
 
         let mut captured = 0usize;
         let mut seen = HashSet::new();
@@ -157,33 +161,33 @@ impl WorkspaceCheckpointStore {
         }
 
         self.save_manifest(&manifest)?;
-        self.prune_old_checkpoints()?;
+        self.prune_old_run_snapshots()?;
         Ok(captured)
     }
 
-    pub fn capture_workspace(&self, metadata: CheckpointCaptureMetadata) -> Result<usize> {
+    pub fn capture_workspace(&self, metadata: RunSnapshotCaptureMetadata) -> Result<usize> {
         let mut manifest = self.load_or_create_session_manifest()?;
         manifest
             .captures
-            .push(PersistedCheckpointCapture::from(metadata));
+            .push(PersistedRunSnapshotCapture::from(metadata));
         let captured = self.capture_relative_path(&mut manifest, Path::new(WORKSPACE_ROOT_PATH))?;
         self.save_manifest(&manifest)?;
-        self.prune_old_checkpoints()?;
+        self.prune_old_run_snapshots()?;
         Ok(captured)
     }
 
-    pub fn latest_status(&self) -> Result<Option<WorkspaceCheckpointStatus>> {
+    pub fn latest_status(&self) -> Result<Option<WorkspaceRunSnapshotStatus>> {
         let Some((_, manifest)) = self.load_latest_manifest()? else {
             return Ok(None);
         };
 
-        Ok(Some(WorkspaceCheckpointStatus {
+        Ok(Some(WorkspaceRunSnapshotStatus {
             id: manifest.session_id,
             created_at_unix_millis: manifest.created_at_unix_millis,
             captures: manifest
                 .captures
                 .into_iter()
-                .map(WorkspaceCheckpointCaptureStatus::from)
+                .map(WorkspaceRunSnapshotCaptureStatus::from)
                 .collect(),
             captured_paths: manifest
                 .entries
@@ -207,24 +211,24 @@ impl WorkspaceCheckpointStore {
 
         if diffs.is_empty() {
             return Ok(Some(
-                "Workspace already matches the latest checkpoint.".to_string(),
+                "Workspace already matches the latest run snapshot.".to_string(),
             ));
         }
 
         Ok(Some(diffs.join("\n")))
     }
 
-    pub fn restore_latest(&self) -> Result<Option<WorkspaceCheckpointRestoreReport>> {
+    pub fn restore_latest(&self) -> Result<Option<WorkspaceRunSnapshotRestoreReport>> {
         let Some((manifest_path, manifest)) = self.load_latest_manifest()? else {
             return Ok(None);
         };
 
-        let checkpoint_root = manifest_path
+        let snapshot_root = manifest_path
             .parent()
             .map(Path::to_path_buf)
             .ok_or_else(|| {
                 Error::ToolFailed(format!(
-                    "invalid checkpoint manifest path {}",
+                    "invalid run snapshot manifest path {}",
                     manifest_path.display()
                 ))
             })?;
@@ -241,7 +245,7 @@ impl WorkspaceCheckpointStore {
             .filter(|entry| {
                 matches!(
                     entry.state,
-                    PersistedCheckpointEntryState::ExistingDirectory
+                    PersistedRunSnapshotEntryState::ExistingDirectory
                 )
             })
             .map(|entry| entry.path.clone())
@@ -253,7 +257,7 @@ impl WorkspaceCheckpointStore {
             removed_files.extend(self.remove_unexpected_children(
                 &relative_dir,
                 &snapshot_paths,
-                &checkpoint_root,
+                &snapshot_root,
             )?);
         }
 
@@ -261,7 +265,7 @@ impl WorkspaceCheckpointStore {
         for entry in &manifest.entries {
             let workspace_path = self.workspace_path_for(&entry.path);
             match &entry.state {
-                PersistedCheckpointEntryState::Existing { snapshot_rel_path } => {
+                PersistedRunSnapshotEntryState::Existing { snapshot_rel_path } => {
                     if workspace_path.is_dir() {
                         remove_path_if_exists(&workspace_path)?;
                     }
@@ -274,7 +278,7 @@ impl WorkspaceCheckpointStore {
                             ))
                         })?;
                     }
-                    let snapshot_path = checkpoint_root.join(snapshot_rel_path);
+                    let snapshot_path = snapshot_root.join(snapshot_rel_path);
                     fs::copy(&snapshot_path, &workspace_path).map_err(|err| {
                         Error::ToolFailed(format!(
                             "failed to restore {} from {}: {}",
@@ -285,7 +289,7 @@ impl WorkspaceCheckpointStore {
                     })?;
                     restored_files.push(entry.path.clone());
                 }
-                PersistedCheckpointEntryState::ExistingDirectory => {
+                PersistedRunSnapshotEntryState::ExistingDirectory => {
                     if workspace_path.is_file() {
                         remove_path_if_exists(&workspace_path)?;
                     }
@@ -299,7 +303,7 @@ impl WorkspaceCheckpointStore {
                         })?;
                     }
                 }
-                PersistedCheckpointEntryState::Missing => {
+                PersistedRunSnapshotEntryState::Missing => {
                     if workspace_path.exists() {
                         remove_path_if_exists(&workspace_path)?;
                         removed_files.push(entry.path.clone());
@@ -308,10 +312,10 @@ impl WorkspaceCheckpointStore {
             }
         }
 
-        fs::remove_dir_all(&checkpoint_root).map_err(|err| {
+        fs::remove_dir_all(&snapshot_root).map_err(|err| {
             Error::ToolFailed(format!(
-                "failed to remove checkpoint directory {} after restore: {}",
-                checkpoint_root.display(),
+                "failed to remove run snapshot directory {} after restore: {}",
+                snapshot_root.display(),
                 err
             ))
         })?;
@@ -321,8 +325,8 @@ impl WorkspaceCheckpointStore {
         removed_files.sort();
         removed_files.dedup();
 
-        Ok(Some(WorkspaceCheckpointRestoreReport {
-            checkpoint_id: manifest.session_id,
+        Ok(Some(WorkspaceRunSnapshotRestoreReport {
+            snapshot_id: manifest.session_id,
             restored_files,
             removed_files,
         }))
@@ -330,7 +334,7 @@ impl WorkspaceCheckpointStore {
 
     fn capture_relative_path(
         &self,
-        manifest: &mut PersistedCheckpointManifest,
+        manifest: &mut PersistedRunSnapshotManifest,
         relative_path: &Path,
     ) -> Result<usize> {
         let normalized = normalize_relative_path_path(relative_path)?;
@@ -347,15 +351,15 @@ impl WorkspaceCheckpointStore {
 
         let full_path = self.workspace_path_for(&normalized);
         if full_path.is_dir() {
-            manifest.entries.push(PersistedCheckpointEntry {
+            manifest.entries.push(PersistedRunSnapshotEntry {
                 path: normalized.clone(),
-                state: PersistedCheckpointEntryState::ExistingDirectory,
+                state: PersistedRunSnapshotEntryState::ExistingDirectory,
             });
 
             let mut captured = 1usize;
             for child in fs::read_dir(&full_path).map_err(|err| {
                 Error::ToolFailed(format!(
-                    "failed to read directory {} for checkpoint capture: {}",
+                    "failed to read directory {} for run snapshot capture: {}",
                     full_path.display(),
                     err
                 ))
@@ -385,12 +389,12 @@ impl WorkspaceCheckpointStore {
                 hashed_snapshot_name(&normalized)
             );
             let snapshot_path = self
-                .checkpoint_root_for(&manifest.session_id)
+                .run_snapshot_root_for(&manifest.session_id)
                 .join(&snapshot_rel_path);
             if let Some(parent) = snapshot_path.parent() {
                 fs::create_dir_all(parent).map_err(|err| {
                     Error::ToolFailed(format!(
-                        "failed to create checkpoint directory {}: {}",
+                        "failed to create run snapshot directory {}: {}",
                         parent.display(),
                         err
                     ))
@@ -404,35 +408,35 @@ impl WorkspaceCheckpointStore {
                     err
                 ))
             })?;
-            PersistedCheckpointEntryState::Existing { snapshot_rel_path }
+            PersistedRunSnapshotEntryState::Existing { snapshot_rel_path }
         } else {
-            PersistedCheckpointEntryState::Missing
+            PersistedRunSnapshotEntryState::Missing
         };
 
-        manifest.entries.push(PersistedCheckpointEntry {
+        manifest.entries.push(PersistedRunSnapshotEntry {
             path: normalized,
             state,
         });
         Ok(1)
     }
 
-    fn load_or_create_session_manifest(&self) -> Result<PersistedCheckpointManifest> {
+    fn load_or_create_session_manifest(&self) -> Result<PersistedRunSnapshotManifest> {
         let manifest_path = self.manifest_path_for(&self.session_id);
         if manifest_path.exists() {
             return Self::load_manifest_path(&manifest_path);
         }
 
-        let checkpoint_root = self.checkpoint_root_for(&self.session_id);
-        fs::create_dir_all(&checkpoint_root).map_err(|err| {
+        let snapshot_root = self.run_snapshot_root_for(&self.session_id);
+        fs::create_dir_all(&snapshot_root).map_err(|err| {
             Error::ToolFailed(format!(
-                "failed to create checkpoint directory {}: {}",
-                checkpoint_root.display(),
+                "failed to create run snapshot directory {}: {}",
+                snapshot_root.display(),
                 err
             ))
         })?;
 
-        let manifest = PersistedCheckpointManifest {
-            version: CHECKPOINT_VERSION,
+        let manifest = PersistedRunSnapshotManifest {
+            version: RUN_SNAPSHOT_VERSION,
             session_id: self.session_id.clone(),
             created_at_unix_millis: unix_timestamp_millis(),
             captures: Vec::new(),
@@ -442,8 +446,8 @@ impl WorkspaceCheckpointStore {
         Ok(manifest)
     }
 
-    fn load_latest_manifest(&self) -> Result<Option<(PathBuf, PersistedCheckpointManifest)>> {
-        let root = self.checkpoints_root();
+    fn load_latest_manifest(&self) -> Result<Option<(PathBuf, PersistedRunSnapshotManifest)>> {
+        let root = self.run_snapshots_root();
         if !root.exists() {
             return Ok(None);
         }
@@ -451,23 +455,23 @@ impl WorkspaceCheckpointStore {
         let mut manifests = Vec::new();
         for entry in fs::read_dir(&root).map_err(|err| {
             Error::ToolFailed(format!(
-                "failed to read checkpoint directory {}: {}",
+                "failed to read run snapshot directory {}: {}",
                 root.display(),
                 err
             ))
         })? {
             let entry = entry.map_err(|err| {
                 Error::ToolFailed(format!(
-                    "failed to read checkpoint entry in {}: {}",
+                    "failed to read run snapshot entry in {}: {}",
                     root.display(),
                     err
                 ))
             })?;
-            let checkpoint_root = entry.path();
-            if !checkpoint_root.is_dir() {
+            let snapshot_root = entry.path();
+            if !snapshot_root.is_dir() {
                 continue;
             }
-            let manifest_path = checkpoint_root.join("manifest.json");
+            let manifest_path = snapshot_root.join("manifest.json");
             if !manifest_path.is_file() {
                 continue;
             }
@@ -483,12 +487,12 @@ impl WorkspaceCheckpointStore {
         Ok(manifests.pop())
     }
 
-    fn save_manifest(&self, manifest: &PersistedCheckpointManifest) -> Result<()> {
+    fn save_manifest(&self, manifest: &PersistedRunSnapshotManifest) -> Result<()> {
         let manifest_path = self.manifest_path_for(&manifest.session_id);
         if let Some(parent) = manifest_path.parent() {
             fs::create_dir_all(parent).map_err(|err| {
                 Error::ToolFailed(format!(
-                    "failed to create checkpoint directory {}: {}",
+                    "failed to create run snapshot directory {}: {}",
                     parent.display(),
                     err
                 ))
@@ -496,7 +500,7 @@ impl WorkspaceCheckpointStore {
         }
         let contents = serde_json::to_string_pretty(manifest).map_err(|err| {
             Error::ToolFailed(format!(
-                "failed to serialize checkpoint manifest {}: {}",
+                "failed to serialize run snapshot manifest {}: {}",
                 manifest_path.display(),
                 err
             ))
@@ -505,8 +509,8 @@ impl WorkspaceCheckpointStore {
         Ok(())
     }
 
-    fn prune_old_checkpoints(&self) -> Result<()> {
-        let root = self.checkpoints_root();
+    fn prune_old_run_snapshots(&self) -> Result<()> {
+        let root = self.run_snapshots_root();
         if !root.exists() {
             return Ok(());
         }
@@ -514,28 +518,28 @@ impl WorkspaceCheckpointStore {
         let mut manifests = Vec::new();
         for entry in fs::read_dir(&root).map_err(|err| {
             Error::ToolFailed(format!(
-                "failed to read checkpoint directory {}: {}",
+                "failed to read run snapshot directory {}: {}",
                 root.display(),
                 err
             ))
         })? {
             let entry = entry.map_err(|err| {
                 Error::ToolFailed(format!(
-                    "failed to read checkpoint entry in {}: {}",
+                    "failed to read run snapshot entry in {}: {}",
                     root.display(),
                     err
                 ))
             })?;
-            let checkpoint_root = entry.path();
-            if !checkpoint_root.is_dir() {
+            let snapshot_root = entry.path();
+            if !snapshot_root.is_dir() {
                 continue;
             }
-            let manifest_path = checkpoint_root.join("manifest.json");
+            let manifest_path = snapshot_root.join("manifest.json");
             if !manifest_path.is_file() {
                 continue;
             }
             let manifest = Self::load_manifest_path(&manifest_path)?;
-            manifests.push((checkpoint_root, manifest));
+            manifests.push((snapshot_root, manifest));
         }
 
         manifests.sort_by(|a, b| {
@@ -544,11 +548,11 @@ impl WorkspaceCheckpointStore {
                 .then(b.1.session_id.cmp(&a.1.session_id))
         });
 
-        for (checkpoint_root, _) in manifests.into_iter().skip(MAX_STORED_CHECKPOINTS) {
-            fs::remove_dir_all(&checkpoint_root).map_err(|err| {
+        for (snapshot_root, _) in manifests.into_iter().skip(MAX_STORED_RUN_SNAPSHOTS) {
+            fs::remove_dir_all(&snapshot_root).map_err(|err| {
                 Error::ToolFailed(format!(
-                    "failed to prune checkpoint directory {}: {}",
-                    checkpoint_root.display(),
+                    "failed to prune run snapshot directory {}: {}",
+                    snapshot_root.display(),
                     err
                 ))
             })?;
@@ -561,7 +565,7 @@ impl WorkspaceCheckpointStore {
         &self,
         relative_dir: &str,
         snapshot_paths: &HashSet<String>,
-        checkpoint_root: &Path,
+        snapshot_root: &Path,
     ) -> Result<Vec<String>> {
         let dir_path = self.workspace_path_for(relative_dir);
         if !dir_path.is_dir() {
@@ -573,7 +577,7 @@ impl WorkspaceCheckpointStore {
         for relative_path in descendants
             .into_iter()
             .filter(|relative_path| !should_skip_internal_path(relative_path))
-            .filter(|relative_path| !is_active_checkpoint_path(relative_path, checkpoint_root))
+            .filter(|relative_path| !is_active_run_snapshot_path(relative_path, snapshot_root))
         {
             if snapshot_paths.contains(&relative_path)
                 || snapshot_has_descendant(snapshot_paths, &relative_path)
@@ -593,21 +597,21 @@ impl WorkspaceCheckpointStore {
 
     fn diff_entry(
         &self,
-        manifest: &PersistedCheckpointManifest,
-        entry: &PersistedCheckpointEntry,
+        manifest: &PersistedRunSnapshotManifest,
+        entry: &PersistedRunSnapshotEntry,
     ) -> Result<Option<String>> {
         let current_path = self.workspace_path_for(&entry.path);
         match &entry.state {
-            PersistedCheckpointEntryState::Existing { snapshot_rel_path } => {
+            PersistedRunSnapshotEntryState::Existing { snapshot_rel_path } => {
                 if current_path.is_dir() {
                     return Ok(Some(format!(
-                        "Directory replaced checkpointed file: {}\n",
+                        "Directory replaced snapshotted file: {}\n",
                         entry.path
                     )));
                 }
 
                 let snapshot_path = self
-                    .checkpoint_root_for(&manifest.session_id)
+                    .run_snapshot_root_for(&manifest.session_id)
                     .join(snapshot_rel_path);
                 if paths_match(
                     Some(snapshot_path.as_path()),
@@ -623,12 +627,12 @@ impl WorkspaceCheckpointStore {
                 };
                 diff_files(&entry.path, snapshot_path.as_path(), right_path)
             }
-            PersistedCheckpointEntryState::ExistingDirectory => {
+            PersistedRunSnapshotEntryState::ExistingDirectory => {
                 if current_path.is_dir() {
                     Ok(None)
                 } else if current_path.exists() {
                     Ok(Some(format!(
-                        "File replaced checkpointed directory: {}\n",
+                        "File replaced snapshotted directory: {}\n",
                         entry.path
                     )))
                 } else {
@@ -638,14 +642,14 @@ impl WorkspaceCheckpointStore {
                     )))
                 }
             }
-            PersistedCheckpointEntryState::Missing => {
+            PersistedRunSnapshotEntryState::Missing => {
                 if !current_path.exists() {
                     return Ok(None);
                 }
 
                 if current_path.is_dir() {
                     return Ok(Some(format!(
-                        "Directory added after checkpoint: {}\n",
+                        "Directory added after run snapshot: {}\n",
                         entry.path
                     )));
                 }
@@ -659,16 +663,16 @@ impl WorkspaceCheckpointStore {
         }
     }
 
-    fn checkpoints_root(&self) -> PathBuf {
-        self.workspace_root.join(".topagent").join("checkpoints")
+    fn run_snapshots_root(&self) -> PathBuf {
+        self.workspace_root.join(".topagent").join("run-snapshots")
     }
 
-    fn checkpoint_root_for(&self, session_id: &str) -> PathBuf {
-        self.checkpoints_root().join(session_id)
+    fn run_snapshot_root_for(&self, session_id: &str) -> PathBuf {
+        self.run_snapshots_root().join(session_id)
     }
 
     fn manifest_path_for(&self, session_id: &str) -> PathBuf {
-        self.checkpoint_root_for(session_id).join("manifest.json")
+        self.run_snapshot_root_for(session_id).join("manifest.json")
     }
 
     fn workspace_path_for(&self, relative_path: &str) -> PathBuf {
@@ -679,25 +683,25 @@ impl WorkspaceCheckpointStore {
         }
     }
 
-    fn load_manifest_path(path: &Path) -> Result<PersistedCheckpointManifest> {
+    fn load_manifest_path(path: &Path) -> Result<PersistedRunSnapshotManifest> {
         let contents = fs::read_to_string(path).map_err(|err| {
             Error::ToolFailed(format!(
-                "failed to read checkpoint manifest {}: {}",
+                "failed to read run snapshot manifest {}: {}",
                 path.display(),
                 err
             ))
         })?;
-        let manifest: PersistedCheckpointManifest =
+        let manifest: PersistedRunSnapshotManifest =
             serde_json::from_str(&contents).map_err(|err| {
                 Error::ToolFailed(format!(
-                    "failed to parse checkpoint manifest {}: {}",
+                    "failed to parse run snapshot manifest {}: {}",
                     path.display(),
                     err
                 ))
             })?;
-        if manifest.version != CHECKPOINT_VERSION {
+        if manifest.version != RUN_SNAPSHOT_VERSION {
             return Err(Error::ToolFailed(format!(
-                "unsupported checkpoint manifest version {} in {}",
+                "unsupported run snapshot manifest version {} in {}",
                 manifest.version,
                 path.display()
             )));
@@ -706,8 +710,8 @@ impl WorkspaceCheckpointStore {
     }
 }
 
-impl From<CheckpointCaptureMetadata> for PersistedCheckpointCapture {
-    fn from(metadata: CheckpointCaptureMetadata) -> Self {
+impl From<RunSnapshotCaptureMetadata> for PersistedRunSnapshotCapture {
+    fn from(metadata: RunSnapshotCaptureMetadata) -> Self {
         Self {
             source: metadata.source,
             reason: metadata.reason,
@@ -716,8 +720,8 @@ impl From<CheckpointCaptureMetadata> for PersistedCheckpointCapture {
     }
 }
 
-impl From<PersistedCheckpointCapture> for WorkspaceCheckpointCaptureStatus {
-    fn from(capture: PersistedCheckpointCapture) -> Self {
+impl From<PersistedRunSnapshotCapture> for WorkspaceRunSnapshotCaptureStatus {
+    fn from(capture: PersistedRunSnapshotCapture) -> Self {
         Self {
             source: capture.source,
             reason: capture.reason,
@@ -777,7 +781,7 @@ fn diff_files(path_label: &str, left_path: &Path, right_path: &Path) -> Result<O
         .arg("diff")
         .arg("--no-index")
         .arg("--no-ext-diff")
-        .arg("--src-prefix=checkpoint/")
+        .arg("--src-prefix=run-snapshot/")
         .arg("--dst-prefix=workspace/")
         .arg("--")
         .arg(left_path)
@@ -785,7 +789,7 @@ fn diff_files(path_label: &str, left_path: &Path, right_path: &Path) -> Result<O
         .output()
         .map_err(|err| {
             Error::ToolFailed(format!(
-                "failed to build checkpoint diff preview for {}: {}",
+                "failed to build run snapshot diff preview for {}: {}",
                 path_label, err
             ))
         })?;
@@ -793,7 +797,7 @@ fn diff_files(path_label: &str, left_path: &Path, right_path: &Path) -> Result<O
     let exit_code = output.status.code().unwrap_or(-1);
     if exit_code != 0 && exit_code != 1 {
         return Err(Error::ToolFailed(format!(
-            "checkpoint diff preview failed for {}: {}",
+            "run snapshot diff preview failed for {}: {}",
             path_label,
             String::from_utf8_lossy(&output.stderr).trim()
         )));
@@ -809,7 +813,7 @@ fn normalize_relative_path(path: &str) -> Result<String> {
 fn normalize_relative_path_path(path: &Path) -> Result<String> {
     if path.is_absolute() {
         return Err(Error::InvalidInput(
-            "absolute paths not allowed in checkpoint capture".into(),
+            "absolute paths not allowed in run snapshot capture".into(),
         ));
     }
 
@@ -818,12 +822,12 @@ fn normalize_relative_path_path(path: &Path) -> Result<String> {
         match component {
             Component::ParentDir => {
                 return Err(Error::InvalidInput(
-                    "path traversal not allowed in checkpoint capture".into(),
+                    "path traversal not allowed in run snapshot capture".into(),
                 ));
             }
             Component::Prefix(_) | Component::RootDir => {
                 return Err(Error::InvalidInput(
-                    "root-prefixed paths not allowed in checkpoint capture".into(),
+                    "root-prefixed paths not allowed in run snapshot capture".into(),
                 ));
             }
             Component::CurDir => {}
@@ -859,21 +863,21 @@ fn should_skip_internal_path(path: &str) -> bool {
     }
     path == ".git"
         || path.starts_with(".git/")
-        || path == ".topagent/checkpoints"
-        || path.starts_with(".topagent/checkpoints/")
+        || path == ".topagent/run-snapshots"
+        || path.starts_with(".topagent/run-snapshots/")
 }
 
-fn is_active_checkpoint_path(relative_path: &str, checkpoint_root: &Path) -> bool {
-    let Some(checkpoints_root) = checkpoint_root.parent() else {
+fn is_active_run_snapshot_path(relative_path: &str, snapshot_root: &Path) -> bool {
+    let Some(run_snapshots_root) = snapshot_root.parent() else {
         return false;
     };
-    checkpoint_root
+    snapshot_root
         .parent()
         .and_then(Path::parent)
         .map(|workspace_root| {
             workspace_root
                 .join(relative_path)
-                .starts_with(checkpoints_root)
+                .starts_with(run_snapshots_root)
         })
         .unwrap_or(false)
 }
@@ -896,14 +900,14 @@ fn collect_descendant_paths_recursive(
 
     for child in fs::read_dir(dir_path).map_err(|err| {
         Error::ToolFailed(format!(
-            "failed to read directory {} during checkpoint restore: {}",
+            "failed to read directory {} during run snapshot restore: {}",
             dir_path.display(),
             err
         ))
     })? {
         let child = child.map_err(|err| {
             Error::ToolFailed(format!(
-                "failed to read directory entry in {} during checkpoint restore: {}",
+                "failed to read directory entry in {} during run snapshot restore: {}",
                 dir_path.display(),
                 err
             ))
@@ -948,11 +952,14 @@ mod tests {
         let file_path = temp.path().join("notes.txt");
         fs::write(&file_path, "before").unwrap();
 
-        let store = WorkspaceCheckpointStore::new(temp.path().to_path_buf());
+        let store = WorkspaceRunSnapshotStore::new(temp.path().to_path_buf());
         store
             .capture_file(
                 "notes.txt",
-                CheckpointCaptureMetadata::new(CheckpointCaptureSource::Write, "structured write"),
+                RunSnapshotCaptureMetadata::new(
+                    RunSnapshotCaptureSource::Write,
+                    "structured write",
+                ),
             )
             .unwrap();
         fs::write(&file_path, "after").unwrap();
@@ -960,7 +967,7 @@ mod tests {
         let status = store.latest_status().unwrap().unwrap();
         assert_eq!(status.captured_paths, vec!["notes.txt"]);
         assert_eq!(status.captures.len(), 1);
-        assert_eq!(status.captures[0].source, CheckpointCaptureSource::Write);
+        assert_eq!(status.captures[0].source, RunSnapshotCaptureSource::Write);
 
         let diff = store.latest_diff_preview().unwrap().unwrap();
         assert!(diff.contains("workspace/"));
@@ -978,11 +985,14 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let file_path = temp.path().join("new.txt");
 
-        let store = WorkspaceCheckpointStore::new(temp.path().to_path_buf());
+        let store = WorkspaceRunSnapshotStore::new(temp.path().to_path_buf());
         store
             .capture_file(
                 "new.txt",
-                CheckpointCaptureMetadata::new(CheckpointCaptureSource::Write, "structured write"),
+                RunSnapshotCaptureMetadata::new(
+                    RunSnapshotCaptureSource::Write,
+                    "structured write",
+                ),
             )
             .unwrap();
         fs::write(&file_path, "created later").unwrap();
@@ -1003,11 +1013,14 @@ mod tests {
         fs::create_dir_all(&dir_path).unwrap();
         fs::write(dir_path.join("lib.rs"), "before").unwrap();
 
-        let store = WorkspaceCheckpointStore::new(temp.path().to_path_buf());
+        let store = WorkspaceRunSnapshotStore::new(temp.path().to_path_buf());
         store
             .capture_paths(
                 &["src".to_string()],
-                CheckpointCaptureMetadata::new(CheckpointCaptureSource::Bash, "directory mutation"),
+                RunSnapshotCaptureMetadata::new(
+                    RunSnapshotCaptureSource::Bash,
+                    "directory mutation",
+                ),
             )
             .unwrap();
 
@@ -1030,11 +1043,14 @@ mod tests {
         fs::create_dir_all(temp.path().join("src")).unwrap();
         fs::write(temp.path().join("src/lib.rs"), "before").unwrap();
 
-        let store = WorkspaceCheckpointStore::new(temp.path().to_path_buf());
+        let store = WorkspaceRunSnapshotStore::new(temp.path().to_path_buf());
         store
             .capture_workspace(
-                CheckpointCaptureMetadata::new(CheckpointCaptureSource::Bash, "workspace rewrite")
-                    .with_detail("git reset --hard"),
+                RunSnapshotCaptureMetadata::new(
+                    RunSnapshotCaptureSource::Bash,
+                    "workspace rewrite",
+                )
+                .with_detail("git reset --hard"),
             )
             .unwrap();
 
@@ -1052,49 +1068,55 @@ mod tests {
     }
 
     #[test]
-    fn test_latest_checkpoint_prefers_newest_capture() {
+    fn test_latest_run_snapshot_prefers_newest_capture() {
         let temp = TempDir::new().unwrap();
 
         fs::write(temp.path().join("first.txt"), "first").unwrap();
-        let first = WorkspaceCheckpointStore::new(temp.path().to_path_buf());
+        let first = WorkspaceRunSnapshotStore::new(temp.path().to_path_buf());
         first
             .capture_file(
                 "first.txt",
-                CheckpointCaptureMetadata::new(CheckpointCaptureSource::Write, "structured write"),
+                RunSnapshotCaptureMetadata::new(
+                    RunSnapshotCaptureSource::Write,
+                    "structured write",
+                ),
             )
             .unwrap();
 
         thread::sleep(Duration::from_millis(2));
 
         fs::write(temp.path().join("second.txt"), "second").unwrap();
-        let second = WorkspaceCheckpointStore::new(temp.path().to_path_buf());
+        let second = WorkspaceRunSnapshotStore::new(temp.path().to_path_buf());
         second
             .capture_file(
                 "second.txt",
-                CheckpointCaptureMetadata::new(CheckpointCaptureSource::Bash, "shell redirection")
-                    .with_detail("echo hi > second.txt"),
+                RunSnapshotCaptureMetadata::new(
+                    RunSnapshotCaptureSource::Bash,
+                    "shell redirection",
+                )
+                .with_detail("echo hi > second.txt"),
             )
             .unwrap();
 
         let status = second.latest_status().unwrap().unwrap();
         assert_eq!(status.captured_paths, vec!["second.txt"]);
-        assert_eq!(status.captures[0].source, CheckpointCaptureSource::Bash);
+        assert_eq!(status.captures[0].source, RunSnapshotCaptureSource::Bash);
         assert_eq!(status.captures[0].reason, "shell redirection");
     }
 
     #[test]
-    fn test_capture_prunes_old_checkpoints() {
+    fn test_capture_prunes_old_run_snapshots() {
         let temp = TempDir::new().unwrap();
 
         for index in 0..5 {
             let file = format!("file-{index}.txt");
             fs::write(temp.path().join(&file), format!("value-{index}")).unwrap();
-            let store = WorkspaceCheckpointStore::new(temp.path().to_path_buf());
+            let store = WorkspaceRunSnapshotStore::new(temp.path().to_path_buf());
             store
                 .capture_file(
                     &file,
-                    CheckpointCaptureMetadata::new(
-                        CheckpointCaptureSource::Write,
+                    RunSnapshotCaptureMetadata::new(
+                        RunSnapshotCaptureSource::Write,
                         "structured write",
                     ),
                 )
@@ -1102,12 +1124,12 @@ mod tests {
             thread::sleep(Duration::from_millis(2));
         }
 
-        let checkpoint_root = temp.path().join(".topagent/checkpoints");
-        let dirs = fs::read_dir(&checkpoint_root)
+        let snapshot_root = temp.path().join(".topagent/run-snapshots");
+        let dirs = fs::read_dir(&snapshot_root)
             .unwrap()
             .filter_map(|entry| entry.ok())
             .filter(|entry| entry.path().is_dir())
             .count();
-        assert_eq!(dirs, MAX_STORED_CHECKPOINTS);
+        assert_eq!(dirs, MAX_STORED_RUN_SNAPSHOTS);
     }
 }

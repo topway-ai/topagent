@@ -1,7 +1,6 @@
 use crate::approval::ApprovalMailbox;
-use crate::checkpoint::WorkspaceCheckpointStore;
-use crate::hooks::HookRegistry;
 use crate::provenance::RunTrustContext;
+use crate::run_snapshot::WorkspaceRunSnapshotStore;
 use crate::secrets::SecretRegistry;
 use crate::{cancel::CancellationToken, runtime::RuntimeOptions};
 use std::path::{Component, Path, PathBuf};
@@ -15,8 +14,7 @@ pub struct ExecutionContext {
     operator_context: Option<String>,
     run_trust_context: RunTrustContext,
     approval_mailbox: Option<ApprovalMailbox>,
-    checkpoint_store: Option<WorkspaceCheckpointStore>,
-    hook_registry: HookRegistry,
+    run_snapshot_store: Option<WorkspaceRunSnapshotStore>,
 }
 
 impl ExecutionContext {
@@ -29,8 +27,7 @@ impl ExecutionContext {
             operator_context: None,
             run_trust_context: RunTrustContext::default(),
             approval_mailbox: None,
-            checkpoint_store: None,
-            hook_registry: HookRegistry::empty(),
+            run_snapshot_store: None,
         }
     }
 
@@ -74,16 +71,11 @@ impl ExecutionContext {
         self
     }
 
-    pub fn with_workspace_checkpoint_store(
+    pub fn with_workspace_run_snapshot_store(
         mut self,
-        checkpoint_store: WorkspaceCheckpointStore,
+        run_snapshot_store: WorkspaceRunSnapshotStore,
     ) -> Self {
-        self.checkpoint_store = Some(checkpoint_store);
-        self
-    }
-
-    pub fn with_hook_registry(mut self, hook_registry: HookRegistry) -> Self {
-        self.hook_registry = hook_registry;
+        self.run_snapshot_store = Some(run_snapshot_store);
         self
     }
 
@@ -107,12 +99,8 @@ impl ExecutionContext {
         &self.run_trust_context
     }
 
-    pub fn checkpoint_store(&self) -> Option<&WorkspaceCheckpointStore> {
-        self.checkpoint_store.as_ref()
-    }
-
-    pub fn hook_registry(&self) -> &HookRegistry {
-        &self.hook_registry
+    pub fn run_snapshot_store(&self) -> Option<&WorkspaceRunSnapshotStore> {
+        self.run_snapshot_store.as_ref()
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -184,8 +172,8 @@ impl<'a> ToolContext<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checkpoint::WorkspaceCheckpointStore;
     use crate::provenance::{InfluenceMode, SourceKind, SourceLabel};
+    use crate::run_snapshot::WorkspaceRunSnapshotStore;
     use std::fs;
     use tempfile::TempDir;
 
@@ -258,12 +246,12 @@ mod tests {
     }
 
     #[test]
-    fn test_checkpoint_store_round_trip() {
+    fn test_run_snapshot_store_round_trip() {
         let (ctx, temp) = create_context();
-        let checkpoint = WorkspaceCheckpointStore::new(temp.path().to_path_buf());
-        let ctx = ctx.with_workspace_checkpoint_store(checkpoint);
+        let run_snapshot = WorkspaceRunSnapshotStore::new(temp.path().to_path_buf());
+        let ctx = ctx.with_workspace_run_snapshot_store(run_snapshot);
         assert_eq!(
-            ctx.checkpoint_store().unwrap().latest_status().unwrap(),
+            ctx.run_snapshot_store().unwrap().latest_status().unwrap(),
             None
         );
     }

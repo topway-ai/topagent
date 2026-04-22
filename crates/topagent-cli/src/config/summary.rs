@@ -6,7 +6,7 @@ use crate::config::keys::{resolve_opencode_api_key, resolve_openrouter_api_key};
 use crate::config::model_selection::{
     build_route_from_resolved, provider_or_default, resolve_runtime_model_selection,
 };
-use crate::config::runtime::{build_runtime_options, resolve_generated_tool_authoring};
+use crate::config::runtime::build_runtime_options;
 use crate::config::workspace::resolve_workspace_path;
 
 /// Secret-free summary of the resolved runtime contract, suitable for
@@ -26,7 +26,6 @@ pub(crate) struct ResolvedContractSummary {
     pub token_present: bool,
     pub allowed_dm_username: Option<String>,
     pub bound_dm_user_id: Option<i64>,
-    pub tool_authoring: bool,
     pub max_steps: usize,
     pub max_retries: usize,
     pub timeout_secs: u64,
@@ -61,11 +60,7 @@ pub(crate) fn resolve_contract_summary(
     )
     .map_err(|e| e.to_string());
 
-    let options = build_runtime_options(params.max_steps, params.max_retries, params.timeout_secs)
-        .with_generated_tool_authoring(resolve_generated_tool_authoring(
-            params.generated_tool_authoring,
-            defaults.generated_tool_authoring,
-        ));
+    let options = build_runtime_options(params.max_steps, params.max_retries, params.timeout_secs);
 
     ResolvedContractSummary {
         provider: match route.provider {
@@ -89,7 +84,6 @@ pub(crate) fn resolve_contract_summary(
         token_present: defaults.token.is_some(),
         allowed_dm_username: defaults.allowed_dm_username.clone(),
         bound_dm_user_id: defaults.bound_dm_user_id,
-        tool_authoring: options.enable_generated_tool_authoring,
         max_steps: options.max_steps,
         max_retries: options.max_provider_retries,
         timeout_secs: options.provider_timeout_secs,
@@ -100,8 +94,8 @@ pub(crate) fn resolve_contract_summary(
 mod tests {
     use super::*;
     use crate::config::defaults::{
-        TELEGRAM_ALLOWED_DM_USERNAME_KEY, TELEGRAM_BOUND_DM_USER_ID_KEY, TOPAGENT_MODEL_KEY,
-        TOPAGENT_WORKSPACE_KEY, TelegramModeDefaults,
+        TelegramModeDefaults, TELEGRAM_ALLOWED_DM_USERNAME_KEY, TELEGRAM_BOUND_DM_USER_ID_KEY,
+        TOPAGENT_MODEL_KEY, TOPAGENT_WORKSPACE_KEY,
     };
     use crate::config::model_selection::SelectedProvider;
     use std::collections::HashMap;
@@ -126,7 +120,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let summary = resolve_contract_summary(&params, &defaults);
 
@@ -155,7 +148,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let summary = resolve_contract_summary(&params, &defaults);
         assert_eq!(summary.effective_model, "override/model");
@@ -163,11 +155,9 @@ mod tests {
             summary.configured_default_model.as_deref(),
             Some("persisted/model")
         );
-        assert!(
-            summary
-                .effective_model_source_label
-                .contains("CLI override")
-        );
+        assert!(summary
+            .effective_model_source_label
+            .contains("CLI override"));
     }
 
     #[test]
@@ -188,7 +178,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let summary = resolve_contract_summary(&params, &defaults);
         assert_eq!(summary.provider, "Opencode");
@@ -218,7 +207,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let summary_unbound = resolve_contract_summary(&params, &defaults_unbound);
         assert_eq!(
@@ -261,7 +249,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let summary = resolve_contract_summary(&params, &defaults);
 
@@ -270,10 +257,8 @@ mod tests {
             summary.configured_default_model.as_deref(),
             Some("persisted/model")
         );
-        assert!(
-            summary
-                .effective_model_source_label
-                .contains("CLI override")
-        );
+        assert!(summary
+            .effective_model_source_label
+            .contains("CLI override"));
     }
 }

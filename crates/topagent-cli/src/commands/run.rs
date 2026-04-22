@@ -1,9 +1,9 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
-use topagent_core::WorkspaceCheckpointStore;
+use topagent_core::WorkspaceRunSnapshotStore;
 
-use crate::config::workspace::resolve_workspace_path;
 use crate::commands::surface::PRODUCT_NAME;
+use crate::config::workspace::resolve_workspace_path;
 use crate::memory::TELEGRAM_HISTORY_RELATIVE_DIR;
 use crate::telegram::clear_workspace_telegram_history;
 
@@ -13,21 +13,21 @@ pub(crate) fn run_session_status(workspace_override: Option<PathBuf>) -> Result<
     Ok(())
 }
 
-pub(crate) fn run_checkpoint_diff(workspace_override: Option<PathBuf>) -> Result<()> {
+pub(crate) fn run_snapshot_diff(workspace_override: Option<PathBuf>) -> Result<()> {
     let workspace = resolve_workspace_path(workspace_override)?;
-    let store = WorkspaceCheckpointStore::new(workspace.clone());
+    let store = WorkspaceRunSnapshotStore::new(workspace.clone());
     println!("{PRODUCT_NAME} run diff");
     println!("Workspace: {}", workspace.display());
 
     let Some(status) = store.latest_status()? else {
-        println!("No active workspace checkpoint found.");
+        println!("No active workspace run snapshot found.");
         return Ok(());
     };
-    println!("Checkpoint: {}", status.id);
+    println!("Run snapshot: {}", status.id);
 
     let diff = store
         .latest_diff_preview()?
-        .unwrap_or_else(|| "No active workspace checkpoint found.".to_string());
+        .unwrap_or_else(|| "No active workspace run snapshot found.".to_string());
     println!();
     print!("{}", diff);
     if !diff.ends_with('\n') {
@@ -36,17 +36,17 @@ pub(crate) fn run_checkpoint_diff(workspace_override: Option<PathBuf>) -> Result
     Ok(())
 }
 
-pub(crate) fn run_checkpoint_restore(workspace_override: Option<PathBuf>) -> Result<()> {
+pub(crate) fn run_snapshot_restore(workspace_override: Option<PathBuf>) -> Result<()> {
     let workspace = resolve_workspace_path(workspace_override)?;
-    let store = WorkspaceCheckpointStore::new(workspace.clone());
+    let store = WorkspaceRunSnapshotStore::new(workspace.clone());
     let report = store
         .restore_latest()?
-        .ok_or_else(|| anyhow!("No active workspace checkpoint found."))?;
+        .ok_or_else(|| anyhow!("No active workspace run snapshot found."))?;
     let cleared_transcripts = clear_workspace_telegram_history(&workspace)?;
 
     println!("{PRODUCT_NAME} run restore");
     println!("Workspace: {}", workspace.display());
-    println!("Checkpoint restored: {}", report.checkpoint_id);
+    println!("Run snapshot restored: {}", report.snapshot_id);
     println!("Restored files: {}", report.restored_files.len());
     for path in report.restored_files {
         println!("- restored {}", path);
@@ -70,11 +70,11 @@ pub(crate) fn render_session_status(workspace: &Path) -> String {
     let service_state = crate::service::query_service_active_state();
     out.push_str(&format!("\nService state:        {}\n", service_state));
 
-    let store = WorkspaceCheckpointStore::new(workspace.to_path_buf());
+    let store = WorkspaceRunSnapshotStore::new(workspace.to_path_buf());
     match store.latest_status() {
         Ok(Some(status)) => {
             out.push_str(&format!(
-                "\nCheckpoint:           present ({})\n",
+                "\nRun snapshot:           present ({})\n",
                 status.id
             ));
             let timestamp = format_session_time(status.created_at_unix_millis);
@@ -85,10 +85,10 @@ pub(crate) fn render_session_status(workspace: &Path) -> String {
             ));
         }
         Ok(None) => {
-            out.push_str("\nCheckpoint:           none\n");
+            out.push_str("\nRun snapshot:           none\n");
         }
         Err(err) => {
-            out.push_str(&format!("\nCheckpoint:           error — {}\n", err));
+            out.push_str(&format!("\nRun snapshot:           error — {}\n", err));
         }
     }
 
@@ -117,12 +117,12 @@ pub(crate) fn render_session_status(workspace: &Path) -> String {
         if transcript_count == 1 { "" } else { "s" }
     ));
 
-    let has_checkpoint = matches!(store.latest_status(), Ok(Some(_)));
+    let has_snapshot = matches!(store.latest_status(), Ok(Some(_)));
     let has_transcripts = transcript_count > 0;
-    if has_checkpoint || has_transcripts {
+    if has_snapshot || has_transcripts {
         out.push_str("\nRecovery:\n");
-        if has_checkpoint {
-            out.push_str("  A checkpoint exists. Preview changes with: topagent run diff\n");
+        if has_snapshot {
+            out.push_str("  A run snapshot exists. Preview changes with: topagent run diff\n");
             out.push_str("  Restore workspace and clear transcripts:   topagent run restore\n");
         }
         if has_transcripts {
@@ -139,7 +139,7 @@ pub(crate) fn render_session_status(workspace: &Path) -> String {
 }
 
 pub(crate) fn format_session_time(unix_millis: u128) -> String {
-    use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+    use time::{format_description::well_known::Rfc3339, OffsetDateTime};
     let timestamp = i64::try_from(unix_millis / 1000).unwrap_or(i64::MAX);
     OffsetDateTime::from_unix_timestamp(timestamp)
         .ok()
@@ -148,23 +148,26 @@ pub(crate) fn format_session_time(unix_millis: u128) -> String {
 }
 
 #[cfg(test)]
-use topagent_core::WorkspaceCheckpointRestoreReport;
+use topagent_core::WorkspaceRunSnapshotRestoreReport;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use topagent_core::checkpoint::{CheckpointCaptureMetadata, CheckpointCaptureSource};
+    use topagent_core::run_snapshot::{RunSnapshotCaptureMetadata, RunSnapshotCaptureSource};
 
     #[test]
-    fn test_restore_checkpoint_clears_workspace_telegram_history() {
+    fn test_restore_run_snapshot_clears_workspace_telegram_history() {
         let temp = tempfile::TempDir::new().unwrap();
         let workspace = temp.path();
         std::fs::write(workspace.join("notes.txt"), "before").unwrap();
-        let store = WorkspaceCheckpointStore::new(workspace.to_path_buf());
+        let store = WorkspaceRunSnapshotStore::new(workspace.to_path_buf());
         store
             .capture_file(
                 "notes.txt",
-                CheckpointCaptureMetadata::new(CheckpointCaptureSource::Write, "structured write"),
+                RunSnapshotCaptureMetadata::new(
+                    RunSnapshotCaptureSource::Write,
+                    "structured write",
+                ),
             )
             .unwrap();
         std::fs::write(workspace.join("notes.txt"), "after").unwrap();
@@ -173,9 +176,9 @@ mod tests {
         std::fs::create_dir_all(&history_dir).unwrap();
         std::fs::write(history_dir.join("chat-1.json"), "{}").unwrap();
 
-        let (report, cleared_transcripts) = restore_checkpoint_and_clear_transcripts(
+        let (report, cleared_transcripts) = restore_run_snapshot_and_clear_transcripts(
             workspace,
-            &WorkspaceCheckpointStore::new(workspace.to_path_buf()),
+            &WorkspaceRunSnapshotStore::new(workspace.to_path_buf()),
         )
         .unwrap();
 
@@ -189,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn test_restore_checkpoint_preserves_durable_learning_artifacts() {
+    fn test_restore_run_snapshot_preserves_durable_learning_artifacts() {
         let temp = tempfile::TempDir::new().unwrap();
         let workspace = temp.path();
         let topagent_dir = workspace.join(".topagent");
@@ -212,11 +215,11 @@ mod tests {
         .unwrap();
 
         std::fs::write(workspace.join("src.rs"), "fn main() {}").unwrap();
-        let store = WorkspaceCheckpointStore::new(workspace.to_path_buf());
+        let store = WorkspaceRunSnapshotStore::new(workspace.to_path_buf());
         store
             .capture_file(
                 "src.rs",
-                CheckpointCaptureMetadata::new(CheckpointCaptureSource::Write, "code change"),
+                RunSnapshotCaptureMetadata::new(RunSnapshotCaptureSource::Write, "code change"),
             )
             .unwrap();
 
@@ -226,9 +229,9 @@ mod tests {
         std::fs::create_dir_all(&history_dir).unwrap();
         std::fs::write(history_dir.join("chat-42.json"), "[{\"text\":\"hello\"}]").unwrap();
 
-        let (report, cleared_transcripts) = restore_checkpoint_and_clear_transcripts(
+        let (report, cleared_transcripts) = restore_run_snapshot_and_clear_transcripts(
             workspace,
-            &WorkspaceCheckpointStore::new(workspace.to_path_buf()),
+            &WorkspaceRunSnapshotStore::new(workspace.to_path_buf()),
         )
         .unwrap();
 
@@ -261,26 +264,26 @@ mod tests {
     }
 
     #[test]
-    fn test_restore_no_checkpoint_returns_error() {
+    fn test_restore_no_run_snapshot_returns_error() {
         let temp = tempfile::TempDir::new().unwrap();
         let workspace = temp.path();
 
-        let result = restore_checkpoint_and_clear_transcripts(
+        let result = restore_run_snapshot_and_clear_transcripts(
             workspace,
-            &WorkspaceCheckpointStore::new(workspace.to_path_buf()),
+            &WorkspaceRunSnapshotStore::new(workspace.to_path_buf()),
         );
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
-        assert!(msg.contains("No active workspace checkpoint found"));
+        assert!(msg.contains("No active workspace run snapshot found"));
     }
 
-    fn restore_checkpoint_and_clear_transcripts(
+    fn restore_run_snapshot_and_clear_transcripts(
         workspace: &Path,
-        store: &WorkspaceCheckpointStore,
-    ) -> Result<(WorkspaceCheckpointRestoreReport, bool)> {
+        store: &WorkspaceRunSnapshotStore,
+    ) -> Result<(WorkspaceRunSnapshotRestoreReport, bool)> {
         let report = store
             .restore_latest()?
-            .ok_or_else(|| anyhow!("No active workspace checkpoint found."))?;
+            .ok_or_else(|| anyhow!("No active workspace run snapshot found."))?;
         let cleared_transcripts = clear_workspace_telegram_history(workspace)?;
         Ok((report, cleared_transcripts))
     }

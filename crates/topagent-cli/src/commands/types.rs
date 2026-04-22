@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
 use crate::commands::surface::{
@@ -9,18 +9,6 @@ use crate::commands::surface::{
     HELP_PROCEDURE_PRUNE, HELP_PROCEDURE_SHOW, HELP_RUN_DIFF, HELP_RUN_RESTORE, HELP_RUN_STATUS,
     HELP_STATUS,
 };
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub(crate) enum ToolAuthoringMode {
-    On,
-    Off,
-}
-
-impl ToolAuthoringMode {
-    pub(crate) fn is_enabled(self) -> bool {
-        matches!(self, Self::On)
-    }
-}
 
 #[derive(Parser)]
 #[command(
@@ -63,14 +51,6 @@ pub(crate) struct Cli {
     #[arg(long, global = true, help = "Provider timeout in seconds")]
     pub(crate) timeout_secs: Option<u64>,
 
-    #[arg(
-        long = "tool-authoring",
-        global = true,
-        value_enum,
-        help = "Enable or disable generated-tool authoring tools for this run or installed service"
-    )]
-    pub(crate) tool_authoring: Option<ToolAuthoringMode>,
-
     #[command(subcommand)]
     pub(crate) command: Option<Commands>,
 
@@ -80,8 +60,7 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 pub(crate) enum Commands {
-    /// Set up and start the TopAgent Telegram background service.
-    #[command(visible_alias = "setup")]
+    /// Install and start the TopAgent Telegram background service.
     Install,
     #[command(about = HELP_STATUS)]
     Status,
@@ -117,7 +96,7 @@ pub(crate) enum Commands {
     },
     #[command(about = HELP_DOCTOR)]
     Doctor,
-    /// Inspect execution-session state or restore the latest workspace checkpoint.
+    /// Inspect execution-session state or restore the latest workspace run snapshot.
     Run {
         #[command(subcommand)]
         command: RunCommands,
@@ -128,7 +107,7 @@ pub(crate) enum Commands {
         #[arg(long)]
         use_cargo: bool,
     },
-    /// Remove the installed TopAgent setup and, when applicable, the installed binary.
+    /// Remove the installed TopAgent service config and, when applicable, the installed binary.
     Uninstall {
         /// Also remove workspace .topagent/ data, cache files, and auto-created workspace
         #[arg(long, short = 'p')]
@@ -148,11 +127,6 @@ pub(crate) enum RunCommands {
 
 #[derive(Subcommand)]
 pub(crate) enum ServiceCommands {
-    /// Install and start the Telegram background service.
-    Install {
-        #[arg(long, help = "Telegram bot token (or TELEGRAM_BOT_TOKEN)")]
-        token: Option<String>,
-    },
     /// Start the installed Telegram background service.
     Start,
     /// Stop the installed Telegram background service.

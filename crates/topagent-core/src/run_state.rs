@@ -11,8 +11,6 @@ use std::path::Path;
 const MAX_ACTIVE_FILES: usize = 12;
 const MAX_TOOL_TRACE_STEPS: usize = 16;
 
-const MAX_HOOK_NOTES: usize = 8;
-
 pub(crate) struct AgentRunState {
     current_objective: Option<String>,
     changed_files: RefCell<Vec<String>>,
@@ -21,7 +19,6 @@ pub(crate) struct AgentRunState {
     tool_trace: RefCell<Vec<ToolTraceStep>>,
     observed_trust: RefCell<RunTrustContext>,
     run_baseline: RefCell<Option<RunBaseline>>,
-    hook_notes: RefCell<Vec<String>>,
 }
 
 struct RunBaseline {
@@ -40,7 +37,6 @@ impl Default for AgentRunState {
             tool_trace: RefCell::new(Vec::new()),
             observed_trust: RefCell::new(RunTrustContext::default()),
             run_baseline: RefCell::new(None),
-            hook_notes: RefCell::new(Vec::new()),
         }
     }
 }
@@ -60,7 +56,6 @@ impl AgentRunState {
         self.active_files.borrow_mut().clear();
         self.bash_history.borrow_mut().clear();
         self.tool_trace.borrow_mut().clear();
-        self.hook_notes.borrow_mut().clear();
         *self.observed_trust.borrow_mut() = RunTrustContext::default();
         self.capture_run_baseline(workspace_root);
     }
@@ -104,13 +99,6 @@ impl AgentRunState {
 
     pub(crate) fn record_observed_source(&self, source: SourceLabel) {
         self.observed_trust.borrow_mut().add_source(source);
-    }
-
-    pub(crate) fn record_hook_note(&self, note: String) {
-        let mut notes = self.hook_notes.borrow_mut();
-        if notes.len() < MAX_HOOK_NOTES {
-            notes.push(note);
-        }
     }
 
     pub(crate) fn trust_context(&self, ctx: &ExecutionContext) -> RunTrustContext {
@@ -277,7 +265,6 @@ impl AgentRunState {
             active_files,
             proof_of_work_anchors,
             trust_notes,
-            hook_notes: self.hook_notes.borrow().clone(),
             memory_context_loaded: ctx.memory_context().is_some(),
         }
     }
@@ -288,7 +275,6 @@ impl AgentRunState {
         ctx: &ExecutionContext,
         workspace_root: &Path,
         behavior: &BehaviorContract,
-        generated_tool_warnings: &[String],
     ) -> TaskResult {
         let files = self.changed_files.borrow().clone();
         let unattributed_files = self.unattributed_pre_existing_dirty_files(workspace_root);
@@ -319,7 +305,6 @@ impl AgentRunState {
             verification_commands_run: self.collect_verification_commands(behavior),
             tool_trace: self.tool_trace.borrow().clone(),
             unresolved_issues: Vec::new(),
-            workspace_warnings: Vec::new(),
             source_labels: self.trust_context(ctx).sources,
             task_mode: None,
             delivery_outcome: crate::task_result::DeliveryOutcome::None,
@@ -354,7 +339,6 @@ impl AgentRunState {
             .with_verification_commands(evidence.verification_commands_run.clone())
             .with_tool_trace(evidence.tool_trace.clone())
             .with_unresolved_issues(evidence.unresolved_issues.clone())
-            .with_workspace_warnings(generated_tool_warnings.to_vec())
             .with_source_labels(evidence.source_labels.clone())
     }
 

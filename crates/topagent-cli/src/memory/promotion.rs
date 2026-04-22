@@ -246,12 +246,6 @@ fn redact_task_result_for_storage(ctx: &ExecutionContext, task_result: &TaskResu
         .iter()
         .map(|issue| redact_for_storage(ctx, issue))
         .collect();
-    redacted.evidence.workspace_warnings = redacted
-        .evidence
-        .workspace_warnings
-        .iter()
-        .map(|warning| redact_for_storage(ctx, warning))
-        .collect();
     redacted.evidence.tool_trace = redacted
         .evidence
         .tool_trace
@@ -401,9 +395,7 @@ fn evaluate_promotion(
     let repeated_verification = task_result.verification_commands().len() >= 2;
     let note = multi_step_plan || multi_file || repeated_verification;
     let procedure = note && multi_step_plan && task_result.tool_trace().len() >= 3;
-    let trajectory = procedure
-        && (plan.items().len() >= 3 || multi_file || repeated_verification)
-        && task_result.evidence.workspace_warnings.is_empty();
+    let trajectory = procedure && (plan.items().len() >= 3 || multi_file || repeated_verification);
 
     PromotionDecision {
         note,

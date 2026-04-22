@@ -48,7 +48,7 @@ fn test_install_script_installs_precompiled_release_asset_from_local_release_dir
             format!("file://{}", release_root.display()),
         )
         .env("TOPAGENT_INSTALL_VERSION", "vtest")
-        .env("TOPAGENT_SKIP_SETUP", "1")
+        .env("TOPAGENT_SKIP_INSTALL", "1")
         .assert()
         .success();
 

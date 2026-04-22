@@ -1,7 +1,6 @@
 use crate::behavior::{BashCommandClass, BehaviorContract};
 use crate::compaction::{CompactionRuntimeState, TranscriptCompactor};
 use crate::context::ExecutionContext;
-use crate::external::ExternalToolRegistry;
 use crate::model::ModelRoute;
 use crate::plan::{self, Plan};
 use crate::progress::{ProgressCallback, ProgressUpdate};
@@ -11,16 +10,10 @@ use crate::run_state::AgentRunState;
 use crate::runtime::RuntimeOptions;
 use crate::session::Session;
 use crate::task_result::TaskResult;
-use crate::tool_genesis::{
-    load_runtime_generated_tool_inventory, register_generated_tool_authoring_tools,
-    GeneratedToolRuntimeGuard,
-};
 use crate::tools::{
     ManageOperatorPreferenceTool, SaveNoteTool, Tool, ToolRegistry, UpdatePlanTool,
 };
 use crate::{Error, Message, Provider, ProviderResponse, Result, ToolSpec};
-use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 mod gates;
@@ -49,12 +42,10 @@ mod tool_execution;
 //    Counts text-response bail-outs during planning phase.
 //    Covers: model tries to return a final answer without planning.
 
-const WORKSPACE_EXTERNAL_TOOLS_PATH: &str = ".topagent/external-tools.json";
 pub struct Agent {
     session: Session,
     provider: Box<dyn Provider>,
     tools: ToolRegistry,
-    external_tools: ExternalToolRegistry,
     options: RuntimeOptions,
     behavior: BehaviorContract,
     plan: Arc<Mutex<Plan>>,
@@ -64,8 +55,6 @@ pub struct Agent {
     execution_stage: ExecutionStage,
     progress_callback: Option<ProgressCallback>,
     compaction_state: CompactionRuntimeState,
-    generated_tool_warnings: Vec<String>,
-    generated_tool_guards: HashMap<String, GeneratedToolRuntimeGuard>,
     last_task_result: Option<TaskResult>,
     durable_memory_written_this_run: bool,
 }
@@ -119,15 +108,10 @@ impl Agent {
         registry.add(Box::new(SaveNoteTool::new()));
         registry.add(Box::new(ManageOperatorPreferenceTool::new()));
 
-        if behavior.generated_tools.authoring_enabled {
-            register_generated_tool_authoring_tools(&mut registry);
-        }
-
         Self {
             session: Session::new(),
             provider,
             tools: registry,
-            external_tools: ExternalToolRegistry::new(),
             options,
             behavior,
             plan,
@@ -137,8 +121,6 @@ impl Agent {
             execution_stage: ExecutionStage::Research,
             progress_callback: None,
             compaction_state: CompactionRuntimeState::default(),
-            generated_tool_warnings: Vec::new(),
-            generated_tool_guards: HashMap::new(),
             last_task_result: None,
             durable_memory_written_this_run: false,
         }
@@ -150,14 +132,6 @@ impl Agent {
 
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
         self.tools.specs()
-    }
-
-    pub fn external_tools(&self) -> &ExternalToolRegistry {
-        &self.external_tools
-    }
-
-    pub fn external_tools_mut(&mut self) -> &mut ExternalToolRegistry {
-        &mut self.external_tools
     }
 
     pub fn changed_files(&self) -> Vec<String> {
@@ -520,64 +494,8 @@ impl Agent {
         BehaviorContract::default().classify_bash_command(cmd)
     }
 
-    pub fn load_workspace_external_tools(&mut self, workspace_root: &Path) -> Result<()> {
-        let path = workspace_root.join(WORKSPACE_EXTERNAL_TOOLS_PATH);
-        if path.exists() {
-            let content = std::fs::read_to_string(&path).map_err(Error::Io)?;
-            self.external_tools.load_from_str(&content)?;
-        }
-        Ok(())
-    }
-
-    pub fn load_generated_tools_from_workspace(&mut self, workspace_root: &Path) -> Result<()> {
-        let inventory = load_runtime_generated_tool_inventory(workspace_root)?;
-        self.generated_tool_warnings =
-            inventory.warning_lines(self.behavior.generated_tools.max_runtime_warning_lines);
-        self.generated_tool_guards.clear();
-        for guard in inventory.runtime_guards {
-            self.generated_tool_guards
-                .insert(guard.tool_name().to_string(), guard);
-        }
-        for tool in inventory.verified_tools {
-            self.external_tools.register(tool);
-        }
-        Ok(())
-    }
-
-    fn reload_workspace_tools(&mut self, workspace_root: &Path) -> Result<()> {
-        self.external_tools = ExternalToolRegistry::new();
-        self.generated_tool_warnings.clear();
-        self.generated_tool_guards.clear();
-        self.load_workspace_external_tools(workspace_root)?;
-        self.load_generated_tools_from_workspace(workspace_root)?;
-        self.sync_provider_tools();
-        Ok(())
-    }
-
-    fn generated_tool_runtime_guard(&self, name: &str) -> Option<&GeneratedToolRuntimeGuard> {
-        self.generated_tool_guards.get(name)
-    }
-
-    fn mark_generated_tool_unavailable(&mut self, name: &str, warning: String) {
-        self.external_tools.remove(name);
-        self.generated_tool_guards.remove(name);
-        let line = format!("{name}: {warning}");
-        if self.generated_tool_warnings.contains(&line) {
-            self.sync_provider_tools();
-            return;
-        }
-        if self.generated_tool_warnings.len()
-            < self.behavior.generated_tools.max_runtime_warning_lines
-        {
-            self.generated_tool_warnings.push(line);
-        }
-        self.sync_provider_tools();
-    }
-
     fn sync_provider_tools(&mut self) {
-        let mut tool_specs = self.tools.specs();
-        tool_specs.extend(self.external_tools.specs());
-        self.provider.set_tool_specs(tool_specs);
+        self.provider.set_tool_specs(self.tools.specs());
     }
 
     fn reset_run_state(&mut self, ctx: &ExecutionContext, instruction: &str) -> Result<()> {
@@ -602,7 +520,6 @@ impl Agent {
     fn build_run_system_prompt(&self, ctx: &ExecutionContext) -> Result<String> {
         let project_instructions = get_project_instructions_or_error(&ctx.workspace_root)?;
         let available_tools = self.tools.specs();
-        let external_tools = self.external_tools.specs();
         let plan_guard = self.plan.lock().ok();
         let current_plan = plan_guard
             .as_ref()
@@ -615,18 +532,13 @@ impl Agent {
             self.planning.is_active() && !plan_exists,
         );
 
-        let hook_summary_lines = ctx.hook_registry().summary_lines();
-
         Ok(self.behavior.render_system_prompt(&BehaviorPromptContext {
             available_tools: &available_tools,
-            external_tools: &external_tools,
             project_instructions: project_instructions.as_deref(),
             operator_context: ctx.operator_context(),
             memory_context: ctx.memory_context(),
             current_plan,
             run_state: Some(&run_state),
-            generated_tool_warnings: &self.generated_tool_warnings,
-            hook_summary_lines: &hook_summary_lines,
             planning_required_now: self.planning.is_active() && !plan_exists,
             approval_mailbox_available: ctx.approval_mailbox().is_some(),
         }))
@@ -655,16 +567,12 @@ mod tests {
     use crate::approval::{
         ApprovalMailbox, ApprovalMailboxMode, ApprovalRequestDraft, ApprovalTriggerKind,
     };
-    use crate::context::{ExecutionContext, ToolContext};
+    use crate::context::ExecutionContext;
     use crate::provenance::{InfluenceMode, RunTrustContext, SourceKind, SourceLabel};
     use crate::provider::{ProviderResponse, ScriptedProvider};
     use crate::runtime::RuntimeOptions;
-    use crate::tool_genesis::{
-        test_support, ListGeneratedToolsTool, ToolGenesis, VerificationSpec,
-    };
-    use crate::tools::{default_tools, Tool};
+    use crate::tools::default_tools;
     use crate::{Error, Message};
-    use std::collections::BTreeMap;
     use std::fs;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -752,16 +660,6 @@ path = "src/lib.rs"
         )
     }
 
-    fn write_workspace_external_tools_json(temp: &TempDir, entries: serde_json::Value) {
-        let topagent_dir = temp.path().join(".topagent");
-        fs::create_dir_all(&topagent_dir).unwrap();
-        fs::write(
-            topagent_dir.join("external-tools.json"),
-            serde_json::to_string(&entries).unwrap(),
-        )
-        .unwrap();
-    }
-
     fn run_git(workspace: &std::path::Path, args: &[&str]) {
         let output = std::process::Command::new("git")
             .args(args)
@@ -811,14 +709,16 @@ path = "src/lib.rs"
         );
         let denied = mailbox.request_decision(
             ApprovalRequestDraft {
-                action_kind: ApprovalTriggerKind::GeneratedToolDeletion,
-                short_summary: "delete generated tool: cleanup_helper".to_string(),
-                exact_action: "delete_generated_tool(name=\"cleanup_helper\")".to_string(),
-                reason: "tool deletion removes workspace-local capability".to_string(),
-                scope_of_impact: "Deletes a generated tool from .topagent/tools.".to_string(),
-                expected_effect: "The generated helper disappears from the callable tool surface."
+                action_kind: ApprovalTriggerKind::DestructiveShellMutation,
+                short_summary: "shell mutation: remove generated files".to_string(),
+                exact_action: "rm -rf generated".to_string(),
+                reason: "recursive deletion removes workspace files".to_string(),
+                scope_of_impact: "Deletes files under the generated directory.".to_string(),
+                expected_effect: "The generated directory is removed from the workspace."
                     .to_string(),
-                rollback_hint: Some("Recreate the tool if the deletion was mistaken.".to_string()),
+                rollback_hint: Some(
+                    "Restore the files from git if the deletion was mistaken.".to_string(),
+                ),
             },
             None,
         );
@@ -866,147 +766,6 @@ path = "src/lib.rs"
     #[test]
     fn test_extract_exit_code_negative() {
         assert_eq!(extract_exit_code("Output: x\nExit code: -1"), -1);
-    }
-
-    #[test]
-    fn test_normal_startup_uses_runtime_generated_tool_inventory_without_maintenance_scan() {
-        let (temp, ctx) = create_temp_crate();
-        let genesis = ToolGenesis::new(temp.path().to_path_buf());
-        genesis
-            .create_tool(
-                "drifted_tool",
-                "verified helper",
-                "echo original",
-                vec![],
-                vec![],
-                Some(VerificationSpec {
-                    verification_inputs: BTreeMap::new(),
-                    expected_exit: 0,
-                    expected_output_contains: Some("original".to_string()),
-                }),
-            )
-            .unwrap();
-        fs::write(
-            temp.path().join(".topagent/tools/drifted_tool/script.sh"),
-            "echo tampered",
-        )
-        .unwrap();
-
-        test_support::reset_generated_tool_scan_counts();
-
-        let mut agent = Agent::with_options(
-            Box::new(ScriptedProvider::new(vec![assistant_message("done")])),
-            default_tools().into_inner(),
-            RuntimeOptions::default(),
-        );
-        let result = agent.run(&ctx, "inspect the repository").unwrap();
-
-        assert_eq!(result, "done");
-        let (runtime_scans, maintenance_scans) = test_support::generated_tool_scan_counts();
-        assert!(runtime_scans >= 1);
-        assert_eq!(maintenance_scans, 0);
-        assert!(agent.external_tools().get("drifted_tool").is_some());
-    }
-
-    #[test]
-    fn test_explicit_generated_tool_listing_uses_maintenance_scan() {
-        let temp = TempDir::new().unwrap();
-        let genesis = ToolGenesis::new(temp.path().to_path_buf());
-        genesis
-            .create_tool(
-                "broken_tool",
-                "broken helper",
-                "echo ok",
-                vec![],
-                vec![],
-                Some(VerificationSpec {
-                    verification_inputs: BTreeMap::new(),
-                    expected_exit: 0,
-                    expected_output_contains: Some("ok".to_string()),
-                }),
-            )
-            .unwrap();
-        fs::remove_file(temp.path().join(".topagent/tools/broken_tool/script.sh")).unwrap();
-
-        test_support::reset_generated_tool_scan_counts();
-
-        let exec = ExecutionContext::new(temp.path().to_path_buf());
-        let runtime = RuntimeOptions::default().with_generated_tool_authoring(true);
-        let ctx = ToolContext::new(&exec, &runtime);
-        let output = ListGeneratedToolsTool::new()
-            .execute(serde_json::json!({}), &ctx)
-            .unwrap();
-
-        assert!(output.contains("broken_tool"));
-        assert_eq!(test_support::generated_tool_scan_counts(), (0, 1));
-    }
-
-    #[test]
-    fn test_generated_tool_revalidation_runs_only_when_tool_is_invoked() {
-        let (temp, ctx) = create_temp_crate();
-        let genesis = ToolGenesis::new(temp.path().to_path_buf());
-        genesis
-            .create_tool(
-                "drifted_tool",
-                "verified helper",
-                "echo original",
-                vec![],
-                vec![],
-                Some(VerificationSpec {
-                    verification_inputs: BTreeMap::new(),
-                    expected_exit: 0,
-                    expected_output_contains: Some("original".to_string()),
-                }),
-            )
-            .unwrap();
-        fs::write(
-            temp.path().join(".topagent/tools/drifted_tool/script.sh"),
-            "echo tampered",
-        )
-        .unwrap();
-
-        test_support::reset_generated_tool_scan_counts();
-
-        let mut idle_agent = Agent::with_options(
-            Box::new(ScriptedProvider::new(vec![assistant_message("done")])),
-            default_tools().into_inner(),
-            RuntimeOptions::default(),
-        );
-        let idle_result = idle_agent.run(&ctx, "inspect the repository").unwrap();
-        assert_eq!(idle_result, "done");
-        assert_eq!(test_support::generated_tool_revalidation_count(), 0);
-
-        test_support::reset_generated_tool_scan_counts();
-
-        let mut invoking_agent = Agent::with_options(
-            Box::new(ScriptedProvider::new(vec![
-                tool_call("use", "drifted_tool", serde_json::json!({})),
-                assistant_message("reported unavailable"),
-            ])),
-            default_tools().into_inner(),
-            RuntimeOptions::default(),
-        );
-        let result = invoking_agent.run(&ctx, "use the generated tool").unwrap();
-
-        assert!(result.contains("reported unavailable"));
-        assert!(result.contains("drifted_tool: script.sh changed after approval"));
-        let (runtime_scans, maintenance_scans) = test_support::generated_tool_scan_counts();
-        assert!(runtime_scans >= 1);
-        assert_eq!(maintenance_scans, 0);
-        assert_eq!(test_support::generated_tool_revalidation_count(), 1);
-        assert!(invoking_agent
-            .external_tools()
-            .get("drifted_tool")
-            .is_none());
-        assert!(invoking_agent
-            .conversation_messages()
-            .iter()
-            .any(|message| matches!(
-                &message.content,
-                crate::message::Content::ToolResult { result, .. }
-                    if result.contains("generated tool 'drifted_tool' is unavailable")
-                        && result.contains("script.sh changed after approval")
-            )));
     }
 
     #[test]
@@ -1235,78 +994,6 @@ path = "src/lib.rs"
     }
 
     #[test]
-    fn test_external_tool_execution_effect_unlocks_verification_without_diff() {
-        let (temp, ctx) = create_temp_crate();
-        write_workspace_external_tools_json(
-            &temp,
-            serde_json::json!([
-                {
-                    "name": "start_exec",
-                    "description": "mark execution started",
-                    "command": "true",
-                    "argv_template": [],
-                    "sandbox": "host",
-                    "effect": "execution_started"
-                }
-            ]),
-        );
-
-        let mut agent = make_plan_required_agent(vec![
-            update_plan_call("plan"),
-            tool_call("exec", "start_exec", serde_json::json!({})),
-            cargo_check_call("verify"),
-            assistant_message("done after external execution"),
-        ]);
-
-        let result = agent
-            .run(
-                &ctx,
-                "Make a plan for this codebase-wide change, then implement it safely.",
-            )
-            .unwrap();
-
-        assert!(result.contains("done after external execution"));
-        assert!(result.contains("Verification passed."));
-        assert_eq!(result.matches("`cargo check --offline`").count(), 1);
-    }
-
-    #[test]
-    fn test_verification_remains_blocked_without_real_execution_signal() {
-        let (temp, ctx) = create_temp_crate();
-        write_workspace_external_tools_json(
-            &temp,
-            serde_json::json!([
-                {
-                    "name": "read_tool",
-                    "description": "read-only helper",
-                    "command": "true",
-                    "argv_template": [],
-                    "sandbox": "host",
-                    "effect": "read_only"
-                }
-            ]),
-        );
-
-        let mut agent = make_plan_required_agent(vec![
-            update_plan_call("plan"),
-            tool_call("read", "read_tool", serde_json::json!({})),
-            cargo_check_call("verify_before_execution"),
-            write_lib_call("write", "pub fn answer() -> u32 {\n    47\n}\n"),
-            cargo_check_call("verify_after_execution"),
-            assistant_message("done after real execution"),
-        ]);
-
-        let result = agent
-            .run(
-                &ctx,
-                "Make a plan for this codebase-wide change, then implement it safely.",
-            )
-            .unwrap();
-
-        assert!(result.contains("done after real execution"));
-    }
-
-    #[test]
     fn test_git_commit_requires_approval_and_does_not_execute_silently() {
         let (_temp, ctx) = create_temp_git_repo();
         let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
@@ -1380,47 +1067,6 @@ path = "src/lib.rs"
     }
 
     #[test]
-    fn test_host_external_execution_requires_approval_and_does_not_run() {
-        let (temp, ctx) = create_temp_crate();
-        write_workspace_external_tools_json(
-            &temp,
-            serde_json::json!([
-                {
-                    "name": "host_touch",
-                    "description": "create a host-side marker file",
-                    "command": "bash",
-                    "argv_template": ["-lc", "touch host-risk.txt"],
-                    "sandbox": "host",
-                    "effect": "execution_started"
-                }
-            ]),
-        );
-
-        let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
-        let ctx = ctx.with_approval_mailbox(mailbox.clone());
-        let provider =
-            ScriptedProvider::new(vec![tool_call("host", "host_touch", serde_json::json!({}))]);
-        let mut agent = Agent::with_options(
-            Box::new(provider),
-            default_tools().into_inner(),
-            RuntimeOptions::default(),
-        );
-
-        let result = agent.run(&ctx, "run the host helper");
-        let request = match result {
-            Err(Error::ApprovalRequired(request)) => request,
-            other => panic!("expected approval-required error, got {other:?}"),
-        };
-
-        assert_eq!(
-            request.action_kind,
-            ApprovalTriggerKind::HostExternalExecution
-        );
-        assert!(!ctx.workspace_root.join("host-risk.txt").exists());
-        assert_eq!(mailbox.pending().len(), 1);
-    }
-
-    #[test]
     fn test_approved_git_commit_executes_through_waiting_mailbox() {
         let (_temp, ctx) = create_temp_git_repo();
         let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Wait);
@@ -1487,8 +1133,8 @@ path = "src/lib.rs"
         assert!(prompt.contains(instruction));
         assert!(prompt.contains("## Current Plan"));
         assert!(prompt.contains("apr-1 [pending] git commit: release snapshot"));
-        assert!(prompt.contains("apr-2 [denied] delete generated tool: cleanup_helper"));
-        assert!(prompt.contains("Approval denied: delete generated tool: cleanup_helper"));
+        assert!(prompt.contains("apr-2 [denied] shell mutation: remove generated files"));
+        assert!(prompt.contains("Approval denied: shell mutation: remove generated files"));
 
         let summary = agent
             .session
@@ -1503,7 +1149,7 @@ path = "src/lib.rs"
             .expect("compaction summary should be present");
         assert!(summary.contains(instruction));
         assert!(summary.contains("current plan"));
-        assert!(summary.contains("apr-2 [denied] delete generated tool: cleanup_helper"));
+        assert!(summary.contains("apr-2 [denied] shell mutation: remove generated files"));
     }
 
     #[test]

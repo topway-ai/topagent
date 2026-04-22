@@ -62,14 +62,14 @@ pub(crate) fn assert_managed_or_absent(path: &Path, label: &str) -> Result<()> {
     ))
 }
 
-pub(crate) fn ensure_service_setup_present(unit_path: &Path, env_path: &Path) -> Result<()> {
+pub(crate) fn ensure_service_install_present(unit_path: &Path, env_path: &Path) -> Result<()> {
     if unit_path.exists() || env_path.exists() {
         return Ok(());
     }
 
-    Err(anyhow::anyhow!(
-        format!("{PRODUCT_NAME} is not installed yet. Run `topagent install` first.")
-    ))
+    Err(anyhow::anyhow!(format!(
+        "{PRODUCT_NAME} is not installed yet. Run `topagent install` first."
+    )))
 }
 
 pub(crate) fn is_topagent_managed_file(path: &Path) -> Result<bool> {

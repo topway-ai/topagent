@@ -157,7 +157,6 @@ pub(super) fn route_message(
             TelegramCommandKind::Start | TelegramCommandKind::Help => handle_help(
                 workspace_label,
                 &session_manager.model_label_for_help(),
-                session_manager.tool_authoring_enabled(),
                 &session_manager.dm_access_label(),
             ),
             TelegramCommandKind::Stop => handle_stop(session_manager, chat_id),

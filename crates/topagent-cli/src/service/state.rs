@@ -4,10 +4,10 @@ use std::path::{Path, PathBuf};
 
 use crate::config::defaults::{TOPAGENT_PROVIDER_KEY, TOPAGENT_WORKSPACE_KEY};
 use crate::config::model_selection::{
-    RuntimeModelSelection, SelectedProvider, provider_or_default, resolve_runtime_model_selection,
+    provider_or_default, resolve_runtime_model_selection, RuntimeModelSelection, SelectedProvider,
 };
 use crate::managed_files::{is_topagent_managed_file, read_managed_env_metadata};
-use crate::operational_paths::{ServicePaths, service_paths};
+use crate::operational_paths::{service_paths, ServicePaths};
 
 use super::managed_env::persisted_model_from_env_values;
 use super::systemd::{ensure_systemd_user_available, load_service_status_snapshot};
@@ -16,7 +16,7 @@ use super::systemd::{ensure_systemd_user_available, load_service_status_snapshot
 pub(super) struct ControlPlaneState {
     pub paths: ServicePaths,
     pub env_values: HashMap<String, String>,
-    pub setup_installed: bool,
+    pub installation_present: bool,
     pub model_selection: RuntimeModelSelection,
     pub service_probe: ServiceProbe,
 }
@@ -66,7 +66,7 @@ pub(super) fn load_control_plane_state(
     let config_installed = paths.env_path.exists() && is_topagent_managed_file(&paths.env_path)?;
     let service_probe = load_service_probe(&paths);
     let service_installed = service_probe.service_installed;
-    let setup_installed = config_installed || service_installed;
+    let installation_present = config_installed || service_installed;
     let persisted_provider = env_values
         .get(TOPAGENT_PROVIDER_KEY)
         .and_then(|v| SelectedProvider::from_str(v));
@@ -79,7 +79,7 @@ pub(super) fn load_control_plane_state(
     Ok(ControlPlaneState {
         paths,
         env_values,
-        setup_installed,
+        installation_present,
         model_selection,
         service_probe,
     })

@@ -17,7 +17,6 @@ pub(super) fn default_compaction_policy(options: &RuntimeOptions) -> CompactionP
             "available tools",
             "project instructions",
             "workspace memory",
-            "generated tool warnings",
             "current plan",
             "blockers",
             "pending approvals",

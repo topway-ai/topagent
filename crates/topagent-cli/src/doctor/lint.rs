@@ -141,28 +141,28 @@ mod tests {
 
     #[test]
     fn test_lint_memory_md_flags_transient_content() {
-        let content = "# TopAgent Memory Index\n\n- topic: deploy | file: notes/deploy.md | status: verified | note: task completed successfully\n";
+        let content = "# TopAgent Memory Index\n\n- title: deploy | file: notes/deploy.md | status: verified | note: task completed successfully\n";
         let issues = lint_memory_md_content(content);
         assert!(issues.iter().any(|i| i.contains("transient")));
     }
 
     #[test]
     fn test_lint_memory_md_flags_transcript_content() {
-        let content = "# TopAgent Memory Index\n\n- topic: chat | file: notes/chat.md | status: verified | note: assistant: fixed the bug\n";
+        let content = "# TopAgent Memory Index\n\n- title: chat | file: notes/chat.md | status: verified | note: assistant: fixed the bug\n";
         let issues = lint_memory_md_content(content);
         assert!(issues.iter().any(|i| i.contains("transcript")));
     }
 
     #[test]
     fn test_lint_memory_md_flags_procedure_like_content() {
-        let content = "# TopAgent Memory Index\n\n- topic: deploy procedure | file: procedures/deploy.md | status: verified | note: step-by-step deployment\n";
+        let content = "# TopAgent Memory Index\n\n- title: deploy procedure | file: procedures/deploy.md | status: verified | note: step-by-step deployment\n";
         let issues = lint_memory_md_content(content);
         assert!(issues.iter().any(|i| i.contains("procedure-like")));
     }
 
     #[test]
     fn test_lint_memory_md_clean_content_passes() {
-        let content = "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: verified | note: service layout\n";
+        let content = "# TopAgent Memory Index\n\n- title: architecture | file: notes/architecture.md | status: verified | note: service layout\n";
         let issues = lint_memory_md_content(content);
         assert!(issues.is_empty());
     }

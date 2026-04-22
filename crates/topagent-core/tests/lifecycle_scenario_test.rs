@@ -1,13 +1,9 @@
-use std::collections::BTreeMap;
 use tempfile::TempDir;
 use topagent_core::tools::default_tools;
 use topagent_core::{
-    context::ExecutionContext,
-    hooks::{HookDefinition, HookEvent, HookManifest, HookRegistry},
-    tool_genesis::{ToolGenesis, VerificationSpec},
-    Agent, ApprovalMailbox, ApprovalMailboxMode, ApprovalTriggerKind, Error, InfluenceMode,
-    Message, ProviderResponse, Role, RunTrustContext, RuntimeOptions, ScriptedProvider, SourceKind,
-    SourceLabel,
+    context::ExecutionContext, Agent, ApprovalMailbox, ApprovalMailboxMode, ApprovalTriggerKind,
+    Error, InfluenceMode, Message, ProviderResponse, Role, RunTrustContext, RuntimeOptions,
+    ScriptedProvider, SourceKind, SourceLabel,
 };
 
 fn create_temp_crate() -> (TempDir, ExecutionContext) {
@@ -58,30 +54,9 @@ fn update_plan_call(id: &str) -> ProviderResponse {
         "update_plan",
         serde_json::json!({
             "items": [
-                {"content": "Inspect the generated tool and workspace state", "status": "in_progress"},
+                {"content": "Inspect the workspace state", "status": "in_progress"},
                 {"content": "Apply the safe fix and verify it", "status": "pending"}
             ]
-        }),
-    )
-}
-
-fn write_lib_call(id: &str, content: &str) -> ProviderResponse {
-    tool_call(
-        id,
-        "write",
-        serde_json::json!({
-            "path": "src/lib.rs",
-            "content": content,
-        }),
-    )
-}
-
-fn cargo_check_call(id: &str) -> ProviderResponse {
-    tool_call(
-        id,
-        "bash",
-        serde_json::json!({
-            "command": "cargo check --offline",
         }),
     )
 }
@@ -96,36 +71,9 @@ fn low_trust_context() -> RunTrustContext {
     trust
 }
 
-fn create_drifted_generated_tool(workspace: &TempDir) {
-    let genesis = ToolGenesis::new(workspace.path().to_path_buf());
-    genesis
-        .create_tool(
-            "drifted_tool",
-            "verified helper",
-            "echo original",
-            vec![],
-            vec![],
-            Some(VerificationSpec {
-                verification_inputs: BTreeMap::new(),
-                expected_exit: 0,
-                expected_output_contains: Some("original".to_string()),
-            }),
-        )
-        .unwrap();
-    std::fs::write(
-        workspace
-            .path()
-            .join(".topagent/tools/drifted_tool/script.sh"),
-        "echo tampered",
-    )
-    .unwrap();
-}
-
 #[test]
-fn test_non_trivial_one_shot_task_plans_then_requires_approval_without_touching_unused_generated_tool(
-) {
-    let (temp, base_ctx) = create_temp_crate();
-    create_drifted_generated_tool(&temp);
+fn test_non_trivial_task_requires_approval_before_destructive_shell() {
+    let (_temp, base_ctx) = create_temp_crate();
     let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
     let ctx = base_ctx.with_approval_mailbox(mailbox.clone());
 
@@ -160,56 +108,6 @@ fn test_non_trivial_one_shot_task_plans_then_requires_approval_without_touching_
     }
     assert!(!ctx.workspace_root.join("risky.txt").exists());
     assert_eq!(mailbox.pending().len(), 1);
-    assert!(
-        agent.external_tools().get("drifted_tool").is_some(),
-        "unused generated tool should stay on the cheap runtime path"
-    );
-}
-
-#[test]
-fn test_generated_tool_revalidation_on_use_allows_manual_verified_recovery() {
-    let (temp, ctx) = create_temp_crate();
-    create_drifted_generated_tool(&temp);
-
-    let mut agent = Agent::with_options(
-        Box::new(ScriptedProvider::new(vec![
-            update_plan_call("plan"),
-            tool_call("use", "drifted_tool", serde_json::json!({})),
-            write_lib_call("write", "pub fn answer() -> u32 {\n    77\n}\n"),
-            cargo_check_call("verify"),
-            assistant_message("manual recovery complete"),
-        ])),
-        default_tools().into_inner(),
-        RuntimeOptions::default(),
-    );
-
-    let result = agent
-        .run(
-            &ctx,
-            "Plan the fix, try the helper, recover manually if needed, and verify the result.",
-        )
-        .unwrap();
-
-    assert!(result.contains("manual recovery complete"));
-    assert!(result.contains("Workspace Warnings"));
-    assert!(result.contains("drifted_tool: script.sh changed after approval"));
-    assert!(
-        agent.external_tools().get("drifted_tool").is_none(),
-        "tampered generated tool should be removed after failed revalidation"
-    );
-
-    let task_result = agent
-        .last_task_result()
-        .expect("expected a structured task result");
-    assert!(task_result.final_verification_passed());
-    assert!(task_result
-        .files_changed()
-        .contains(&"src/lib.rs".to_string()));
-    assert!(task_result
-        .evidence
-        .workspace_warnings
-        .iter()
-        .any(|warning| warning.contains("drifted_tool")));
 }
 
 #[test]
@@ -250,64 +148,6 @@ fn test_low_trust_risky_action_gets_elevated_approval_in_real_lifecycle() {
         }
         other => panic!("expected approval-required error, got {other:?}"),
     }
-}
-
-#[test]
-fn test_approval_gate_fires_before_hooks_for_destructive_mutations() {
-    let (temp, base_ctx) = create_temp_crate();
-
-    // Write a permissive hook that would allow everything
-    let script_path = temp.path().join("allow-all.sh");
-    std::fs::write(&script_path, "#!/bin/sh\necho '{\"action\": \"allow\"}'\n").unwrap();
-
-    let manifest = HookManifest {
-        hooks: vec![HookDefinition {
-            event: HookEvent::PreTool,
-            command: format!("sh {}", script_path.display()),
-            filter: vec!["bash".to_string()],
-            label: "permissive hook".to_string(),
-            timeout_secs: 5,
-        }],
-    };
-    let registry = HookRegistry::from_manifest(manifest);
-
-    let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
-    let ctx = base_ctx
-        .with_approval_mailbox(mailbox.clone())
-        .with_hook_registry(registry);
-
-    let mut agent = Agent::with_options(
-        Box::new(ScriptedProvider::new(vec![
-            update_plan_call("plan"),
-            tool_call(
-                "rm-bash",
-                "bash",
-                serde_json::json!({"command": "rm -rf /tmp/test"}),
-            ),
-        ])),
-        default_tools().into_inner(),
-        RuntimeOptions::default(),
-    );
-
-    // Approval gate fires before hooks — the permissive hook cannot bypass approval
-    let err = agent
-        .run(
-            &ctx,
-            "Plan the cleanup, then remove the temporary test directory.",
-        )
-        .unwrap_err();
-
-    match err {
-        Error::ApprovalRequired(request) => {
-            assert_eq!(
-                request.action_kind,
-                ApprovalTriggerKind::DestructiveShellMutation
-            );
-        }
-        other => panic!("expected approval-required error, got {other:?}"),
-    }
-    assert!(!ctx.workspace_root.join("tmp/test").exists());
-    assert_eq!(mailbox.pending().len(), 1);
 }
 
 #[test]

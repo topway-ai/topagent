@@ -425,7 +425,7 @@ mod tests {
         .unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: verified | note: runtime\n",
+            "# TopAgent Memory Index\n\n- title: architecture | file: notes/architecture.md | status: verified | note: runtime\n",
         )
         .unwrap();
         fs::write(
@@ -450,7 +450,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: arch | file: notes/arch.md | status: verified | note: layout\n",
+            "# TopAgent Memory Index\n\n- title: arch | file: notes/arch.md | status: verified | note: layout\n",
         )
         .unwrap();
         fs::write(
@@ -471,7 +471,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(MEMORY_NOTES_RELATIVE_DIR)).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: deploy | file: notes/deploy.md | status: verified | note: task completed successfully\n",
+            "# TopAgent Memory Index\n\n- title: deploy | file: notes/deploy.md | status: verified | note: task completed successfully\n",
         )
         .unwrap();
 
@@ -503,7 +503,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/architecture.md | status: verified | note: runtime layout\n",
+            "# TopAgent Memory Index\n\n- title: architecture | file: notes/architecture.md | status: verified | note: runtime layout\n",
         )
         .unwrap();
         fs::write(
@@ -575,7 +575,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(MEMORY_NOTES_RELATIVE_DIR)).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: deploy | file: notes/deploy.md | status: verified | note: the agent should always deploy carefully\n",
+            "# TopAgent Memory Index\n\n- title: deploy | file: notes/deploy.md | status: verified | note: the agent should always deploy carefully\n",
         )
         .unwrap();
         let output = render_memory_lint(temp.path()).unwrap();
@@ -589,7 +589,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(MEMORY_NOTES_RELATIVE_DIR)).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: deploy procedure | file: procedures/deploy.md | status: verified | note: step-by-step deployment\n",
+            "# TopAgent Memory Index\n\n- title: deploy procedure | file: procedures/deploy.md | status: verified | note: step-by-step deployment\n",
         )
         .unwrap();
         let output = render_memory_lint(temp.path()).unwrap();
@@ -604,7 +604,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: arch | file: notes/arch.md | status: verified | note: service layout\n",
+            "# TopAgent Memory Index\n\n- title: arch | file: notes/arch.md | status: verified | note: service layout\n",
         )
         .unwrap();
         let output = render_memory_lint(temp.path()).unwrap();
@@ -660,14 +660,14 @@ mod tests {
     }
 
     #[test]
-    fn test_recall_topic_shows_file_path_in_provenance() {
+    fn test_recall_title_shows_file_path_in_provenance() {
         let temp = TempDir::new().unwrap();
         fs::create_dir_all(temp.path().join(".topagent/notes")).unwrap();
         fs::create_dir_all(temp.path().join(".topagent/procedures")).unwrap();
         fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/arch.md | status: verified | note: service layout\n",
+            "# TopAgent Memory Index\n\n- title: architecture | file: notes/arch.md | status: verified | note: service layout\n",
         )
         .unwrap();
         fs::write(
@@ -689,7 +689,7 @@ mod tests {
         fs::create_dir_all(temp.path().join(".topagent/trajectories")).unwrap();
         fs::write(
             temp.path().join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n\n- topic: architecture | file: notes/arch.md | status: verified | note: service layout\n",
+            "# TopAgent Memory Index\n\n- title: architecture | file: notes/arch.md | status: verified | note: service layout\n",
         )
         .unwrap();
         fs::write(

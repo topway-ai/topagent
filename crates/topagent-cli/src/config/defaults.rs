@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::config::model_selection::{SelectedProvider, canonicalize_allowed_username};
+use crate::config::model_selection::{canonicalize_allowed_username, SelectedProvider};
 use crate::managed_files::read_managed_env_metadata;
 use crate::operational_paths::managed_service_env_path;
 
@@ -9,7 +9,6 @@ pub(crate) const TELEGRAM_SERVICE_UNIT_NAME: &str = "topagent-telegram.service";
 pub(crate) const TOPAGENT_SERVICE_MANAGED_KEY: &str = "TOPAGENT_SERVICE_MANAGED";
 pub(crate) const TOPAGENT_WORKSPACE_KEY: &str = "TOPAGENT_WORKSPACE";
 pub(crate) const TOPAGENT_MODEL_KEY: &str = "TOPAGENT_MODEL";
-pub(crate) const TOPAGENT_TOOL_AUTHORING_KEY: &str = "TOPAGENT_TOOL_AUTHORING";
 pub(crate) const TOPAGENT_MAX_STEPS_KEY: &str = "TOPAGENT_MAX_STEPS";
 pub(crate) const TOPAGENT_MAX_RETRIES_KEY: &str = "TOPAGENT_MAX_RETRIES";
 pub(crate) const TOPAGENT_TIMEOUT_SECS_KEY: &str = "TOPAGENT_TIMEOUT_SECS";
@@ -36,7 +35,6 @@ pub(crate) struct CliParams {
     pub max_steps: Option<usize>,
     pub max_retries: Option<usize>,
     pub timeout_secs: Option<u64>,
-    pub generated_tool_authoring: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -49,7 +47,6 @@ pub(crate) struct TelegramModeDefaults {
     pub max_steps: Option<usize>,
     pub max_retries: Option<usize>,
     pub timeout_secs: Option<u64>,
-    pub generated_tool_authoring: Option<bool>,
     pub provider: Option<SelectedProvider>,
     pub allowed_dm_username: Option<String>,
     pub bound_dm_user_id: Option<i64>,
@@ -70,9 +67,6 @@ impl TelegramModeDefaults {
             timeout_secs: parse_optional_u64(
                 values.get(TOPAGENT_TIMEOUT_SECS_KEY).map(String::as_str),
             ),
-            generated_tool_authoring: parse_env_bool(
-                values.get(TOPAGENT_TOOL_AUTHORING_KEY).map(String::as_str),
-            ),
             provider: values
                 .get(TOPAGENT_PROVIDER_KEY)
                 .and_then(|v| SelectedProvider::from_str(v)),
@@ -92,28 +86,6 @@ pub(crate) fn load_persisted_telegram_defaults() -> anyhow::Result<TelegramModeD
     Ok(TelegramModeDefaults::from_metadata(&values))
 }
 
-pub(crate) fn parse_env_bool(value: Option<&str>) -> Option<bool> {
-    match value.map(str::trim).filter(|value| !value.is_empty()) {
-        Some(value)
-            if value.eq_ignore_ascii_case("1")
-                || value.eq_ignore_ascii_case("true")
-                || value.eq_ignore_ascii_case("yes")
-                || value.eq_ignore_ascii_case("on") =>
-        {
-            Some(true)
-        }
-        Some(value)
-            if value.eq_ignore_ascii_case("0")
-                || value.eq_ignore_ascii_case("false")
-                || value.eq_ignore_ascii_case("no")
-                || value.eq_ignore_ascii_case("off") =>
-        {
-            Some(false)
-        }
-        _ => None,
-    }
-}
-
 pub(crate) fn parse_optional_usize(value: Option<&str>) -> Option<usize> {
     value
         .map(str::trim)
@@ -131,18 +103,6 @@ pub(crate) fn parse_optional_u64(value: Option<&str>) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_env_bool_accepts_common_truthy_and_falsey_values() {
-        assert_eq!(parse_env_bool(Some("1")), Some(true));
-        assert_eq!(parse_env_bool(Some("true")), Some(true));
-        assert_eq!(parse_env_bool(Some("on")), Some(true));
-        assert_eq!(parse_env_bool(Some("0")), Some(false));
-        assert_eq!(parse_env_bool(Some("false")), Some(false));
-        assert_eq!(parse_env_bool(Some("off")), Some(false));
-        assert_eq!(parse_env_bool(Some("unknown")), None);
-        assert_eq!(parse_env_bool(None), None);
-    }
 
     #[test]
     fn test_telegram_mode_defaults_canonicalize_allowed_username_on_read() {

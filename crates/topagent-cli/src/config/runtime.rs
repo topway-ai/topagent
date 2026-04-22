@@ -1,14 +1,14 @@
 use anyhow::Result;
 use std::path::PathBuf;
-use topagent_core::{ProviderKind, RuntimeOptions, model::ModelRoute};
+use topagent_core::{model::ModelRoute, ProviderKind, RuntimeOptions};
 
 use crate::config::defaults::{CliParams, TelegramModeDefaults};
 use crate::config::keys::{
     require_telegram_token_with_default, resolve_opencode_api_key, resolve_openrouter_api_key,
 };
 use crate::config::model_selection::{
-    SelectedProvider, build_route_from_resolved, provider_or_default,
-    resolve_runtime_model_selection,
+    build_route_from_resolved, provider_or_default, resolve_runtime_model_selection,
+    SelectedProvider,
 };
 use crate::config::workspace::resolve_workspace_path;
 
@@ -27,7 +27,6 @@ pub(crate) fn build_runtime_options_with_defaults(
     max_steps: Option<usize>,
     max_retries: Option<usize>,
     timeout_secs: Option<u64>,
-    generated_tool_authoring: Option<bool>,
     defaults: &TelegramModeDefaults,
 ) -> RuntimeOptions {
     build_runtime_options(
@@ -35,17 +34,6 @@ pub(crate) fn build_runtime_options_with_defaults(
         max_retries.or(defaults.max_retries),
         timeout_secs.or(defaults.timeout_secs),
     )
-    .with_generated_tool_authoring(resolve_generated_tool_authoring(
-        generated_tool_authoring,
-        defaults.generated_tool_authoring,
-    ))
-}
-
-pub(crate) fn resolve_generated_tool_authoring(
-    requested: Option<bool>,
-    persisted: Option<bool>,
-) -> bool {
-    requested.or(persisted).unwrap_or(false)
 }
 
 #[derive(Debug, Clone)]
@@ -150,7 +138,6 @@ pub(crate) fn resolve_telegram_mode_config(
             params.max_steps,
             params.max_retries,
             params.timeout_secs,
-            params.generated_tool_authoring,
             &defaults,
         ),
         selected_provider,
@@ -197,16 +184,7 @@ pub(crate) fn resolve_one_shot_config(
         }
     };
 
-    // One-shot respects CLI flags for step/retry/timeout but not the persisted
-    // service defaults — a direct `topagent "task"` run uses the built-in
-    // defaults (50 steps, 10 retries, 120 s) unless the operator passes flags.
-    // generated_tool_authoring is the intentional exception: it is shared with
-    // the persisted service config so authoring mode stays consistent.
-    let options = build_runtime_options(params.max_steps, params.max_retries, params.timeout_secs)
-        .with_generated_tool_authoring(resolve_generated_tool_authoring(
-            params.generated_tool_authoring,
-            defaults.generated_tool_authoring,
-        ));
+    let options = build_runtime_options(params.max_steps, params.max_retries, params.timeout_secs);
 
     Ok(OneShotConfig {
         workspace,
@@ -221,27 +199,13 @@ pub(crate) fn resolve_one_shot_config(
 mod tests {
     use super::*;
     use crate::config::defaults::{
-        TOPAGENT_MAX_RETRIES_KEY, TOPAGENT_MAX_STEPS_KEY, TOPAGENT_MODEL_KEY,
-        TOPAGENT_TIMEOUT_SECS_KEY, TOPAGENT_TOOL_AUTHORING_KEY, TOPAGENT_WORKSPACE_KEY,
-        TelegramModeDefaults,
+        TelegramModeDefaults, TOPAGENT_MAX_RETRIES_KEY, TOPAGENT_MAX_STEPS_KEY, TOPAGENT_MODEL_KEY,
+        TOPAGENT_TIMEOUT_SECS_KEY, TOPAGENT_WORKSPACE_KEY,
     };
     use crate::config::model_selection::SelectedProvider;
     use std::collections::HashMap;
     use tempfile::TempDir;
     use topagent_core::model::DEFAULT_OPENROUTER_MODEL_ID;
-
-    #[test]
-    fn test_resolve_generated_tool_authoring_prefers_requested_value() {
-        assert!(!resolve_generated_tool_authoring(Some(false), Some(true)));
-        assert!(resolve_generated_tool_authoring(Some(true), Some(false)));
-    }
-
-    #[test]
-    fn test_resolve_generated_tool_authoring_falls_back_to_persisted_value() {
-        assert!(resolve_generated_tool_authoring(None, Some(true)));
-        assert!(!resolve_generated_tool_authoring(None, Some(false)));
-        assert!(!resolve_generated_tool_authoring(None, None));
-    }
 
     #[test]
     fn test_resolve_telegram_mode_config_uses_persisted_secrets_and_model_by_default() {
@@ -261,7 +225,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
 
         let config = resolve_telegram_mode_config(None, params, defaults).unwrap();
@@ -289,7 +252,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
 
         let config = resolve_telegram_mode_config(None, params, defaults).unwrap();
@@ -320,7 +282,6 @@ mod tests {
             (TOPAGENT_MAX_STEPS_KEY.to_string(), "61".to_string()),
             (TOPAGENT_MAX_RETRIES_KEY.to_string(), "4".to_string()),
             (TOPAGENT_TIMEOUT_SECS_KEY.to_string(), "75".to_string()),
-            (TOPAGENT_TOOL_AUTHORING_KEY.to_string(), "1".to_string()),
         ]);
         let defaults = TelegramModeDefaults::from_metadata(&values);
         let params = CliParams {
@@ -331,7 +292,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
 
         let config = resolve_telegram_mode_config(None, params, defaults).unwrap();
@@ -343,7 +303,6 @@ mod tests {
         assert_eq!(config.options.max_steps, 61);
         assert_eq!(config.options.max_provider_retries, 4);
         assert_eq!(config.options.provider_timeout_secs, 75);
-        assert!(config.options.enable_generated_tool_authoring);
     }
 
     #[test]
@@ -364,7 +323,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let err = resolve_telegram_mode_config(None, params, defaults)
             .unwrap_err()
@@ -392,7 +350,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let err = resolve_telegram_mode_config(None, params, defaults)
             .unwrap_err()
@@ -419,7 +376,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let config = resolve_telegram_mode_config(None, params, defaults).unwrap();
         assert_eq!(config.route.model_id, "override/model");
@@ -444,7 +400,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let config = resolve_telegram_mode_config(None, params, defaults).unwrap();
         assert_eq!(config.configured_default_model, DEFAULT_OPENROUTER_MODEL_ID);
@@ -467,7 +422,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let config = resolve_one_shot_config(params, defaults).unwrap();
         assert_eq!(config.workspace, workspace.path().canonicalize().unwrap());
@@ -493,7 +447,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let config = resolve_one_shot_config(params, defaults).unwrap();
         assert_eq!(config.api_key, "cli-key");
@@ -517,7 +470,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let config = resolve_one_shot_config(params, defaults).unwrap();
         assert_eq!(config.api_key, "cli-key");
@@ -538,7 +490,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let err = resolve_one_shot_config(params, defaults)
             .unwrap_err()
@@ -563,7 +514,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let err = resolve_one_shot_config(params, defaults)
             .unwrap_err()
@@ -588,7 +538,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let config = resolve_one_shot_config(params, defaults).unwrap();
         assert_eq!(config.route.model_id, "override/model");
@@ -613,7 +562,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let config = resolve_one_shot_config(params, defaults).unwrap();
         assert_eq!(config.options.max_steps, 50);
@@ -639,7 +587,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let config = resolve_one_shot_config(params, defaults).unwrap();
         assert_eq!(config.route.provider, ProviderKind::Opencode);
@@ -666,7 +613,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
         let err = resolve_telegram_mode_config(None, params, defaults)
             .unwrap_err()
@@ -692,7 +638,6 @@ mod tests {
             (TOPAGENT_MAX_STEPS_KEY.to_string(), "65".to_string()),
             (TOPAGENT_MAX_RETRIES_KEY.to_string(), "5".to_string()),
             (TOPAGENT_TIMEOUT_SECS_KEY.to_string(), "90".to_string()),
-            (TOPAGENT_TOOL_AUTHORING_KEY.to_string(), "1".to_string()),
         ]);
         let defaults = TelegramModeDefaults::from_metadata(&values);
         let params = CliParams {
@@ -703,7 +648,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
 
         let config = resolve_telegram_mode_config(None, params.clone(), defaults.clone()).unwrap();
@@ -714,7 +658,6 @@ mod tests {
         assert_eq!(config.options.max_steps, 65);
         assert_eq!(config.options.max_provider_retries, 5);
         assert_eq!(config.options.provider_timeout_secs, 90);
-        assert!(config.options.enable_generated_tool_authoring);
 
         use crate::config::model_selection::resolve_runtime_model_selection;
         let selection = resolve_runtime_model_selection(
@@ -756,7 +699,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
 
         let config = resolve_telegram_mode_config(None, params, defaults.clone()).unwrap();
@@ -789,7 +731,6 @@ mod tests {
             (TOPAGENT_MAX_STEPS_KEY.to_string(), "80".to_string()),
             (TOPAGENT_MAX_RETRIES_KEY.to_string(), "6".to_string()),
             (TOPAGENT_TIMEOUT_SECS_KEY.to_string(), "100".to_string()),
-            (TOPAGENT_TOOL_AUTHORING_KEY.to_string(), "1".to_string()),
         ]);
 
         let defaults = TelegramModeDefaults::from_metadata(&original_values);
@@ -799,7 +740,6 @@ mod tests {
         assert_eq!(defaults.max_steps, Some(80));
         assert_eq!(defaults.max_retries, Some(6));
         assert_eq!(defaults.timeout_secs, Some(100));
-        assert_eq!(defaults.generated_tool_authoring, Some(true));
 
         let params = CliParams {
             api_key: None,
@@ -809,7 +749,6 @@ mod tests {
             max_steps: None,
             max_retries: None,
             timeout_secs: None,
-            generated_tool_authoring: None,
         };
 
         let config = resolve_telegram_mode_config(None, params, defaults).unwrap();
@@ -819,15 +758,5 @@ mod tests {
         assert_eq!(config.options.max_steps, 80);
         assert_eq!(config.options.max_provider_retries, 6);
         assert_eq!(config.options.provider_timeout_secs, 100);
-        assert!(config.options.enable_generated_tool_authoring);
-    }
-
-    #[test]
-    fn test_one_shot_generated_tool_authoring_respects_persisted_default() {
-        assert!(None.or(Some(true)).unwrap_or(false));
-        assert!(!None::<bool>.or(Some(false)).unwrap_or(false));
-        assert!(Some(true).or(Some(false)).unwrap_or(false));
-        assert!(!Some(false).or(Some(true)).unwrap_or(false));
-        assert!(!None::<bool>.or(None).unwrap_or(false));
     }
 }

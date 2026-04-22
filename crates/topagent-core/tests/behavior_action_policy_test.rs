@@ -81,8 +81,6 @@ fn test_tool_and_mutation_membership_remains_correct() {
     assert!(contract.is_planning_tool("update_plan"));
     assert!(contract.is_memory_write_tool("manage_operator_preference"));
     assert!(contract.is_mutation_tool("write"));
-    assert!(contract.is_generated_tool_authoring_tool("create_tool"));
-    assert!(contract.mutates_generated_tool_surface("delete_generated_tool"));
     assert!(contract.is_verification_command("cargo check --offline"));
     assert!(!contract.is_verification_command("git status"));
 }

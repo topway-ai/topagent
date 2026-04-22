@@ -65,7 +65,6 @@ pub struct TaskEvidence {
     pub verification_commands_run: Vec<VerificationCommand>,
     pub tool_trace: Vec<ToolTraceStep>,
     pub unresolved_issues: Vec<String>,
-    pub workspace_warnings: Vec<String>,
     #[serde(default)]
     pub source_labels: Vec<SourceLabel>,
     #[serde(default)]
@@ -139,11 +138,6 @@ impl TaskResult {
 
     pub fn with_diff_summary(mut self, summary: String) -> Self {
         self.evidence.diff_summary = summary;
-        self
-    }
-
-    pub fn with_workspace_warnings(mut self, warnings: Vec<String>) -> Self {
-        self.evidence.workspace_warnings.extend(warnings);
         self
     }
 
@@ -241,7 +235,6 @@ impl TaskResult {
         if self.evidence.files_changed.is_empty()
             && self.evidence.verification_commands_run.is_empty()
             && self.evidence.unresolved_issues.is_empty()
-            && self.evidence.workspace_warnings.is_empty()
             && !self.has_low_trust_action_influence()
         {
             return self.outcome_summary.clone();
@@ -298,14 +291,6 @@ impl TaskResult {
             output.push_str("### Unresolved\n\n");
             for issue in &self.evidence.unresolved_issues {
                 output.push_str(&format!("- {}\n", issue));
-            }
-            output.push('\n');
-        }
-
-        if !self.evidence.workspace_warnings.is_empty() {
-            output.push_str("### Workspace Warnings\n\n");
-            for warning in &self.evidence.workspace_warnings {
-                output.push_str(&format!("- {}\n", warning));
             }
             output.push('\n');
         }
@@ -580,15 +565,6 @@ mod tests {
     }
 
     #[test]
-    fn test_task_result_with_workspace_warnings() {
-        let result = TaskResult::new("Task completed".to_string())
-            .with_workspace_warnings(vec!["broken_tool: missing script.sh".to_string()]);
-        let proof = result.format_proof_of_work();
-        assert!(proof.contains("Workspace Warnings"));
-        assert!(proof.contains("broken_tool: missing script.sh"));
-    }
-
-    #[test]
     fn test_task_result_tool_trace_does_not_change_proof_format() {
         let baseline = TaskResult::new("Task completed".to_string()).format_proof_of_work();
         let result = TaskResult::new("Task completed".to_string()).with_tool_trace(vec![
@@ -771,8 +747,7 @@ mod tests {
     fn test_format_delivery_summary_emits_structured_shape_for_analysis_with_verification() {
         // No files changed, but verification was attempted (e.g., a "run cargo
         // test" task). The summary must still be the structured shape so the
-        // operator and downstream parsers see one consistent format, not a
-        // bare string for this branch.
+        // operator and downstream parsers see one consistent format.
         let cmd = VerificationCommand {
             command: "cargo test".to_string(),
             output: "ok".to_string(),
@@ -794,10 +769,6 @@ mod tests {
         assert!(summary.contains("`cargo test`"));
         assert!(summary.contains("PASS"));
         assert!(summary.contains("Analysis complete, no code changes"));
-        assert!(
-            !summary.contains("Analysis/verification run - no files changed"),
-            "must not emit the legacy unstructured bare string"
-        );
     }
 
     #[test]

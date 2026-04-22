@@ -1,13 +1,7 @@
 use crate::commands::surface::{PRODUCT_NAME, TELEGRAM_COMMANDS};
 use crate::telegram::session::ChatSessionManager;
 
-pub(super) fn handle_help(
-    workspace_label: &str,
-    model_label: &str,
-    tool_authoring_enabled: bool,
-    dm_access: &str,
-) -> String {
-    let tool_authoring = if tool_authoring_enabled { "on" } else { "off" };
+pub(super) fn handle_help(workspace_label: &str, model_label: &str, dm_access: &str) -> String {
     let mut commands_section = String::from("Commands:\n");
     for spec in TELEGRAM_COMMANDS {
         commands_section.push_str(&format!("{} - {}\n", spec.usage(), spec.description));
@@ -16,13 +10,12 @@ pub(super) fn handle_help(
         "{PRODUCT_NAME}\n\n\
          Workspace: {}\n\
          Model: {}\n\
-         Tool authoring: {}\n\
          DM access: {}\n\
          Mode: private text chats only\n\n\
          {}\
          \nApproval requests include Approve/Deny buttons; slash commands remain available.\n\n\
          Send a plain text message to start a task.",
-        workspace_label, model_label, tool_authoring, dm_access, commands_section
+        workspace_label, model_label, dm_access, commands_section
     )
 }
 
@@ -70,10 +63,9 @@ mod tests {
 
     #[test]
     fn test_handle_help_includes_key_sections() {
-        let reply = handle_help("/workspace/path", "gpt-4o", true, "unbound");
+        let reply = handle_help("/workspace/path", "gpt-4o", "unbound");
         assert!(reply.contains("Workspace: /workspace/path"));
         assert!(reply.contains("Model: gpt-4o"));
-        assert!(reply.contains("Tool authoring: on"));
         assert!(reply.contains("DM access: unbound"));
         for spec in TELEGRAM_COMMANDS {
             assert!(
@@ -82,12 +74,6 @@ mod tests {
                 spec.command
             );
         }
-    }
-
-    #[test]
-    fn test_handle_help_tool_authoring_off() {
-        let reply = handle_help("/ws", "model", false, "bound");
-        assert!(reply.contains("Tool authoring: off"));
     }
 
     #[test]

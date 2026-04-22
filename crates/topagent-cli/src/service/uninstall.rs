@@ -1,7 +1,7 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-use super::detect::{InstallRoot, InstallRootKind, detect_install_root_from_exe};
+use super::detect::{detect_install_root_from_exe, InstallRoot, InstallRootKind};
 use super::systemd::{ensure_systemd_user_available, format_systemctl_result};
 use crate::commands::surface::PRODUCT_NAME;
 use crate::config::defaults::{TELEGRAM_SERVICE_UNIT_NAME, TOPAGENT_WORKSPACE_KEY};
@@ -17,7 +17,7 @@ pub(super) enum BinaryCleanupOutcome {
     Preserved(String),
 }
 
-pub(super) fn uninstall_service_setup(remove_binary: bool, purge: bool) -> Result<()> {
+pub(super) fn uninstall_installation(remove_binary: bool, purge: bool) -> Result<()> {
     let paths = service_paths()?;
     let env_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
     let managed_unit = paths.unit_path.exists() && is_topagent_managed_file(&paths.unit_path)?;

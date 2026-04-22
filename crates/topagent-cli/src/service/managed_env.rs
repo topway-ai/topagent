@@ -6,11 +6,10 @@ use crate::config::defaults::{
     OPENCODE_API_KEY_KEY, OPENROUTER_API_KEY_KEY, TELEGRAM_ALLOWED_DM_USERNAME_KEY,
     TELEGRAM_BOT_TOKEN_KEY, TELEGRAM_BOUND_DM_USER_ID_KEY, TOPAGENT_MAX_RETRIES_KEY,
     TOPAGENT_MAX_STEPS_KEY, TOPAGENT_MODEL_KEY, TOPAGENT_PROVIDER_KEY,
-    TOPAGENT_SERVICE_MANAGED_KEY, TOPAGENT_TIMEOUT_SECS_KEY, TOPAGENT_TOOL_AUTHORING_KEY,
-    TOPAGENT_WORKSPACE_KEY,
+    TOPAGENT_SERVICE_MANAGED_KEY, TOPAGENT_TIMEOUT_SECS_KEY, TOPAGENT_WORKSPACE_KEY,
 };
 use crate::config::runtime::TelegramModeConfig;
-use crate::managed_files::{TOPAGENT_MANAGED_HEADER, write_managed_file};
+use crate::managed_files::{write_managed_file, TOPAGENT_MANAGED_HEADER};
 
 pub(super) fn render_service_env_file(config: &TelegramModeConfig) -> Result<String> {
     let workspace = config.workspace.display().to_string();
@@ -69,7 +68,6 @@ pub(super) fn render_service_env_file(config: &TelegramModeConfig) -> Result<Str
 {max_steps_key}={max_steps}
 {max_retries_key}={max_retries}
 {timeout_secs_key}={timeout_secs}
-{tool_authoring_key}={tool_authoring}
 {allowed_username_line}{bound_user_id_line}",
         header = TOPAGENT_MANAGED_HEADER,
         managed_key = TOPAGENT_SERVICE_MANAGED_KEY,
@@ -88,12 +86,6 @@ pub(super) fn render_service_env_file(config: &TelegramModeConfig) -> Result<Str
         max_retries = quote_env_value(&config.options.max_provider_retries.to_string()),
         timeout_secs_key = TOPAGENT_TIMEOUT_SECS_KEY,
         timeout_secs = quote_env_value(&config.options.provider_timeout_secs.to_string()),
-        tool_authoring_key = TOPAGENT_TOOL_AUTHORING_KEY,
-        tool_authoring = quote_env_value(if config.options.enable_generated_tool_authoring {
-            "1"
-        } else {
-            "0"
-        }),
         allowed_username_line = allowed_username_line,
         bound_user_id_line = bound_user_id_line,
         api_key_key = OPENROUTER_API_KEY_KEY,
@@ -175,7 +167,7 @@ mod tests {
         use crate::config::model_selection::SelectedProvider;
         use crate::config::runtime::TelegramModeConfig;
         use std::path::PathBuf;
-        use topagent_core::{ProviderKind, RuntimeOptions, model::ModelRoute};
+        use topagent_core::{model::ModelRoute, ProviderKind, RuntimeOptions};
 
         let workspace = PathBuf::from("/tmp/topagent-roundtrip-workspace");
         let config = TelegramModeConfig {
@@ -188,8 +180,7 @@ mod tests {
             options: RuntimeOptions::new()
                 .with_max_steps(55)
                 .with_max_provider_retries(4)
-                .with_provider_timeout_secs(95)
-                .with_generated_tool_authoring(true),
+                .with_provider_timeout_secs(95),
             selected_provider: SelectedProvider::OpenRouter,
             allowed_dm_username: Some("operator".to_string()),
             bound_dm_user_id: Some(8675309),
@@ -223,7 +214,6 @@ mod tests {
         assert_eq!(defaults.max_steps, Some(55));
         assert_eq!(defaults.max_retries, Some(4));
         assert_eq!(defaults.timeout_secs, Some(95));
-        assert_eq!(defaults.generated_tool_authoring, Some(true));
         assert_eq!(defaults.provider, Some(SelectedProvider::OpenRouter));
         assert_eq!(defaults.allowed_dm_username.as_deref(), Some("operator"));
         assert_eq!(defaults.bound_dm_user_id, Some(8675309));
@@ -234,7 +224,7 @@ mod tests {
         use crate::config::model_selection::SelectedProvider;
         use crate::config::runtime::TelegramModeConfig;
         use std::path::PathBuf;
-        use topagent_core::{ProviderKind, RuntimeOptions, model::ModelRoute};
+        use topagent_core::{model::ModelRoute, ProviderKind, RuntimeOptions};
 
         let config = TelegramModeConfig {
             token: "1:t".to_string(),

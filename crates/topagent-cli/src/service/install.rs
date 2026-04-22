@@ -4,30 +4,28 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 
+use crate::commands::surface::PRODUCT_NAME;
 use crate::config::defaults::{
-    CliParams, OPENCODE_API_KEY_KEY, OPENROUTER_API_KEY_KEY, TELEGRAM_BOT_TOKEN_KEY,
-    TOPAGENT_WORKSPACE_KEY, TelegramModeDefaults,
+    CliParams, TelegramModeDefaults, OPENCODE_API_KEY_KEY, OPENROUTER_API_KEY_KEY,
+    TELEGRAM_BOT_TOKEN_KEY, TOPAGENT_WORKSPACE_KEY,
 };
 use crate::config::keys::{
     require_opencode_api_key, require_openrouter_api_key, require_telegram_token,
 };
 use crate::config::model_selection::{
-    SelectedProvider, build_route_from_resolved, canonicalize_allowed_username,
-    current_configured_model, resolve_model_choice,
+    build_route_from_resolved, canonicalize_allowed_username, current_configured_model,
+    resolve_model_choice, SelectedProvider,
 };
-use crate::config::runtime::{
-    TelegramModeConfig, build_runtime_options_with_defaults, resolve_telegram_mode_config,
-};
-use crate::commands::surface::PRODUCT_NAME;
+use crate::config::runtime::{build_runtime_options_with_defaults, TelegramModeConfig};
 use crate::managed_files::{assert_managed_or_absent, read_managed_env_metadata};
 use crate::openrouter_models::{
-    OpenRouterCatalogSource, discover_install_openrouter_models, humanize_age,
-    openrouter_model_cache_path,
+    discover_install_openrouter_models, humanize_age, openrouter_model_cache_path,
+    OpenRouterCatalogSource,
 };
 use crate::operational_paths::service_paths;
 
 use super::detect::detect_install_root;
-use super::lifecycle::{ServiceConfigApplyAction, install_service_with_config};
+use super::lifecycle::{install_service_with_config, ServiceConfigApplyAction};
 use super::managed_env::trim_nonempty;
 use super::systemd::ensure_systemd_user_available;
 
@@ -51,7 +49,7 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
     let defaults = TelegramModeDefaults::from_metadata(&existing_values);
     let workspace = resolve_install_workspace_path(params.workspace, &existing_values)?;
 
-    println!("{PRODUCT_NAME} setup");
+    println!("{PRODUCT_NAME} install");
     println!("This will configure and start your Telegram background service.");
     println!();
 
@@ -152,7 +150,6 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
             params.max_steps,
             params.max_retries,
             params.timeout_secs,
-            params.generated_tool_authoring,
             &defaults,
         ),
         selected_provider,
@@ -168,23 +165,6 @@ pub(crate) fn run_install(params: CliParams) -> Result<()> {
         service_action,
     );
 
-    Ok(())
-}
-
-pub(super) fn run_service_install(token: Option<String>, params: CliParams) -> Result<()> {
-    let paths = service_paths()?;
-    let existing_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
-    let config = resolve_telegram_mode_config(
-        token,
-        params,
-        TelegramModeDefaults::from_metadata(&existing_values),
-    )?;
-    let service_action = install_service_with_config(&config, &paths)?;
-    print_service_installed(
-        &format!("{PRODUCT_NAME} service installed."),
-        Some(&config.workspace),
-        service_action,
-    );
     Ok(())
 }
 

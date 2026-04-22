@@ -1,6 +1,5 @@
-use super::{BehaviorContract, GeneratedToolPolicy, MemoryPolicy, OutputPolicy};
+use super::{BehaviorContract, MemoryPolicy, OutputPolicy};
 use crate::provenance::{DurablePromotionKind, RunTrustContext};
-use crate::runtime::RuntimeOptions;
 use crate::task_result::VerificationCommand;
 
 pub(super) fn default_memory_policy() -> MemoryPolicy {
@@ -19,7 +18,7 @@ pub(super) fn default_memory_policy() -> MemoryPolicy {
         index_is_pointer_only: true,
         note_file_relative_dir: "notes",
         archival_relative_dirs: &["procedures"],
-        index_entry_format: "- topic: <name> | file: notes/<name>.md | status: verified|tentative|stale | tags: tag1, tag2 | note: short pointer",
+        index_entry_format: "- title: <name> | file: notes/<name>.md | status: verified|tentative|stale | tags: tag1, tag2 | note: short pointer",
         max_index_entries: 24,
         max_index_note_chars: 120,
         max_index_prompt_bytes: 1_400,
@@ -44,18 +43,6 @@ pub(super) fn default_output_policy() -> OutputPolicy {
         proof_of_work_for_verification: true,
         show_verification_evidence_when_requested: true,
         include_unresolved_issues: true,
-        include_workspace_warnings: true,
-    }
-}
-
-pub(super) fn default_generated_tool_policy(options: &RuntimeOptions) -> GeneratedToolPolicy {
-    GeneratedToolPolicy {
-        authoring_enabled: options.enable_generated_tool_authoring,
-        verified_tools_only: true,
-        disposable: true,
-        expose_unavailable_warnings: true,
-        max_runtime_warning_lines: 4,
-        reload_after_surface_mutation: true,
     }
 }
 
@@ -147,7 +134,7 @@ impl MemoryPolicy {
         }
         if self.index_is_pointer_only {
             template.push_str(
-                "Use this file as an index only. Put richer durable notes in topic files.\n\n",
+                "Use this file as an index only. Put richer durable notes in .topagent/notes/.\n\n",
             );
         }
         template.push_str("Format:\n");
@@ -165,12 +152,10 @@ impl OutputPolicy {
         changed_files: usize,
         verification_commands: usize,
         unresolved_issues: usize,
-        workspace_warnings: usize,
     ) -> bool {
         changed_files > 0 && self.proof_of_work_for_mutations
             || verification_commands > 0 && self.proof_of_work_for_verification
             || unresolved_issues > 0 && self.include_unresolved_issues
-            || workspace_warnings > 0 && self.include_workspace_warnings
     }
 
     pub(crate) fn should_attach_code_delivery_summary(
@@ -249,13 +234,11 @@ impl BehaviorContract {
         changed_files: usize,
         verification_commands: usize,
         unresolved_issues: usize,
-        workspace_warnings: usize,
     ) -> bool {
         self.output.should_attach_proof_of_work(
             changed_files,
             verification_commands,
             unresolved_issues,
-            workspace_warnings,
         )
     }
 

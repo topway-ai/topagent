@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use std::process::{Command, Output};
 
 use crate::config::defaults::TELEGRAM_SERVICE_UNIT_NAME;

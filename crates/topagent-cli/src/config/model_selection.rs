@@ -1,4 +1,4 @@
-use topagent_core::{ProviderKind, model::ModelRoute};
+use topagent_core::{model::ModelRoute, ProviderKind};
 
 /// Canonical form of an allowed Telegram DM username.
 ///
@@ -84,11 +84,8 @@ pub(crate) struct RuntimeModelSelection {
     pub effective: ResolvedModel,
 }
 
-/// Resolve the effective provider from an optional explicit config.
-/// Falls back to `ProviderKind::OpenRouter` when no provider is persisted.
-/// All configs written since PR1 include an explicit TOPAGENT_PROVIDER, so
-/// the fallback is only reachable on configs that predate the install migration
-/// and were not covered by the PR2 one-time migration before it was removed.
+/// Resolve the effective provider from an explicit config or the current
+/// built-in default for uninstalled/local CLI use.
 pub(crate) fn provider_or_default(explicit: Option<SelectedProvider>) -> ProviderKind {
     explicit
         .map(|p| p.to_provider_kind())
@@ -313,7 +310,7 @@ mod tests {
 
     #[test]
     fn test_empty_persisted_model_falls_back_to_built_in_default() {
-        use crate::config::defaults::{TOPAGENT_MODEL_KEY, TelegramModeDefaults};
+        use crate::config::defaults::{TelegramModeDefaults, TOPAGENT_MODEL_KEY};
         use std::collections::HashMap;
         let values = HashMap::from([(TOPAGENT_MODEL_KEY.to_string(), "   ".to_string())]);
         let defaults = TelegramModeDefaults::from_metadata(&values);

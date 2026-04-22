@@ -6,7 +6,7 @@ Supports two LLM providers through one shared OpenAI-compatible transport seam:
 - **OpenRouter** (default) — default model: `minimax/minimax-m2.7`
 - **Opencode** — default model: `glm-5.1`
 
-Provider is selected explicitly during setup.
+Provider is selected explicitly during install.
 
 ## Install
 
@@ -16,7 +16,7 @@ Download the latest release binary (Linux x86_64):
 curl -fsSL https://raw.githubusercontent.com/topway-ai/topagent/main/scripts/install.sh | bash
 ```
 
-The installer places `topagent` in `~/.cargo/bin/` and optionally launches the interactive setup.
+The installer places `topagent` in `~/.cargo/bin/` and optionally launches the interactive install flow.
 
 To build from source instead:
 
@@ -39,7 +39,7 @@ Press Ctrl-C once to request a graceful stop. Press again to force exit.
 ## Quick start: Telegram bot
 
 ```bash
-topagent setup
+topagent install
 ```
 
 This prompts for:
@@ -54,7 +54,7 @@ Then it:
 - writes a managed config file under `~/.config/topagent/`
 - installs and starts a `topagent-telegram.service` systemd user service
 
-**Telegram access control**: If you enter an allowed username during setup, the bot will only accept direct messages from that user. The first direct message from the allowed username binds and persists the numeric Telegram user ID. After binding, enforcement switches to numeric user ID — so username changes won't break access. Non-private chats (groups, channels, supergroups) are rejected before any binding side effect, so an allowed username cannot accidentally bind to a group's chat ID.
+**Telegram access control**: If you enter an allowed username during install, the bot will only accept direct messages from that user. The first direct message from the allowed username binds and persists the numeric Telegram user ID. After binding, enforcement switches to numeric user ID — so username changes won't break access. Non-private chats (groups, channels, supergroups) are rejected before any binding side effect, so an allowed username cannot accidentally bind to a group's chat ID.
 
 Then open a private chat with your bot and send a message.
 
@@ -109,15 +109,14 @@ topagent procedure show <id> # show one procedure
 topagent procedure prune     # remove superseded and disabled procedures
 topagent procedure disable <id> # disable a procedure without deleting it
 topagent telegram              # run the Telegram bot in the foreground
-topagent service install     # install service without the full interactive flow
 topagent service start       # start the background service
 topagent service stop        # stop the background service
 topagent service restart     # restart the background service
 topagent service uninstall   # stop service, remove unit+env files, keep binary
 topagent run diff            # preview what restore would change
-topagent run restore         # restore the latest checkpoint and clear Telegram transcripts
+topagent run restore         # restore the latest run snapshot and clear Telegram transcripts
 topagent config inspect      # What provider/model/keys am I actually using?
-topagent run status          # What happened in my last run? (checkpoint, transcripts, recovery guidance)
+topagent run status          # What happened in my last run? (run snapshot, transcripts, recovery guidance)
 topagent doctor              # Is everything healthy? (deep diagnostics)
 topagent upgrade             # download and install the latest GitHub release binary
 topagent upgrade --use-cargo # build and install from source via cargo instead of a release binary
@@ -125,7 +124,7 @@ topagent uninstall           # stop service, remove unit+env files, optionally r
 topagent uninstall --purge   # also remove .topagent/ workspace data and model cache (neither removes the workspace directory)
 ```
 
-`topagent setup` is the obvious full setup path. `topagent install` remains available as the same command. Re-running setup keeps the same managed config file and restarts the background service with updated values; operator-entered secrets (API keys, bot token, allowed username, bound user ID) are preserved when you accept the existing prompt defaults, and the env file is rewritten in a single atomic emit rather than overwritten twice. After setup, use `topagent model set` or `topagent model pick` to change the configured default model without re-running full setup. `model set` changes only the model, not the provider — to change provider, re-run `topagent setup`. The `--model` flag overrides the configured default for one-shot runs only, without changing the persisted config.
+`topagent install` is the full install and reconfigure path. Re-running it keeps the same managed config file and restarts the background service with updated values; operator-entered secrets (API keys, bot token, allowed username, bound user ID) are preserved when you accept the existing prompt defaults. After install, use `topagent model set` or `topagent model pick` to change the configured default model without re-running full install. `model set` changes only the model, not the provider; to change provider, run `topagent install`. The `--model` flag overrides the configured default for one-shot only, without changing the persisted config.
 
 See [docs/operations.md](docs/operations.md) for full operational details.
 
@@ -140,7 +139,6 @@ See [docs/operations.md](docs/operations.md) for full operational details.
 | `--max-steps` | `50` | Maximum agent loop iterations |
 | `--max-retries` | `10` | Maximum provider retry attempts |
 | `--timeout-secs` | `120` | Provider request timeout |
-| `--tool-authoring` | `off` | Enable or disable generated-tool authoring tools |
 
 ## Project instructions
 
@@ -156,11 +154,8 @@ Workspace memory is separate from `TOPAGENT.md`:
 - `.topagent/procedures/` holds reusable workspace-local playbooks distilled from strong verified runs, revised through proven reuse, and loaded lazily in small batches
 - `.topagent/trajectories/` holds compact structured execution traces from high-quality verified runs; they are reviewable export artifacts, not hot-path prompt memory
 - `.topagent/exports/trajectories/` holds reviewed trajectory export packages
-- `.topagent/exports/legacy-plans/` holds migrated old plans as evidence/export artifacts, not memory
 - `.topagent/telegram-history/` stores searchable per-chat transcript evidence
-- `.topagent/checkpoints/` stores the most recent automatic workspace checkpoints for restore
-
-Old `.topagent/topics/` and `.topagent/lessons/` files are migrated into `.topagent/notes/`; old operator-preference topics are migrated into `USER.md`.
+- `.topagent/run-snapshots/` stores the most recent automatic workspace run snapshots for restore
 
 TopAgent does not promote every successful task. Weak, trivial, failed, or ambiguous runs save nothing. It still does not provide a skills marketplace, subagents, online training, or multi-provider routing.
 
@@ -173,7 +168,7 @@ Saved trajectories now include provenance labels from the run. A trajectory can 
 | `topagent: command not found` | `source "$HOME/.cargo/env"` |
 | `A C compiler is required` | `sudo apt install -y build-essential` |
 | `API key required` | Set `--api-key` (OpenRouter) or `--opencode-api-key` (Opencode), or set `OPENROUTER_API_KEY` / `OPENCODE_API_KEY` |
-| `Workspace path does not exist` | Run from a repo, pass `--workspace`, or run `topagent setup` |
+| `Workspace path does not exist` | Run from a repo, pass `--workspace`, or run `topagent install` |
 | `Telegram bot token looks invalid` | Get a valid token from BotFather |
 | `Telegram webhook is configured` | Remove the webhook, then retry |
 | `systemd user services are unavailable` | Log into a desktop session where `systemctl --user` works |

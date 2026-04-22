@@ -1,10 +1,7 @@
 use super::Agent;
 use crate::approval::ApprovalCheck;
 use crate::behavior::PreExecutionState;
-use crate::command_exec::CommandSandboxPolicy;
 use crate::context::ExecutionContext;
-use crate::external::ExternalToolEffect;
-use crate::hooks::{dispatch_hooks, HookEvent, HookInput};
 use crate::progress::ProgressUpdate;
 use crate::{Error, Result};
 
@@ -20,19 +17,15 @@ impl Agent {
         name: &str,
         args: &serde_json::Value,
         bash_args: Option<&serde_json::Value>,
-        external_effect: Option<ExternalToolEffect>,
-        external_sandbox: Option<CommandSandboxPolicy>,
     ) -> Result<Option<PreflightBlock>> {
-        if let Some(block_msg) = self.check_planning_gate(name, bash_args, external_effect) {
+        if let Some(block_msg) = self.check_planning_gate(name, bash_args) {
             self.emit_progress(Self::blocked_progress(&block_msg));
             return Ok(Some(PreflightBlock {
                 message: block_msg,
                 is_planning_block: true,
             }));
         }
-        if let Some(block_msg) =
-            self.check_pre_execution_verification_gate(name, bash_args, external_effect)
-        {
+        if let Some(block_msg) = self.check_pre_execution_verification_gate(name, bash_args) {
             self.emit_progress(Self::blocked_progress(&block_msg));
             return Ok(Some(PreflightBlock {
                 message: block_msg,
@@ -46,20 +39,7 @@ impl Agent {
                 is_planning_block: false,
             }));
         }
-        if let Some(block) = self.check_approval_gate(
-            ctx,
-            name,
-            args,
-            bash_args,
-            external_effect,
-            external_sandbox,
-        )? {
-            return Ok(Some(block));
-        }
-
-        // Workspace lifecycle hooks (PreTool) — runs after all safety gates
-        // so hooks cannot bypass approval, trust, or planning enforcement.
-        if let Some(block) = self.check_pre_tool_hooks(ctx, name, args) {
+        if let Some(block) = self.check_approval_gate(ctx, name, args, bash_args)? {
             return Ok(Some(block));
         }
 
@@ -78,7 +58,6 @@ impl Agent {
         &self,
         tool_name: &str,
         bash_args: Option<&serde_json::Value>,
-        external_effect: Option<ExternalToolEffect>,
     ) -> Option<String> {
         let bash_command = bash_args
             .and_then(|args| args.get("command"))
@@ -87,7 +66,6 @@ impl Agent {
         self.behavior.pre_execution_block_message(
             tool_name,
             bash_command,
-            external_effect,
             &PreExecutionState {
                 planning_required_for_task: self.planning.is_required_for_task(),
                 plan_exists: self.plan_exists(),
@@ -116,8 +94,6 @@ impl Agent {
         tool_name: &str,
         args: &serde_json::Value,
         bash_args: Option<&serde_json::Value>,
-        external_effect: Option<ExternalToolEffect>,
-        external_sandbox: Option<CommandSandboxPolicy>,
     ) -> Result<Option<PreflightBlock>> {
         let Some(mailbox) = ctx.approval_mailbox() else {
             return Ok(None);
@@ -130,8 +106,6 @@ impl Agent {
             tool_name,
             args,
             bash_command,
-            external_effect,
-            external_sandbox,
             Some(&self.run_state.trust_context(ctx)),
         ) else {
             return Ok(None);
@@ -163,49 +137,10 @@ impl Agent {
         }
     }
 
-    fn check_pre_tool_hooks(
-        &self,
-        ctx: &ExecutionContext,
-        tool_name: &str,
-        args: &serde_json::Value,
-    ) -> Option<PreflightBlock> {
-        let registry = ctx.hook_registry();
-        if registry.is_empty() {
-            return None;
-        }
-
-        let detail = serde_json::to_string(args).unwrap_or_default();
-        let input = HookInput {
-            event: HookEvent::PreTool,
-            subject: tool_name.to_string(),
-            detail,
-        };
-
-        let result = dispatch_hooks(registry, HookEvent::PreTool, &input, &ctx.workspace_root);
-        if result.blocked {
-            let message = result
-                .block_message()
-                .unwrap_or_else(|| "Blocked by workspace hook".to_string());
-            self.emit_progress(ProgressUpdate::blocked(&message));
-            return Some(PreflightBlock {
-                message: format!("error: {message}"),
-                is_planning_block: false,
-            });
-        }
-
-        // Annotations from PreTool hooks are recorded as hook notes in run state
-        if let Some(context) = result.annotation_context() {
-            self.run_state.record_hook_note(context);
-        }
-
-        None
-    }
-
     fn check_planning_gate(
         &self,
         tool_name: &str,
         bash_args: Option<&serde_json::Value>,
-        external_effect: Option<ExternalToolEffect>,
     ) -> Option<String> {
         if !self.planning.is_active() {
             return None;
@@ -214,11 +149,7 @@ impl Agent {
             .and_then(|args| args.get("command"))
             .and_then(|value| value.as_str());
 
-        self.behavior.planning_block_message(
-            tool_name,
-            bash_command,
-            external_effect,
-            self.plan_exists(),
-        )
+        self.behavior
+            .planning_block_message(tool_name, bash_command, self.plan_exists())
     }
 }

@@ -8,29 +8,23 @@ pub const NO_PI_MD_NOTE: &str = NO_PROJECT_INSTRUCTIONS_NOTE;
 
 pub struct BehaviorPromptContext<'a> {
     pub available_tools: &'a [ToolSpec],
-    pub external_tools: &'a [ToolSpec],
     pub project_instructions: Option<&'a str>,
     pub operator_context: Option<&'a str>,
     pub memory_context: Option<&'a str>,
     pub current_plan: Option<&'a Plan>,
     pub run_state: Option<&'a RunStateSnapshot>,
-    pub generated_tool_warnings: &'a [String],
-    pub hook_summary_lines: &'a [String],
     pub planning_required_now: bool,
     pub approval_mailbox_available: bool,
 }
 
-pub fn build_system_prompt(tools: &[ToolSpec], external_tools: &[ToolSpec]) -> String {
+pub fn build_system_prompt(tools: &[ToolSpec]) -> String {
     BehaviorContract::default().render_system_prompt(&BehaviorPromptContext {
         available_tools: tools,
-        external_tools,
         project_instructions: None,
         operator_context: None,
         memory_context: None,
         current_plan: None,
         run_state: None,
-        generated_tool_warnings: &[],
-        hook_summary_lines: &[],
         planning_required_now: false,
         approval_mailbox_available: false,
     })
@@ -51,19 +45,8 @@ All file paths are relative to this workspace root.\n\n",
         self.render_approval_section(&mut prompt, ctx);
         self.render_output_section(&mut prompt);
         self.render_memory_section(&mut prompt);
-        self.render_generated_tool_section(&mut prompt);
         self.render_compaction_section(&mut prompt);
-        self.render_available_tools_section(&mut prompt, ctx.available_tools, ctx.external_tools);
-
-        if !ctx.hook_summary_lines.is_empty() {
-            prompt.push_str("## Workspace Lifecycle Hooks\n\n");
-            prompt.push_str("The following workspace-local hooks are active for this run. They intercept lifecycle boundaries deterministically.\n");
-            prompt.push_str("Hooks cannot bypass approval gates, trust boundaries, or durable-memory promotion policy.\n");
-            for line in ctx.hook_summary_lines {
-                prompt.push_str(&format!("- {line}\n"));
-            }
-            prompt.push('\n');
-        }
+        self.render_available_tools_section(&mut prompt, ctx.available_tools);
 
         match ctx.project_instructions {
             Some(project_instructions) => {
@@ -88,19 +71,6 @@ All file paths are relative to this workspace root.\n\n",
 
         if let Some(run_state) = ctx.run_state {
             self.render_run_state_section(&mut prompt, run_state);
-        }
-
-        if !ctx.generated_tool_warnings.is_empty() {
-            prompt.push_str("\n## Generated Tool Warnings\n\n");
-            prompt.push_str(
-                "Some generated tools in `.topagent/tools/` are currently unavailable. Treat this as current workspace state.\n",
-            );
-            for warning in ctx.generated_tool_warnings {
-                prompt.push_str(&format!("- {warning}\n"));
-            }
-            prompt.push_str(
-                "Do not assume unavailable generated tools can be called unless they appear in the available tools list.\n",
-            );
         }
 
         if let Some(plan) = ctx.current_plan {
@@ -175,13 +145,6 @@ All file paths are relative to this workspace root.\n\n",
         if !run_state.trust_notes.is_empty() {
             prompt.push_str("- Trust notes:\n");
             for note in &run_state.trust_notes {
-                prompt.push_str(&format!("  - {note}\n"));
-            }
-        }
-
-        if !run_state.hook_notes.is_empty() {
-            prompt.push_str("- Workspace hook notes:\n");
-            for note in &run_state.hook_notes {
                 prompt.push_str(&format!("  - {note}\n"));
             }
         }
@@ -269,17 +232,6 @@ All file paths are relative to this workspace root.\n\n",
             "- Durable memory write tools: {}\n",
             self.tools.memory_write_tools.join(", ")
         ));
-        if self.generated_tools.authoring_enabled {
-            prompt.push_str(&format!(
-                "- Generated-tool authoring tools enabled: {}\n",
-                self.tools.generated_tool_authoring_tools.join(", ")
-            ));
-        } else {
-            prompt.push_str("- Generated-tool authoring tools are disabled for this run.\n");
-        }
-        prompt.push_str(
-            "- External tools declare effect as read_only, verification_only, or execution_started.\n",
-        );
         prompt.push_str(
             "- Bash commands are routed as research-safe, verification, or mutation-risk.\n\n",
         );
@@ -304,10 +256,6 @@ All file paths are relative to this workspace root.\n\n",
         prompt.push_str(
             "- Treat file-writing redirections, explicit filesystem-changing shell commands, and unknown shell commands as mutation-risk; read-only pipelines remain research-safe or verification.\n",
         );
-        prompt.push_str(&format!(
-            "- Generated-tool surface mutations: {}\n",
-            self.mutation.generated_tool_surface_tools.join(", ")
-        ));
         prompt.push_str("- Never use tools to reveal or relay credentials.\n\n");
     }
 
@@ -329,7 +277,7 @@ All file paths are relative to this workspace root.\n\n",
     fn render_output_section(&self, prompt: &mut String) {
         prompt.push_str("## Output Contract\n\n");
         prompt.push_str("- After tool use, provide a concise final answer instead of replaying raw tool output.\n");
-        prompt.push_str("- When files change or verification runs, include proof-of-work with files changed, change summary, verification, unresolved issues, and workspace warnings when present.\n");
+        prompt.push_str("- When files change or verification runs, include proof-of-work with files changed, change summary, verification, and unresolved issues when present.\n");
         prompt.push_str(
             "- When asked to verify, show diff, or confirm changes, provide actual evidence.\n",
         );
@@ -344,7 +292,9 @@ All file paths are relative to this workspace root.\n\n",
             prompt.push_str("- Keep durable memory indexes tiny and pointer-oriented.\n");
         }
         if self.memory.index_is_pointer_only {
-            prompt.push_str("- Store richer durable notes in topic files instead of the index.\n");
+            prompt.push_str(
+                "- Store richer durable notes in .topagent/notes/ instead of the index.\n",
+            );
         }
         prompt.push_str(&format!(
             "- Durable memory writes are limited to: {}\n",
@@ -354,23 +304,6 @@ All file paths are relative to this workspace root.\n\n",
             "- Never store: {}\n\n",
             self.memory.never_store.join(", ")
         ));
-    }
-
-    fn render_generated_tool_section(&self, prompt: &mut String) {
-        prompt.push_str("## Generated-Tool Policy\n\n");
-        prompt.push_str(&format!(
-            "- Authoring enabled for this run: {}\n",
-            self.generated_tools.authoring_enabled
-        ));
-        prompt.push_str("- Generated tools are workspace-local and disposable.\n");
-        prompt.push_str("- Only verified generated tools are callable.\n");
-        prompt.push_str(
-            "- Create and repair flows must verify before relying on a generated tool.\n",
-        );
-        prompt.push_str(
-            "- Surface only bounded runtime unavailability warnings by default; deeper health checks belong to explicit maintenance flows.\n",
-        );
-        prompt.push_str("- Revalidate a generated tool on use instead of assuming it stayed healthy after startup.\n\n");
     }
 
     fn render_compaction_section(&self, prompt: &mut String) {
@@ -414,20 +347,7 @@ All file paths are relative to this workspace root.\n\n",
         ));
     }
 
-    fn render_available_tools_section(
-        &self,
-        prompt: &mut String,
-        available_tools: &[ToolSpec],
-        external_tools: &[ToolSpec],
-    ) {
-        if !external_tools.is_empty() {
-            prompt.push_str("## External Tools\n\n");
-            for tool in external_tools {
-                prompt.push_str(&format!("- {}: {}\n", tool.name, tool.description));
-            }
-            prompt.push('\n');
-        }
-
+    fn render_available_tools_section(&self, prompt: &mut String, available_tools: &[ToolSpec]) {
         prompt.push_str("## Available Tools\n\n");
         for tool in available_tools {
             prompt.push_str(&format!("- {}: {}\n", tool.name, tool.description));
@@ -450,7 +370,6 @@ mod tests {
         };
         let prompt = contract.render_system_prompt(&BehaviorPromptContext {
             available_tools: &[ToolSpec::read()],
-            external_tools: &[],
             project_instructions: Some("# Repo rules"),
             operator_context: Some(
                 "[response_style] concise final answers :: Keep final responses concise.",
@@ -461,17 +380,14 @@ mod tests {
                 objective: Some("Fix the parser and keep tests passing".to_string()),
                 blockers: vec!["Approval denied for git commit".to_string()],
                 pending_approvals: vec!["apr-3 [pending] git commit: release".to_string()],
-                recent_approval_decisions: vec!["apr-2 [denied] delete generated tool".to_string()],
+                recent_approval_decisions: vec!["apr-2 [denied] bash mutation".to_string()],
                 active_files: vec!["src/lib.rs".to_string()],
                 proof_of_work_anchors: vec!["verification: cargo test --lib (exit 0)".to_string()],
                 trust_notes: vec![
                     "Low-trust content is active in this run: prior transcript.".to_string()
                 ],
-                hook_notes: vec!["[fmt] run cargo fmt after editing Rust files".to_string()],
                 memory_context_loaded: true,
             }),
-            generated_tool_warnings: &["broken_tool: missing script.sh".to_string()],
-            hook_summary_lines: &["pre_tool: bash guard [filter: bash]".to_string()],
             planning_required_now: true,
             approval_mailbox_available: true,
         });
@@ -481,17 +397,11 @@ mod tests {
         assert!(prompt.contains("## Active Run State"));
         assert!(prompt.contains("## Output Contract"));
         assert!(prompt.contains("## Memory Write Rules"));
-        assert!(prompt.contains("## Generated-Tool Policy"));
         assert!(prompt.contains("## Compaction Preservation"));
         assert!(prompt.contains("Fix the parser and keep tests passing"));
         assert!(prompt.contains("apr-3 [pending] git commit: release"));
         assert!(prompt.contains("Current plan"));
-        assert!(prompt.contains("broken_tool: missing script.sh"));
         assert!(prompt.contains("git ls-files"));
         assert!(prompt.contains("Trust notes"));
-        assert!(prompt.contains("Workspace hook notes"));
-        assert!(prompt.contains("cargo fmt"));
-        assert!(prompt.contains("Workspace Lifecycle Hooks"));
-        assert!(prompt.contains("bash guard"));
     }
 }
