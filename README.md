@@ -50,7 +50,7 @@ This prompts for:
 5. **Allowed Telegram username** — Optional; the username (without `@`) of the user allowed to send direct messages to the bot
 
 Then it:
-- creates a workspace directory for the agent to operate in
+- creates a workspace directory and current `.topagent/` state layout for the agent to operate in
 - writes a managed config file under `~/.config/topagent/`
 - installs and starts a `topagent-telegram.service` systemd user service
 

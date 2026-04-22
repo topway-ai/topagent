@@ -90,10 +90,10 @@ mod tests {
         assert!(reply.contains("Model: gpt-4o"));
         assert!(reply.contains("DM access: unbound"));
         for spec in TELEGRAM_COMMANDS {
+            let expected = format!("{} - {}", spec.usage(), spec.description);
             assert!(
-                reply.contains(spec.command),
-                "help text missing command {}",
-                spec.command
+                reply.contains(&expected),
+                "help text missing command declaration `{expected}`"
             );
         }
     }
@@ -134,5 +134,44 @@ mod tests {
                 spec.command
             );
         }
+    }
+
+    #[test]
+    fn test_handle_reset_refuses_while_task_is_running() {
+        use std::path::PathBuf;
+        use topagent_core::{
+            ApprovalMailbox, ApprovalMailboxMode, CancellationToken, ModelRoute, RuntimeOptions,
+        };
+
+        let workspace = tempfile::TempDir::new().unwrap();
+        let mut session_manager = ChatSessionManager::new(
+            ModelRoute::openrouter("test-model"),
+            "test-model".to_string(),
+            "test-key".to_string(),
+            RuntimeOptions::default(),
+            PathBuf::from(workspace.path()),
+            topagent_core::SecretRegistry::new(),
+            None,
+            None,
+            None,
+        );
+        session_manager.sessions.insert(
+            42,
+            crate::telegram::session::RunningChatTask {
+                cancel_token: CancellationToken::new(),
+                progress_callback: None,
+                approval_mailbox: ApprovalMailbox::new(ApprovalMailboxMode::Immediate),
+                instruction: "test instruction".to_string(),
+                started_at: std::time::SystemTime::now(),
+            },
+        );
+
+        let reply = handle_reset(&mut session_manager, 42);
+
+        assert!(reply.contains("task is still running"));
+        assert!(
+            session_manager.sessions.contains_key(&42),
+            "reset command must not clear a running task"
+        );
     }
 }

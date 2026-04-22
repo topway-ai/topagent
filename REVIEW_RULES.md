@@ -23,7 +23,7 @@ The question is “is this complexity earned now, with clear ownership and payof
 
 - **Meaningful code change**: any non-trivial change that can affect runtime behavior, persistence, configuration, policy, prompt assembly, retrieval, tool surface, transport behavior, operator-visible behavior, or tests relied on for correctness.
 - **Hot path**: ordinary one-shot execution, ordinary Telegram handling, prompt assembly, bounded retrieval, preflight gating, and tool execution for a normal task.
-- **Durable artifact**: any stored record expected to survive across sessions and influence future work, including `USER.md`, `MEMORY.md`, notes, procedures, trajectories, checkpoints, and transcript stores.
+- **Durable artifact**: any stored record expected to survive across sessions and influence future work, including `USER.md`, `MEMORY.md`, notes, procedures, trajectories, run snapshots, and transcript stores.
 - **Session state**: live run state, blockers, approvals, transient user wishes, active file state, and in-progress objective state.
 - **Spike**: exploratory work that is intentionally non-final and explicitly contained.
 
@@ -73,7 +73,7 @@ Reject speculative complexity unless the work is an explicitly labeled spike.
 
 TopAgent may learn more over time, but repeated tasks must not get slower just because durable artifacts accumulated.
 
-- Hot-path cost must stay bounded as `USER.md`, `MEMORY.md`, notes, procedures, trajectories, checkpoints, and transcripts grow.
+- Hot-path cost must stay bounded as `USER.md`, `MEMORY.md`, notes, procedures, trajectories, run snapshots, and transcripts grow.
 - Durable artifact growth must not imply prompt growth.
 - Retrieval must stay capped and relevance-filtered.
 - Repeated tasks should get faster or more predictable from procedures and memory, not slower from extra ceremony or extra always-on reasoning.
@@ -159,7 +159,7 @@ Do not widen approval friction into a universal tax, and do not create side door
 
 Do not add tool surface area lightly.
 
-Every new tool or generated-tool behavior must have clear ownership, clear invocation semantics, and bounded runtime cost.
+Every new tool behavior must have clear ownership, clear invocation semantics, and bounded runtime cost.
 
 Optional tool-authoring or maintenance complexity must not bloat ordinary runs.
 
@@ -179,7 +179,7 @@ Persist only what must survive restarts for correctness, operator trust, or inte
 
 Each important fact should have one obvious durable owner.
 
-Do not create multiple truth sources for the same thing, especially around model config, workspace memory, procedures, trajectories, generated-tool state, or operator-visible status.
+Do not create multiple truth sources for the same thing, especially around model config, workspace memory, procedures, trajectories, tool state, or operator-visible status.
 
 ### 12. Bounded retrieval
 

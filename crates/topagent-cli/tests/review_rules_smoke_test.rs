@@ -24,6 +24,8 @@ const FORBIDDEN_PHRASES: &[&str] = &[
     "TODO",
     "TBD",
     "placeholder",
+    "checkpoints",
+    "generated-tool",
 ];
 
 const REQUIRED_SECTIONS: &[&str] = &[

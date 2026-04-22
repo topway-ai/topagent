@@ -23,6 +23,7 @@ use crate::openrouter_models::{
     OpenRouterCatalogSource,
 };
 use crate::operational_paths::service_paths;
+use crate::workspace_state::ensure_workspace_state;
 
 use super::detect::detect_install_root;
 use super::lifecycle::{install_service_with_config, ServiceConfigApplyAction};
@@ -194,7 +195,7 @@ fn resolve_install_workspace_path(
     } else {
         detect_install_root()?.join("workspace")
     };
-    ensure_directory(target)
+    prepare_install_workspace(target)
 }
 
 fn ensure_directory(path: PathBuf) -> Result<PathBuf> {
@@ -202,6 +203,12 @@ fn ensure_directory(path: PathBuf) -> Result<PathBuf> {
         .with_context(|| format!("failed to create {}", path.display()))?;
     path.canonicalize()
         .with_context(|| format!("failed to access {}", path.display()))
+}
+
+fn prepare_install_workspace(path: PathBuf) -> Result<PathBuf> {
+    let workspace = ensure_directory(path)?;
+    ensure_workspace_state(&workspace)?;
+    Ok(workspace)
 }
 
 fn prompt_for_install_value(
@@ -638,5 +645,33 @@ mod tests {
 
         assert_eq!(selected, "persisted/model");
         assert!(rendered.contains("Using cached models from 1m ago"));
+    }
+
+    #[test]
+    fn test_prepare_install_workspace_creates_current_workspace_state_layout() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let workspace = temp.path().join("workspace");
+
+        let resolved = prepare_install_workspace(workspace.clone()).unwrap();
+
+        assert_eq!(resolved, workspace.canonicalize().unwrap());
+        assert!(workspace
+            .join(crate::workspace_state::WORKSPACE_STATE_RELATIVE_PATH)
+            .is_file());
+        assert!(workspace
+            .join(crate::workspace_state::MEMORY_INDEX_RELATIVE_PATH)
+            .is_file());
+        assert!(workspace
+            .join(crate::workspace_state::MEMORY_NOTES_RELATIVE_DIR)
+            .is_dir());
+        assert!(workspace
+            .join(crate::workspace_state::MEMORY_PROCEDURES_RELATIVE_DIR)
+            .is_dir());
+        assert!(workspace
+            .join(crate::workspace_state::MEMORY_TRAJECTORIES_RELATIVE_DIR)
+            .is_dir());
+        assert!(workspace
+            .join(crate::workspace_state::TRAJECTORY_EXPORTS_RELATIVE_DIR)
+            .is_dir());
     }
 }

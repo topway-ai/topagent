@@ -46,14 +46,15 @@ Interactive install that configures and starts the Telegram background service.
    - `--workspace` flag if provided
    - existing value from a previous install
    - otherwise creates `workspace/` next to the installed binary (or in the repo root if running from source)
-4. **Prompts for provider** — Choose OpenRouter or Opencode (provider selection is explicit and comes before model selection)
-5. Prompts for API key for the selected provider (pre-fills from env vars or previous install)
-6. Prompts for model — scoped to the selected provider; always offers `Custom model ID (type manually)`
-7. Prompts for Telegram bot token (pre-fills from previous install)
-8. **Prompts for allowed Telegram username** (optional) — Enter the username (without `@`) of the user allowed to send direct messages. If specified, the bot will only accept DMs from that user.
-9. Writes config file: `~/.config/topagent/services/topagent-telegram.env` (mode 0600)
-10. Writes systemd unit: `~/.config/systemd/user/topagent-telegram.service`
-11. Runs `systemctl --user daemon-reload`, then:
+4. Ensures the current `.topagent/` workspace-state layout exists (`workspace-state.json`, `MEMORY.md`, notes, procedures, trajectories, and trajectory exports)
+5. **Prompts for provider** — Choose OpenRouter or Opencode (provider selection is explicit and comes before model selection)
+6. Prompts for API key for the selected provider (pre-fills from env vars or previous install)
+7. Prompts for model — scoped to the selected provider; always offers `Custom model ID (type manually)`
+8. Prompts for Telegram bot token (pre-fills from previous install)
+9. **Prompts for allowed Telegram username** (optional) — Enter the username (without `@`) of the user allowed to send direct messages. If specified, the bot will only accept DMs from that user.
+10. Writes config file: `~/.config/topagent/services/topagent-telegram.env` (mode 0600)
+11. Writes systemd unit: `~/.config/systemd/user/topagent-telegram.service`
+12. Runs `systemctl --user daemon-reload`, then:
     - on fresh install: `systemctl --user enable --now topagent-telegram.service`
     - on re-running install over an existing managed install: `systemctl --user enable topagent-telegram.service` and `systemctl --user restart topagent-telegram.service`
 
@@ -309,7 +310,7 @@ If memory conflicts with the current repo, runtime, config, or service state, th
 - Clears any in-memory running state for that chat
 - Does **not** remove `USER.md`
 - Does **not** remove `MEMORY.md`
-- Does **not** remove workspace notes, procedures, trajectories, or tools
+- Does **not** remove workspace notes, procedures, or trajectories
 
 This keeps reset semantics simple and aligned with the current product shape.
 

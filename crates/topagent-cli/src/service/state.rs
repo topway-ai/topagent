@@ -10,7 +10,7 @@ use crate::managed_files::{is_topagent_managed_file, read_managed_env_metadata};
 use crate::operational_paths::{service_paths, ServicePaths};
 
 use super::managed_env::persisted_model_from_env_values;
-use super::systemd::{ensure_systemd_user_available, load_service_status_snapshot};
+use super::systemd::{RealSystemdUserManager, SystemdUserManager};
 
 #[derive(Debug, Clone)]
 pub(super) struct ControlPlaneState {
@@ -86,9 +86,16 @@ pub(super) fn load_control_plane_state(
 }
 
 pub(super) fn load_service_probe(paths: &ServicePaths) -> ServiceProbe {
-    let systemd_available = ensure_systemd_user_available().map_err(|e| e.to_string());
+    load_service_probe_with_systemd(paths, &RealSystemdUserManager)
+}
+
+pub(super) fn load_service_probe_with_systemd(
+    paths: &ServicePaths,
+    systemd: &dyn SystemdUserManager,
+) -> ServiceProbe {
+    let systemd_available = systemd.ensure_available().map_err(|e| e.to_string());
     let snapshot_result = if systemd_available.is_ok() {
-        Some(load_service_status_snapshot().map_err(|e| e.to_string()))
+        Some(systemd.load_status_snapshot().map_err(|e| e.to_string()))
     } else {
         None
     };

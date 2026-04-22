@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use std::path::{Path, PathBuf};
-use topagent_core::WorkspaceRunSnapshotStore;
+use topagent_core::{WorkspaceRunSnapshotRestoreReport, WorkspaceRunSnapshotStore};
 
 use crate::commands::surface::PRODUCT_NAME;
 use crate::config::workspace::resolve_workspace_path;
@@ -39,10 +39,8 @@ pub(crate) fn run_snapshot_diff(workspace_override: Option<PathBuf>) -> Result<(
 pub(crate) fn run_snapshot_restore(workspace_override: Option<PathBuf>) -> Result<()> {
     let workspace = resolve_workspace_path(workspace_override)?;
     let store = WorkspaceRunSnapshotStore::new(workspace.clone());
-    let report = store
-        .restore_latest()?
-        .ok_or_else(|| anyhow!("No active workspace run snapshot found."))?;
-    let cleared_transcripts = clear_workspace_telegram_history(&workspace)?;
+    let (report, cleared_transcripts) =
+        restore_run_snapshot_and_clear_transcripts(&workspace, &store)?;
 
     println!("{PRODUCT_NAME} run restore");
     println!("Workspace: {}", workspace.display());
@@ -147,8 +145,16 @@ pub(crate) fn format_session_time(unix_millis: u128) -> String {
         .unwrap_or_else(|| unix_millis.to_string())
 }
 
-#[cfg(test)]
-use topagent_core::WorkspaceRunSnapshotRestoreReport;
+fn restore_run_snapshot_and_clear_transcripts(
+    workspace: &Path,
+    store: &WorkspaceRunSnapshotStore,
+) -> Result<(WorkspaceRunSnapshotRestoreReport, bool)> {
+    let report = store
+        .restore_latest()?
+        .ok_or_else(|| anyhow!("No active workspace run snapshot found."))?;
+    let cleared_transcripts = clear_workspace_telegram_history(workspace)?;
+    Ok((report, cleared_transcripts))
+}
 
 #[cfg(test)]
 mod tests {
@@ -275,16 +281,5 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("No active workspace run snapshot found"));
-    }
-
-    fn restore_run_snapshot_and_clear_transcripts(
-        workspace: &Path,
-        store: &WorkspaceRunSnapshotStore,
-    ) -> Result<(WorkspaceRunSnapshotRestoreReport, bool)> {
-        let report = store
-            .restore_latest()?
-            .ok_or_else(|| anyhow!("No active workspace run snapshot found."))?;
-        let cleared_transcripts = clear_workspace_telegram_history(workspace)?;
-        Ok((report, cleared_transcripts))
     }
 }

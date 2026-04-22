@@ -1,4 +1,4 @@
-use topagent_core::channel::telegram::TelegramInlineKeyboardMarkup;
+use topagent_core::channel::telegram::{ChannelError, TelegramInlineKeyboardMarkup};
 use topagent_core::TelegramAdapter;
 use tracing::error;
 
@@ -15,8 +15,73 @@ impl DeliveryReport {
     }
 }
 
-pub(crate) fn send_telegram(
-    adapter: &TelegramAdapter,
+pub(crate) trait TelegramOutbound {
+    fn send_message_to_chat(&self, chat_id: i64, text: &str) -> Result<(), ChannelError>;
+    fn send_message_to_chat_with_markup(
+        &self,
+        chat_id: i64,
+        text: &str,
+        reply_markup: Option<&TelegramInlineKeyboardMarkup>,
+    ) -> Result<(), ChannelError>;
+    fn answer_callback_query(
+        &self,
+        callback_query_id: &str,
+        text: Option<&str>,
+        show_alert: bool,
+    ) -> Result<(), ChannelError>;
+    fn edit_message_text(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        text: &str,
+        reply_markup: Option<&TelegramInlineKeyboardMarkup>,
+    ) -> Result<(), ChannelError>;
+    fn acknowledge(&self, chat_id: i64, message_id: i64) -> Result<(), ChannelError>;
+}
+
+impl TelegramOutbound for TelegramAdapter {
+    fn send_message_to_chat(&self, chat_id: i64, text: &str) -> Result<(), ChannelError> {
+        TelegramAdapter::send_message_to_chat(self, chat_id, text).map(|_| ())
+    }
+
+    fn send_message_to_chat_with_markup(
+        &self,
+        chat_id: i64,
+        text: &str,
+        reply_markup: Option<&TelegramInlineKeyboardMarkup>,
+    ) -> Result<(), ChannelError> {
+        TelegramAdapter::send_message_to_chat_with_markup(self, chat_id, text, reply_markup)
+            .map(|_| ())
+    }
+
+    fn answer_callback_query(
+        &self,
+        callback_query_id: &str,
+        text: Option<&str>,
+        show_alert: bool,
+    ) -> Result<(), ChannelError> {
+        TelegramAdapter::answer_callback_query(self, callback_query_id, text, show_alert)
+            .map(|_| ())
+    }
+
+    fn edit_message_text(
+        &self,
+        chat_id: i64,
+        message_id: i64,
+        text: &str,
+        reply_markup: Option<&TelegramInlineKeyboardMarkup>,
+    ) -> Result<(), ChannelError> {
+        TelegramAdapter::edit_message_text(self, chat_id, message_id, text, reply_markup)
+            .map(|_| ())
+    }
+
+    fn acknowledge(&self, chat_id: i64, message_id: i64) -> Result<(), ChannelError> {
+        TelegramAdapter::acknowledge(self, chat_id, message_id)
+    }
+}
+
+pub(crate) fn send_telegram<T: TelegramOutbound + ?Sized>(
+    adapter: &T,
     chat_id: i64,
     chunks: Vec<String>,
     secrets: Option<&topagent_core::SecretRegistry>,
@@ -24,8 +89,8 @@ pub(crate) fn send_telegram(
     send_telegram_with_markup(adapter, chat_id, chunks, None, secrets)
 }
 
-pub(crate) fn send_telegram_with_markup(
-    adapter: &TelegramAdapter,
+pub(crate) fn send_telegram_with_markup<T: TelegramOutbound + ?Sized>(
+    adapter: &T,
     chat_id: i64,
     chunks: Vec<String>,
     reply_markup: Option<&TelegramInlineKeyboardMarkup>,

@@ -62,18 +62,7 @@ mod tests {
 
     fn healthy_workspace() -> TempDir {
         let temp = TempDir::new().unwrap();
-        let ws = temp.path();
-
-        std::fs::create_dir_all(ws.join(".topagent/notes")).unwrap();
-        std::fs::create_dir_all(ws.join(".topagent/procedures")).unwrap();
-        std::fs::create_dir_all(ws.join(".topagent/trajectories")).unwrap();
-
-        std::fs::write(
-            ws.join(MEMORY_INDEX_RELATIVE_PATH),
-            "# TopAgent Memory Index\n",
-        )
-        .unwrap();
-
+        crate::workspace_state::ensure_workspace_state(temp.path()).unwrap();
         temp
     }
 
@@ -90,6 +79,16 @@ mod tests {
             timeout_secs: None,
         };
         let checks = run_doctor_checks(&params);
+        assert!(
+            !checks.iter().any(|c| c.level == CheckLevel::Error),
+            "healthy workspace should not report errors"
+        );
+        let workspace_layout = checks
+            .iter()
+            .find(|c| c.name == "workspace layout")
+            .unwrap();
+        assert_eq!(workspace_layout.level, CheckLevel::Ok);
+        assert!(workspace_layout.detail.contains("schema v1"));
         let model_check = checks.iter().find(|c| c.name == "model config").unwrap();
         assert!(
             model_check.level == CheckLevel::Warning || model_check.level == CheckLevel::Ok,

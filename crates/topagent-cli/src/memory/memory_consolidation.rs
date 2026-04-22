@@ -144,8 +144,13 @@ impl WorkspaceMemory {
         let mut candidates = orientation
             .index_entries
             .iter()
-            .cloned()
-            .map(MemoryCandidate::from_manual_entry)
+            .filter_map(|entry| {
+                if self.manual_entry_points_to_missing_artifact(entry) {
+                    report.pruned_entries += 1;
+                    return None;
+                }
+                Some(MemoryCandidate::from_manual_entry(entry.clone()))
+            })
             .collect::<Vec<_>>();
 
         let note_candidates = orientation
@@ -173,6 +178,17 @@ impl WorkspaceMemory {
         candidates.extend(procedure_candidates);
 
         Ok(candidates)
+    }
+
+    fn manual_entry_points_to_missing_artifact(&self, entry: &MemoryIndexEntry) -> bool {
+        let normalized = normalize_memory_file(&entry.file);
+        let artifact_path = if let Some(filename) = normalized.strip_prefix("procedures/") {
+            self.procedures_dir.join(filename)
+        } else {
+            return false;
+        };
+
+        !artifact_path.is_file()
     }
 }
 
@@ -815,5 +831,24 @@ mod tests {
         );
         assert!(rewritten.contains("file: procedures/1700000500-approval-new.md"));
         assert!(!rewritten.contains("file: procedures/1700000400-approval-old.md"));
+    }
+
+    #[test]
+    fn test_consolidate_prunes_index_entries_pointing_to_missing_procedures() {
+        let temp = TempDir::new().unwrap();
+        write_memory_index(
+            temp.path(),
+            "# TopAgent Memory Index\n\n\
+             - title: missing note | file: notes/missing.md | status: verified | note: gone\n\
+             - title: missing procedure | file: procedures/missing.md | status: verified | note: gone\n",
+        );
+
+        let memory = WorkspaceMemory::new(temp.path().to_path_buf());
+        let report = memory.consolidate_memory_if_needed().unwrap();
+        let rewritten = fs::read_to_string(temp.path().join(MEMORY_INDEX_RELATIVE_PATH)).unwrap();
+
+        assert_eq!(report.pruned_entries, 1);
+        assert!(rewritten.contains("missing note"));
+        assert!(!rewritten.contains("missing procedure"));
     }
 }

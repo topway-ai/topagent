@@ -1,5 +1,6 @@
 use crate::config::defaults::{
-    CliParams, TOPAGENT_MODEL_KEY, TOPAGENT_PROVIDER_KEY, TOPAGENT_SERVICE_MANAGED_KEY,
+    CliParams, OPENCODE_API_KEY_KEY, OPENROUTER_API_KEY_KEY, TOPAGENT_MODEL_KEY,
+    TOPAGENT_PROVIDER_KEY, TOPAGENT_SERVICE_MANAGED_KEY,
 };
 use crate::config::model_selection::{
     provider_or_default, resolve_runtime_model_selection, ModelResolutionSource, SelectedProvider,
@@ -31,51 +32,106 @@ pub(crate) fn check_service_config(params: &CliParams, checks: &mut Vec<CheckRes
 
 fn check_api_key(
     params: &CliParams,
-    _paths: &crate::operational_paths::ServicePaths,
+    paths: &crate::operational_paths::ServicePaths,
     checks: &mut Vec<CheckResult>,
 ) {
-    let from_env = std::env::var("OPENROUTER_API_KEY")
-        .ok()
-        .filter(|v| !v.trim().is_empty());
-    let from_cli = params.api_key.as_deref().filter(|v| !v.trim().is_empty());
+    let env_values = read_managed_env_metadata(&paths.env_path).unwrap_or_default();
+    let persisted_provider = env_values
+        .get(TOPAGENT_PROVIDER_KEY)
+        .and_then(|v| SelectedProvider::from_str(v));
+    let provider = provider_or_default(persisted_provider);
 
-    if from_cli.is_some() || from_env.is_some() {
-        let source = if from_cli.is_some() {
-            "CLI flag"
-        } else {
-            "OPENROUTER_API_KEY env"
-        };
+    let openrouter_source = first_present_source(
+        params.api_key.as_deref(),
+        std::env::var(OPENROUTER_API_KEY_KEY).ok().as_deref(),
+        env_values.get(OPENROUTER_API_KEY_KEY).map(String::as_str),
+        "CLI flag",
+        "OPENROUTER_API_KEY env",
+        "managed config",
+    );
+    let opencode_source = first_present_source(
+        params.opencode_api_key.as_deref(),
+        std::env::var(OPENCODE_API_KEY_KEY).ok().as_deref(),
+        env_values.get(OPENCODE_API_KEY_KEY).map(String::as_str),
+        "CLI flag",
+        "OPENCODE_API_KEY env",
+        "managed config",
+    );
+
+    match provider {
+        topagent_core::ProviderKind::OpenRouter => push_required_key_check(
+            checks,
+            "OpenRouter API key",
+            openrouter_source,
+            "set OPENROUTER_API_KEY, pass --api-key, or run `topagent install`",
+        ),
+        topagent_core::ProviderKind::Opencode => push_required_key_check(
+            checks,
+            "Opencode API key",
+            opencode_source,
+            "set OPENCODE_API_KEY, pass --opencode-api-key, or run `topagent install`",
+        ),
+    }
+
+    if provider != topagent_core::ProviderKind::OpenRouter {
+        push_optional_key_check(checks, "OpenRouter API key", openrouter_source);
+    }
+    if provider != topagent_core::ProviderKind::Opencode {
+        push_optional_key_check(checks, "Opencode API key", opencode_source);
+    }
+}
+
+fn first_present_source<'a>(
+    cli_value: Option<&'a str>,
+    env_value: Option<&'a str>,
+    config_value: Option<&'a str>,
+    cli_label: &'static str,
+    env_label: &'static str,
+    config_label: &'static str,
+) -> Option<&'static str> {
+    for (value, label) in [
+        (cli_value, cli_label),
+        (env_value, env_label),
+        (config_value, config_label),
+    ] {
+        if value.is_some_and(|value| !value.trim().is_empty()) {
+            return Some(label);
+        }
+    }
+    None
+}
+
+fn push_required_key_check(
+    checks: &mut Vec<CheckResult>,
+    name: &'static str,
+    source: Option<&'static str>,
+    missing_hint: &'static str,
+) {
+    if let Some(source) = source {
         checks.push(CheckResult {
-            name: "OpenRouter API key",
+            name,
             level: CheckLevel::Ok,
             detail: format!("present ({})", source),
             hint: None,
         });
     } else {
         checks.push(CheckResult {
-            name: "OpenRouter API key",
+            name,
             level: CheckLevel::Error,
-            detail: "not found in env or CLI flag".to_string(),
-            hint: Some("set OPENROUTER_API_KEY or pass --api-key".to_string()),
+            detail: "not found for selected provider".to_string(),
+            hint: Some(missing_hint.to_string()),
         });
     }
+}
 
-    let opencode_from_env = std::env::var("OPENCODE_API_KEY")
-        .ok()
-        .filter(|v| !v.trim().is_empty());
-    let opencode_from_cli = params
-        .opencode_api_key
-        .as_deref()
-        .filter(|v| !v.trim().is_empty());
-
-    if opencode_from_cli.is_some() || opencode_from_env.is_some() {
-        let source = if opencode_from_cli.is_some() {
-            "CLI flag"
-        } else {
-            "OPENCODE_API_KEY env"
-        };
+fn push_optional_key_check(
+    checks: &mut Vec<CheckResult>,
+    name: &'static str,
+    source: Option<&'static str>,
+) {
+    if let Some(source) = source {
         checks.push(CheckResult {
-            name: "Opencode API key",
+            name,
             level: CheckLevel::Ok,
             detail: format!("present ({})", source),
             hint: None,
@@ -288,5 +344,54 @@ mod tests {
         check_model_config(&params, &service_paths().unwrap(), &mut checks);
         let model_check = checks.iter().find(|c| c.name == "model config").unwrap();
         assert!(model_check.level == CheckLevel::Ok || model_check.level == CheckLevel::Warning);
+    }
+
+    #[test]
+    fn test_doctor_api_key_check_uses_selected_opencode_provider() {
+        use crate::config::defaults::{
+            OPENCODE_API_KEY_KEY, TOPAGENT_PROVIDER_KEY, TOPAGENT_SERVICE_MANAGED_KEY,
+        };
+        use crate::managed_files::TOPAGENT_MANAGED_HEADER;
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let paths = crate::operational_paths::ServicePaths {
+            unit_dir: temp.path().join("systemd/user"),
+            unit_path: temp.path().join("systemd/user/topagent-telegram.service"),
+            env_dir: temp.path().join("topagent/services"),
+            env_path: temp.path().join("topagent/services/topagent-telegram.env"),
+        };
+        std::fs::create_dir_all(&paths.env_dir).unwrap();
+        std::fs::write(
+            &paths.env_path,
+            format!(
+                "{TOPAGENT_MANAGED_HEADER}\n{TOPAGENT_SERVICE_MANAGED_KEY}=1\n{TOPAGENT_PROVIDER_KEY}=Opencode\n{OPENCODE_API_KEY_KEY}=opencode-key\n"
+            ),
+        )
+        .unwrap();
+        let params = CliParams {
+            api_key: None,
+            opencode_api_key: None,
+            model: None,
+            workspace: None,
+            max_steps: None,
+            max_retries: None,
+            timeout_secs: None,
+        };
+        let mut checks = Vec::new();
+
+        check_api_key(&params, &paths, &mut checks);
+
+        assert!(checks.iter().any(|check| {
+            check.name == "Opencode API key"
+                && check.level == CheckLevel::Ok
+                && check.detail.contains("managed config")
+        }));
+        assert!(
+            !checks
+                .iter()
+                .any(|check| check.name == "OpenRouter API key"
+                    && check.level == CheckLevel::Error),
+            "OpenRouter must not be required when Opencode is the selected provider"
+        );
     }
 }

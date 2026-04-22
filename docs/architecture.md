@@ -135,6 +135,7 @@ topagent install
   -> check systemd user services available
   -> check for existing managed files (refuse to overwrite non-managed files)
   -> resolve workspace (--workspace, existing config, or auto-create)
+  -> ensure the current .topagent workspace-state layout exists
   -> prompt for provider, provider API key, provider-scoped model, Telegram bot token, and optional allowed DM username
   -> write env file to ~/.config/topagent/services/topagent-telegram.env (mode 0600, includes model + runtime settings)
   -> write systemd unit to ~/.config/systemd/user/topagent-telegram.service

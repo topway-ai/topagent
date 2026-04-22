@@ -18,7 +18,7 @@ use crate::run_context::{
     build_agent, prepare_run_context, prepare_workspace_memory, PreparedRunContext,
 };
 use crate::telegram::approval::{approval_reply_markup, format_approval_resolution};
-use crate::telegram::delivery::{send_telegram, send_telegram_with_markup};
+use crate::telegram::delivery::{send_telegram, send_telegram_with_markup, TelegramOutbound};
 use crate::telegram::history::{persist_visible_exchange_to_store, ChatHistoryStore};
 
 use super::admission::DmAdmission;
@@ -510,7 +510,7 @@ pub(crate) fn handle_telegram_run_outcome(
     result: topagent_core::Result<String>,
     promotion_notes: Vec<String>,
     has_progress: bool,
-    adapter: &TelegramAdapter,
+    adapter: &dyn TelegramOutbound,
     chat_id: i64,
     instruction: &str,
     history_store: &ChatHistoryStore,
@@ -591,6 +591,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
+    use topagent_core::channel::telegram::{ChannelError, TelegramInlineKeyboardMarkup};
     use topagent_core::{
         ApprovalCheck, ApprovalRequestDraft, ApprovalTriggerKind, BehaviorContract,
         CancellationToken, Message, ModelRoute, ProgressKind, ProgressUpdate,
@@ -629,6 +630,57 @@ mod tests {
         );
         assert!(matches!(check, ApprovalCheck::Pending(_)));
         mailbox
+    }
+
+    #[derive(Debug, Default)]
+    struct TestTelegramOutbound {
+        sent: Mutex<Vec<String>>,
+    }
+
+    impl TestTelegramOutbound {
+        fn sent(&self) -> Vec<String> {
+            self.sent.lock().unwrap().clone()
+        }
+    }
+
+    impl TelegramOutbound for TestTelegramOutbound {
+        fn send_message_to_chat(&self, _chat_id: i64, text: &str) -> Result<(), ChannelError> {
+            self.sent.lock().unwrap().push(text.to_string());
+            Ok(())
+        }
+
+        fn send_message_to_chat_with_markup(
+            &self,
+            _chat_id: i64,
+            text: &str,
+            _reply_markup: Option<&TelegramInlineKeyboardMarkup>,
+        ) -> Result<(), ChannelError> {
+            self.sent.lock().unwrap().push(text.to_string());
+            Ok(())
+        }
+
+        fn answer_callback_query(
+            &self,
+            _callback_query_id: &str,
+            _text: Option<&str>,
+            _show_alert: bool,
+        ) -> Result<(), ChannelError> {
+            Ok(())
+        }
+
+        fn edit_message_text(
+            &self,
+            _chat_id: i64,
+            _message_id: i64,
+            _text: &str,
+            _reply_markup: Option<&TelegramInlineKeyboardMarkup>,
+        ) -> Result<(), ChannelError> {
+            Ok(())
+        }
+
+        fn acknowledge(&self, _chat_id: i64, _message_id: i64) -> Result<(), ChannelError> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -1589,12 +1641,13 @@ mod tests {
         let workspace = TempDir::new().unwrap();
         let manager = test_manager(workspace.path().to_path_buf());
         let chat_id = 5001;
+        let outbound = TestTelegramOutbound::default();
 
         handle_telegram_run_outcome(
             Ok("Task complete.".to_string()),
             vec![],
             false,
-            &TelegramAdapter::new("stub"),
+            &outbound,
             chat_id,
             "Do the thing",
             &manager.history_store,
@@ -1602,8 +1655,10 @@ mod tests {
         );
 
         let persisted = manager.history_store.load(chat_id).unwrap();
-        assert!(!persisted.is_empty());
+        assert_eq!(outbound.sent(), vec!["Task complete.".to_string()]);
+        assert_eq!(persisted.len(), 2);
         assert_eq!(persisted[0].as_text(), Some("Do the thing"));
+        assert_eq!(persisted[1].as_text(), Some("Task complete."));
     }
 
     #[test]
@@ -1611,12 +1666,13 @@ mod tests {
         let workspace = TempDir::new().unwrap();
         let manager = test_manager(workspace.path().to_path_buf());
         let chat_id = 5002;
+        let outbound = TestTelegramOutbound::default();
 
         handle_telegram_run_outcome(
             Err(topagent_core::Error::Stopped("user cancelled".to_string())),
             vec![],
             false,
-            &TelegramAdapter::new("stub"),
+            &outbound,
             chat_id,
             "Analyse the logs",
             &manager.history_store,
@@ -1624,6 +1680,7 @@ mod tests {
         );
 
         let persisted = manager.history_store.load(chat_id).unwrap();
+        assert!(outbound.sent().is_empty());
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].as_text(), Some("Analyse the logs"));
     }
@@ -1633,12 +1690,13 @@ mod tests {
         let workspace = TempDir::new().unwrap();
         let manager = test_manager(workspace.path().to_path_buf());
         let chat_id = 5003;
+        let outbound = TestTelegramOutbound::default();
 
         handle_telegram_run_outcome(
             Err(topagent_core::Error::Provider("network error".to_string())),
             vec![],
             false,
-            &TelegramAdapter::new("stub"),
+            &outbound,
             chat_id,
             "Run cargo test",
             &manager.history_store,
@@ -1646,8 +1704,16 @@ mod tests {
         );
 
         let persisted = manager.history_store.load(chat_id).unwrap();
-        assert!(!persisted.is_empty());
+        assert_eq!(
+            outbound.sent(),
+            vec!["Error: provider error: network error"]
+        );
+        assert_eq!(persisted.len(), 2);
         assert_eq!(persisted[0].as_text(), Some("Run cargo test"));
+        assert_eq!(
+            persisted[1].as_text(),
+            Some("Error: provider error: network error")
+        );
     }
 
     #[test]
@@ -1655,12 +1721,13 @@ mod tests {
         let workspace = TempDir::new().unwrap();
         let manager = test_manager(workspace.path().to_path_buf());
         let chat_id = 5004;
+        let outbound = TestTelegramOutbound::default();
 
         handle_telegram_run_outcome(
             Err(topagent_core::Error::Provider("timeout".to_string())),
             vec![],
             true,
-            &TelegramAdapter::new("stub"),
+            &outbound,
             chat_id,
             "Check status",
             &manager.history_store,
@@ -1668,6 +1735,7 @@ mod tests {
         );
 
         let persisted = manager.history_store.load(chat_id).unwrap();
+        assert!(outbound.sent().is_empty());
         assert_eq!(persisted.len(), 1);
         assert_eq!(persisted[0].as_text(), Some("Check status"));
     }
@@ -1677,20 +1745,28 @@ mod tests {
         let workspace = TempDir::new().unwrap();
         let store = ChatHistoryStore::new(workspace.path().to_path_buf());
         let chat_id = 5005;
+        let outbound = TestTelegramOutbound::default();
 
         let response = "Done.".to_string();
         handle_telegram_run_outcome(
             Ok(response),
             vec!["Low-trust content noted.".to_string()],
             false,
-            &TelegramAdapter::new("stub"),
+            &outbound,
             chat_id,
             "Fix auth",
             &store,
             &topagent_core::SecretRegistry::new(),
         );
         let persisted = store.load(chat_id).unwrap();
-        assert!(!persisted.is_empty());
+        let sent = outbound.sent();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].contains("### Trust Notes"));
+        assert_eq!(persisted.len(), 2);
         assert_eq!(persisted[0].as_text(), Some("Fix auth"));
+        assert!(persisted[1]
+            .as_text()
+            .unwrap_or_default()
+            .contains("Low-trust content noted."));
     }
 }
