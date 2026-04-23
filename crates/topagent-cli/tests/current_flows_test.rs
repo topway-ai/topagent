@@ -1,4 +1,5 @@
 use assert_cmd::Command;
+use serde_json::Value;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -49,8 +50,29 @@ impl IsolatedTopagent {
         self.config.join("topagent/services/topagent-telegram.env")
     }
 
+    fn service_unit_path(&self) -> PathBuf {
+        self.config.join("systemd/user/topagent-telegram.service")
+    }
+
     fn model_cache_path(&self) -> PathBuf {
         self.config.join("topagent/cache/openrouter-models.json")
+    }
+
+    fn fake_systemctl_path(&self) -> OsString {
+        let bin_dir = self._temp.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let systemctl = bin_dir.join("systemctl");
+        fs::write(&systemctl, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let mut path = bin_dir.into_os_string();
+        path.push(":");
+        path.push(default_path());
+        path
     }
 
     fn write_managed_env(
@@ -86,6 +108,18 @@ impl IsolatedTopagent {
         body.push_str("TELEGRAM_ALLOWED_DM_USERNAME=\"operator\"\n");
         body.push_str("TELEGRAM_BOUND_DM_USER_ID=\"424242\"\n");
         fs::write(path, body).unwrap();
+    }
+
+    fn write_managed_unit(&self) {
+        let path = self.service_unit_path();
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            format!(
+                "{MANAGED_HEADER}\n[Unit]\nDescription=TopAgent test service\n[Service]\nExecStart=/tmp/topagent telegram\n"
+            ),
+        )
+        .unwrap();
     }
 
     fn write_openrouter_cache(&self, models: &[&str]) {
@@ -141,6 +175,39 @@ fn write_current_workspace_state(workspace: &Path) {
         "# TopAgent Memory Index\n\nKeep this file tiny.\n",
     )
     .unwrap();
+}
+
+fn assert_current_workspace_state_layout(workspace: &Path, expected_top_level: &[&str]) {
+    let marker_path = workspace.join(".topagent/workspace-state.json");
+    let marker: Value = serde_json::from_str(&fs::read_to_string(marker_path).unwrap()).unwrap();
+    assert_eq!(marker["schema_version"], Value::from(1));
+    assert_eq!(
+        marker["state_model"],
+        Value::from("topagent-workspace-state-v1")
+    );
+
+    for directory in [
+        ".topagent/notes",
+        ".topagent/procedures",
+        ".topagent/trajectories",
+        ".topagent/exports/trajectories",
+    ] {
+        assert!(
+            workspace.join(directory).is_dir(),
+            "missing current state directory {directory}"
+        );
+    }
+    assert!(
+        workspace.join(".topagent/MEMORY.md").is_file(),
+        "missing current memory index"
+    );
+
+    let mut actual_top_level = fs::read_dir(workspace.join(".topagent"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    actual_top_level.sort();
+    assert_eq!(actual_top_level, expected_top_level);
 }
 
 fn output_stdout(assert: assert_cmd::assert::Assert) -> String {
@@ -227,6 +294,17 @@ fn installed_runtime_contract_agrees_across_config_status_and_doctor() {
     let env = IsolatedTopagent::new();
     env.write_current_workspace_state();
     env.write_managed_env("Opencode", "glm-5.1", None, Some("opencode-secret"));
+    assert_current_workspace_state_layout(
+        &env.workspace,
+        &[
+            "MEMORY.md",
+            "exports",
+            "notes",
+            "procedures",
+            "trajectories",
+            "workspace-state.json",
+        ],
+    );
 
     let config_output = output_stdout(env.command().args(["config", "inspect"]).assert().success());
     assert!(config_output.contains("Provider:           Opencode"));
@@ -388,6 +466,19 @@ fn run_snapshot_cli_flow_reports_diffs_restores_files_and_clears_transcripts() {
     assert!(status_output.contains("Run snapshot:           present"));
     assert!(status_output.contains("Captured paths:     1"));
     assert!(status_output.contains("Telegram transcripts: 1 chat file"));
+    assert_current_workspace_state_layout(
+        &env.workspace,
+        &[
+            "MEMORY.md",
+            "exports",
+            "notes",
+            "procedures",
+            "run-snapshots",
+            "telegram-history",
+            "trajectories",
+            "workspace-state.json",
+        ],
+    );
 
     let diff_output = output_stdout(
         env.command()
@@ -420,6 +511,18 @@ fn run_snapshot_cli_flow_reports_diffs_restores_files_and_clears_transcripts() {
     assert_eq!(
         fs::read_to_string(env.workspace.join(".topagent/notes/learning.md")).unwrap(),
         "# Learning\nkeep this durable note\n"
+    );
+    assert_current_workspace_state_layout(
+        &env.workspace,
+        &[
+            "MEMORY.md",
+            "exports",
+            "notes",
+            "procedures",
+            "run-snapshots",
+            "trajectories",
+            "workspace-state.json",
+        ],
     );
     assert!(store.latest_status().unwrap().is_none());
 }
@@ -471,6 +574,18 @@ fn workspace_learning_flow_keeps_prompt_memory_governance_and_exports_separate()
     assert!(status_output.contains("Notes: 1 note(s)"));
     assert!(status_output.contains("Procedures: 1 active, 0 superseded, 0 disabled"));
     assert!(status_output.contains("Trajectories: 1 local, 0 ready, 0 exported"));
+    assert_current_workspace_state_layout(
+        &env.workspace,
+        &[
+            "MEMORY.md",
+            "USER.md",
+            "exports",
+            "notes",
+            "procedures",
+            "trajectories",
+            "workspace-state.json",
+        ],
+    );
 
     let recall_output = output_stdout(
         env.command()
@@ -591,4 +706,89 @@ fn workspace_learning_flow_keeps_prompt_memory_governance_and_exports_separate()
         .workspace
         .join(".topagent/trajectories/trj-1700000000-approval-mailbox.json")
         .is_file());
+}
+
+#[test]
+fn uninstall_flow_preserves_workspace_state_until_explicit_purge() {
+    let standard = IsolatedTopagent::new();
+    standard.write_current_workspace_state();
+    standard.write_managed_env(
+        "OpenRouter",
+        "minimax/minimax-m2.7",
+        Some("openrouter-secret"),
+        None,
+    );
+    standard.write_managed_unit();
+    standard.write_openrouter_cache(&["minimax/minimax-m2.7"]);
+    fs::write(
+        standard.workspace.join(".topagent/notes/operator.md"),
+        "# Operator\nkeep after standard uninstall\n",
+    )
+    .unwrap();
+
+    let standard_output = output_stdout(
+        standard
+            .command()
+            .env("PATH", standard.fake_systemctl_path())
+            .arg("uninstall")
+            .assert()
+            .success(),
+    );
+
+    assert!(standard_output.contains("Mode: standard"));
+    assert!(!standard.service_env_path().exists());
+    assert!(!standard.service_unit_path().exists());
+    assert!(standard.workspace.is_dir());
+    assert!(standard.workspace.join(".topagent").is_dir());
+    assert!(standard
+        .workspace
+        .join(".topagent/notes/operator.md")
+        .is_file());
+    assert!(standard.model_cache_path().is_file());
+    assert_current_workspace_state_layout(
+        &standard.workspace,
+        &[
+            "MEMORY.md",
+            "exports",
+            "notes",
+            "procedures",
+            "trajectories",
+            "workspace-state.json",
+        ],
+    );
+
+    let purge = IsolatedTopagent::new();
+    purge.write_current_workspace_state();
+    purge.write_managed_env(
+        "OpenRouter",
+        "minimax/minimax-m2.7",
+        Some("openrouter-secret"),
+        None,
+    );
+    purge.write_managed_unit();
+    purge.write_openrouter_cache(&["minimax/minimax-m2.7"]);
+    fs::create_dir_all(purge.workspace.join(".topagent/telegram-history")).unwrap();
+    fs::write(
+        purge
+            .workspace
+            .join(".topagent/telegram-history/chat-7.json"),
+        "{}",
+    )
+    .unwrap();
+
+    let purge_output = output_stdout(
+        purge
+            .command()
+            .env("PATH", purge.fake_systemctl_path())
+            .args(["uninstall", "--purge"])
+            .assert()
+            .success(),
+    );
+
+    assert!(purge_output.contains("Mode: purge"));
+    assert!(!purge.service_env_path().exists());
+    assert!(!purge.service_unit_path().exists());
+    assert!(purge.workspace.is_dir());
+    assert!(!purge.workspace.join(".topagent").exists());
+    assert!(!purge.model_cache_path().exists());
 }

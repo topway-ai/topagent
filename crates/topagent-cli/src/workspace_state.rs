@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::Path;
 use topagent_core::BehaviorContract;
 
@@ -124,6 +125,7 @@ pub(crate) struct WorkspaceStateInspection {
     pub(crate) schema_version: Option<u32>,
     pub(crate) schema_error: Option<String>,
     pub(crate) missing_required_paths: Vec<String>,
+    pub(crate) unexpected_topagent_paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -174,12 +176,14 @@ pub(crate) fn inspect_workspace_state(workspace_root: &Path) -> WorkspaceStateIn
         .filter(|path| !workspace_path_exists_as(workspace_root, path))
         .map(|path| path.relative_path.to_string())
         .collect::<Vec<_>>();
+    let unexpected_topagent_paths = unexpected_topagent_paths(workspace_root);
 
     WorkspaceStateInspection {
         topagent_exists,
         schema_version,
         schema_error,
         missing_required_paths,
+        unexpected_topagent_paths,
     }
 }
 
@@ -276,6 +280,36 @@ fn workspace_path_exists_as(workspace_root: &Path, supported: &SupportedWorkspac
         WorkspaceStatePathKind::File => path.is_file(),
         WorkspaceStatePathKind::Directory => path.is_dir(),
     }
+}
+
+fn unexpected_topagent_paths(workspace_root: &Path) -> Vec<String> {
+    let topagent_dir = workspace_root.join(TOPAGENT_DIR);
+    if !topagent_dir.is_dir() {
+        return Vec::new();
+    }
+
+    let expected_top_level_entries = SUPPORTED_WORKSPACE_STATE_PATHS
+        .iter()
+        .filter_map(|supported| {
+            supported
+                .relative_path
+                .strip_prefix(".topagent/")
+                .and_then(|relative| relative.split('/').next())
+        })
+        .collect::<BTreeSet<_>>();
+
+    let Ok(entries) = std::fs::read_dir(&topagent_dir) else {
+        return Vec::new();
+    };
+
+    let mut unexpected = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| !expected_top_level_entries.contains(name.as_str()))
+        .map(|name| format!(".topagent/{name}"))
+        .collect::<Vec<_>>();
+    unexpected.sort();
+    unexpected
 }
 
 #[cfg(test)]
@@ -396,5 +430,23 @@ mod tests {
         let err = ensure_workspace_state(temp.path()).unwrap_err().to_string();
 
         assert!(err.contains("unsupported workspace state model"));
+    }
+
+    #[test]
+    fn test_inspect_workspace_state_reports_unsupported_top_level_entries() {
+        let temp = TempDir::new().unwrap();
+        ensure_workspace_state(temp.path()).unwrap();
+        std::fs::create_dir_all(temp.path().join(".topagent/checkpoints")).unwrap();
+        std::fs::write(temp.path().join(".topagent/legacy.json"), "{}\n").unwrap();
+
+        let inspection = inspect_workspace_state(temp.path());
+
+        assert_eq!(
+            inspection.unexpected_topagent_paths,
+            vec![
+                ".topagent/checkpoints".to_string(),
+                ".topagent/legacy.json".to_string(),
+            ]
+        );
     }
 }

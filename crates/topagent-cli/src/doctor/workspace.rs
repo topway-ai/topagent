@@ -37,7 +37,7 @@ pub(crate) fn check_workspace_layout(workspace: &Path, checks: &mut Vec<CheckRes
         return;
     }
 
-    if state.missing_required_paths.is_empty() {
+    if state.missing_required_paths.is_empty() && state.unexpected_topagent_paths.is_empty() {
         checks.push(CheckResult {
             name: "workspace layout",
             level: CheckLevel::Ok,
@@ -56,6 +56,12 @@ pub(crate) fn check_workspace_layout(workspace: &Path, checks: &mut Vec<CheckRes
             details.push(format!(
                 "missing required paths: {}",
                 state.missing_required_paths.join(", ")
+            ));
+        }
+        if !state.unexpected_topagent_paths.is_empty() {
+            details.push(format!(
+                "unsupported top-level .topagent paths: {}",
+                state.unexpected_topagent_paths.join(", ")
             ));
         }
         checks.push(CheckResult {
@@ -452,5 +458,23 @@ mod tests {
             .find(|c| c.name == "workspace layout")
             .unwrap();
         assert!(detail.detail.contains("missing"));
+    }
+
+    #[test]
+    fn test_doctor_reports_unsupported_topagent_state_paths() {
+        let temp = healthy_workspace();
+        std::fs::create_dir_all(temp.path().join(".topagent/checkpoints")).unwrap();
+
+        let mut checks = Vec::new();
+        check_workspace_layout(temp.path(), &mut checks);
+
+        let layout = checks
+            .iter()
+            .find(|c| c.name == "workspace layout")
+            .unwrap();
+        assert_eq!(layout.level, CheckLevel::Warning);
+        assert!(layout
+            .detail
+            .contains("unsupported top-level .topagent paths: .topagent/checkpoints"));
     }
 }

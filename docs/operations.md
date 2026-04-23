@@ -223,6 +223,8 @@ The supported state model is intentionally split by role:
 - Run snapshot state: `run-snapshots/`
 - Transport evidence: `telegram-history/`
 
+`topagent doctor` treats this top-level `.topagent/` set as the current state model. Extra top-level entries are reported as unsupported current state; TopAgent does not migrate or preserve older workspace layouts.
+
 ## Persistence and reset
 
 ### Governed learning layers

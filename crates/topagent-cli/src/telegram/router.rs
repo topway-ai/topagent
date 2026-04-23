@@ -523,6 +523,100 @@ mod tests {
     }
 
     #[test]
+    fn test_route_message_routes_each_declared_command_without_starting_task() {
+        for spec in TELEGRAM_COMMANDS {
+            let workspace = TempDir::new().unwrap();
+            let mut manager = test_manager(workspace.path().to_path_buf(), None, None);
+            let pending_mailbox = if matches!(
+                spec.kind,
+                TelegramCommandKind::Approve | TelegramCommandKind::Deny
+            ) {
+                let mailbox = pending_approval_mailbox();
+                manager.sessions.insert(
+                    42,
+                    crate::telegram::session::RunningChatTask {
+                        cancel_token: CancellationToken::new(),
+                        progress_callback: None,
+                        approval_mailbox: mailbox.clone(),
+                        instruction: "make a commit".to_string(),
+                        started_at: std::time::SystemTime::now(),
+                    },
+                );
+                Some(mailbox)
+            } else {
+                None
+            };
+            let outbound = FakeTelegramOutbound::default();
+            let text = if spec.arguments.is_empty() {
+                spec.command.to_string()
+            } else {
+                format!("{} apr-1", spec.command)
+            };
+            let message = telegram_message(42, "private", Some(&text), Some(42), Some("operator"));
+
+            let outcome =
+                route_message_until_task_start(&outbound, &mut manager, &message, "/workspace");
+
+            assert_eq!(
+                outcome,
+                RouteMessageOutcome::Handled,
+                "{} must be handled inside the router",
+                spec.command
+            );
+            let sent = outbound.sent.borrow();
+            assert_eq!(
+                sent.len(),
+                1,
+                "{} should produce exactly one command reply",
+                spec.command
+            );
+            assert!(
+                !sent[0].text.trim().is_empty(),
+                "{} routed to an empty reply",
+                spec.command
+            );
+            assert!(
+                outbound.acks.borrow().is_empty(),
+                "{} must not acknowledge a task start",
+                spec.command
+            );
+
+            if let Some(mailbox) = pending_mailbox {
+                let expected = if spec.kind == TelegramCommandKind::Approve {
+                    topagent_core::ApprovalState::Approved
+                } else {
+                    topagent_core::ApprovalState::Denied
+                };
+                assert_eq!(mailbox.get("apr-1").unwrap().state, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn test_route_message_rejects_unsupported_payloads_without_starting_task() {
+        let cases = [
+            (None, "text messages only"),
+            (Some("/unknown"), "Unsupported command"),
+        ];
+
+        for (text, expected_reply) in cases {
+            let workspace = TempDir::new().unwrap();
+            let mut manager = test_manager(workspace.path().to_path_buf(), None, None);
+            let outbound = FakeTelegramOutbound::default();
+            let message = telegram_message(42, "private", text, Some(42), Some("operator"));
+
+            let outcome =
+                route_message_until_task_start(&outbound, &mut manager, &message, "/workspace");
+
+            assert_eq!(outcome, RouteMessageOutcome::Handled);
+            let sent = outbound.sent.borrow();
+            assert_eq!(sent.len(), 1);
+            assert!(sent[0].text.contains(expected_reply));
+            assert!(outbound.acks.borrow().is_empty());
+        }
+    }
+
+    #[test]
     fn test_route_message_with_fake_outbound_returns_task_start_for_plain_text() {
         let workspace = TempDir::new().unwrap();
         let mut manager = test_manager(workspace.path().to_path_buf(), None, None);
@@ -648,6 +742,56 @@ mod tests {
                 text: Some("Unsupported action.".to_string()),
                 show_alert: false,
             }]
+        );
+        assert!(outbound.edits.borrow().is_empty());
+    }
+
+    #[test]
+    fn test_route_callback_with_fake_outbound_rejects_unusable_callback_context() {
+        let workspace = TempDir::new().unwrap();
+        let mut manager = test_manager(workspace.path().to_path_buf(), None, None);
+        let outbound = FakeTelegramOutbound::default();
+
+        route_callback_query_with_outbound(
+            &outbound,
+            &mut manager,
+            &TelegramCallbackQuery {
+                id: "callback-missing-message".to_string(),
+                message: None,
+                data: Some("approval:approve:apr-1".to_string()),
+            },
+        );
+
+        route_callback_query_with_outbound(
+            &outbound,
+            &mut manager,
+            &TelegramCallbackQuery {
+                id: "callback-group".to_string(),
+                message: Some(telegram_message(
+                    42,
+                    "group",
+                    Some("approval request"),
+                    Some(42),
+                    Some("operator"),
+                )),
+                data: Some("approval:approve:apr-1".to_string()),
+            },
+        );
+
+        assert_eq!(
+            outbound.answers.borrow().as_slice(),
+            &[
+                CallbackAnswer {
+                    callback_query_id: "callback-missing-message".to_string(),
+                    text: Some("This approval action is no longer available.".to_string()),
+                    show_alert: false,
+                },
+                CallbackAnswer {
+                    callback_query_id: "callback-group".to_string(),
+                    text: Some("This bot supports private chats only.".to_string()),
+                    show_alert: false,
+                },
+            ]
         );
         assert!(outbound.edits.borrow().is_empty());
     }
