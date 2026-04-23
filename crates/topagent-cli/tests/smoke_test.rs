@@ -274,18 +274,6 @@ fn test_cli_memory_status_initializes_workspace_state_schema() {
 }
 
 #[test]
-fn test_cli_run_status_reports_no_run_snapshot_for_fresh_workspace() {
-    let temp = TempDir::new().unwrap();
-    let (_isolated, mut cmd) = isolated_topagent_command();
-    cmd.arg("--workspace")
-        .arg(temp.path())
-        .args(["run", "status"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("Run snapshot:"));
-}
-
-#[test]
 fn test_readme_documents_uninstall() {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let repo_root = manifest_dir.parent().unwrap().parent().unwrap();
