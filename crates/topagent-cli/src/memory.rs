@@ -201,11 +201,21 @@ fn looks_like_recall_query(lower_instruction: &str) -> bool {
         "we talked",
         "did we",
         "what did",
+        "how did",
+        "tell me what you",
+        "explain what you",
+        "what steps",
         "history",
         "transcript",
         "conversation",
         "recall",
         "restart",
+        "just did",
+        "just said",
+        "did to get",
+        "did you do",
+        "have you done",
+        "what have you",
     ]
     .iter()
     .any(|needle| lower_instruction.contains(needle))

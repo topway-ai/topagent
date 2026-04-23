@@ -240,8 +240,10 @@ impl TaskResult {
             return self.outcome_summary.clone();
         }
 
-        output.push_str(&self.outcome_summary);
-        output.push_str("\n\n---\n\n## Evidence\n\n");
+        // Don't repeat the full outcome_summary here — the caller already
+        // has it as the agent's natural response. Only append structured
+        // evidence metadata so the output isn't duplicated.
+        output.push_str("## Evidence\n\n");
 
         if !self.evidence.files_changed.is_empty() {
             output.push_str("### Files Changed\n\n");
@@ -327,8 +329,37 @@ impl TaskResult {
         summary.push_str("## Delivery Summary\n\n");
 
         summary.push_str("### What Changed\n\n");
-        summary.push_str(&self.outcome_summary);
-        summary.push_str("\n\n");
+        // The caller already includes the agent's natural response above
+        // this section. Don't duplicate the full text — use a compact
+        // one-line summary capped at 120 chars so the section is
+        // informative without being redundant.
+        if self.evidence.files_changed.is_empty() {
+            summary.push_str("No files were modified.\n\n");
+        } else {
+            // Truncate at a word boundary near 120 chars to avoid
+            // mid-word splits that look confusing in the delivery summary.
+            let brief = if self.outcome_summary.len() <= 120 {
+                self.outcome_summary.clone()
+            } else {
+                let head: String = self.outcome_summary.chars().take(120).collect();
+                if let Some(pos) = head.rfind(|c: char| c.is_whitespace()) {
+                    head[..pos].to_string()
+                } else {
+                    head
+                }
+            };
+            summary.push_str(&brief);
+            if brief.len() < self.outcome_summary.len() {
+                summary.push_str("...");
+            }
+            match self.evidence.delivery_outcome {
+                DeliveryOutcome::CodeChangingVerified => summary.push_str(" (verified)"),
+                DeliveryOutcome::CodeChangingUnverified => summary.push_str(" (unverified)"),
+                DeliveryOutcome::CodeChangingFailed => summary.push_str(" (verification failed)"),
+                _ => {}
+            }
+            summary.push_str("\n\n");
+        }
 
         summary.push_str("### Files Touched\n\n");
         if self.evidence.files_changed.is_empty() {

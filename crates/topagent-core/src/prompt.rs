@@ -242,6 +242,10 @@ All file paths are relative to this workspace root.\n\n",
             "- Bash commands run in a sandbox with no outbound network; do not use curl, wget, or similar fetch commands.\n\n",
         );
         prompt.push_str(
+            "- Never fabricate or guess information about external repositories, packages, or APIs you have not actually read in this workspace. \
+If you have not read a file or fetched its content with a tool, say you do not know rather than inventing a plausible summary.\n\n",
+        );
+        prompt.push_str(
             "- If the workspace is empty and you need files to work on, use `git clone <repo-url>` to clone the repository into the workspace. This is a mutation that requires operator approval.\n\n",
         );
     }

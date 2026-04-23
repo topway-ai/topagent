@@ -1545,6 +1545,9 @@ fn test_delivery_outcome_enum_values() {
 #[test]
 fn test_bounded_verification_follow_through_adds_verification_when_files_changed() {
     let (ctx, _temp) = make_test_context();
+    // Workspace needs a Cargo.toml so suggest_verification_command can find
+    // a matching build-system marker and propose `cargo test`.
+    std::fs::write(ctx.resolve_path("Cargo.toml").unwrap(), "[package]\nname=\"t\"\nversion=\"0.1.0\"\nedition=\"2021\"\n").unwrap();
 
     // Provider returns just a write (file change) but NO verification command.
     // The bounded follow-through should add a verification attempt.
@@ -2878,6 +2881,9 @@ fn test_final_output_contains_unverified_status_with_reason() {
 #[test]
 fn test_final_output_contains_failed_verification_explicitly() {
     let (ctx, _temp) = make_test_context();
+    // Workspace needs a Cargo.toml so suggest_verification_command can find
+    // a matching build-system marker and propose `cargo test`.
+    std::fs::write(ctx.resolve_path("Cargo.toml").unwrap(), "[package]\nname=\"t\"\nversion=\"0.1.0\"\nedition=\"2021\"\n").unwrap();
     let src_dir = ctx.resolve_path("src").unwrap();
     std::fs::create_dir_all(&src_dir).unwrap();
     std::fs::write(ctx.resolve_path("src/main.rs").unwrap(), "fn main()").unwrap();

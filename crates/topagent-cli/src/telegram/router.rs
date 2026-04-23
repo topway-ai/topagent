@@ -191,7 +191,7 @@ fn route_message_until_task_start<'a, T: TelegramOutbound + ?Sized>(
             send_telegram(
                 outbound,
                 chat_id,
-                vec!["This bot currently supports text messages only.".into()],
+                vec!["This bot supports text messages only. Please describe what you need in text, or paste any relevant content directly into your message.".into()],
                 None,
             );
             return RouteMessageOutcome::Handled;
@@ -611,7 +611,12 @@ mod tests {
             assert_eq!(outcome, RouteMessageOutcome::Handled);
             let sent = outbound.sent.borrow();
             assert_eq!(sent.len(), 1);
-            assert!(sent[0].text.contains(expected_reply));
+            assert!(
+                sent[0].text.contains(expected_reply),
+                "expected '{}' in '{}'",
+                expected_reply,
+                sent[0].text
+            );
             assert!(outbound.acks.borrow().is_empty());
         }
     }
@@ -701,7 +706,7 @@ mod tests {
             answers[0],
             CallbackAnswer {
                 callback_query_id: "callback-1".to_string(),
-                text: Some("Approval apr-1 approved.".to_string()),
+                text: Some("Approval apr-1 approved: git commit: ship it.".to_string()),
                 show_alert: false,
             }
         );
@@ -709,7 +714,7 @@ mod tests {
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].chat_id, 42);
         assert_eq!(edits[0].message_id, 17);
-        assert_eq!(edits[0].text, "Approval apr-1 approved.");
+        assert_eq!(edits[0].text, "Approval apr-1 approved: git commit: ship it.");
         assert_eq!(
             mailbox.get("apr-1").unwrap().state,
             topagent_core::ApprovalState::Approved

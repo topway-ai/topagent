@@ -205,7 +205,13 @@ impl Agent {
             task_result.verification_commands().len(),
             task_result.unresolved_issues().len(),
         ) {
-            let mut formatted = task_result.format_proof_of_work();
+            // Include the agent's natural response first, then append
+            // structured evidence and delivery summary below it. This
+            // avoids duplicating the response text inside the evidence
+            // and delivery sections.
+            let mut formatted = text;
+            formatted.push_str("\n\n");
+            formatted.push_str(&task_result.format_proof_of_work());
             if self.behavior.should_attach_code_delivery_summary(
                 task_mode,
                 task_result.files_changed().len(),
@@ -309,17 +315,23 @@ impl Agent {
         task_result
     }
 
-    fn suggest_verification_command(&self, _workspace: &std::path::Path) -> Option<String> {
+    fn suggest_verification_command(&self, workspace: &std::path::Path) -> Option<String> {
         let candidates = [
-            "cargo test --quiet",
-            "cargo check --quiet",
-            "npm test 2>/dev/null",
-            "pnpm test 2>/dev/null",
-            "yarn test 2>/dev/null",
-            "make test 2>/dev/null",
-            "go test ./... 2>/dev/null",
+            ("cargo test --quiet", "Cargo.toml"),
+            ("cargo check --quiet", "Cargo.toml"),
+            ("npm test 2>/dev/null", "package.json"),
+            ("pnpm test 2>/dev/null", "package.json"),
+            ("yarn test 2>/dev/null", "package.json"),
+            ("make test 2>/dev/null", "Makefile"),
+            ("go test ./... 2>/dev/null", "go.mod"),
         ];
-        for candidate in candidates {
+        for (candidate, marker_file) in candidates {
+            // Only suggest a verification command if the workspace actually
+            // contains the matching build system marker file. This prevents
+            // running cargo test in a non-Rust workspace, etc.
+            if !workspace.join(marker_file).exists() {
+                continue;
+            }
             if let Ok(output) = Command::new("sh")
                 .arg("-c")
                 .arg(format!(
@@ -334,5 +346,79 @@ impl Agent {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Agent;
+    use crate::tools::ReadTool;
+    use tempfile::TempDir;
+
+    fn minimal_agent() -> Agent {
+        let provider = crate::ScriptedProvider::new(vec![]);
+        Agent::new(Box::new(provider), vec![Box::new(ReadTool::new())])
+    }
+
+    #[test]
+    fn test_suggest_verification_returns_none_when_no_marker_file() {
+        let temp = TempDir::new().unwrap();
+        let agent = minimal_agent();
+        let result = agent.suggest_verification_command(temp.path());
+        assert!(
+            result.is_none(),
+            "should return None when no build system marker exists, got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_suggest_verification_returns_some_when_cargo_toml_present() {
+        let temp = TempDir::new().unwrap();
+        std::fs::write(temp.path().join("Cargo.toml"), "[package]\n").unwrap();
+        let agent = minimal_agent();
+        let result = agent.suggest_verification_command(temp.path());
+        // Result depends on whether `cargo` is on PATH (it should be in
+        // a Rust development environment).
+        if which_exists("cargo") {
+            assert!(
+                result.is_some(),
+                "should suggest cargo test when Cargo.toml exists and cargo is on PATH"
+            );
+            let cmd = result.unwrap();
+            assert!(
+                cmd.contains("cargo"),
+                "suggested command should be cargo-based, got: {}",
+                cmd
+            );
+        } else {
+            assert!(result.is_none());
+        }
+    }
+
+    #[test]
+    fn test_suggest_verification_skips_non_matching_markers() {
+        let temp = TempDir::new().unwrap();
+        // Only package.json exists, no Cargo.toml
+        std::fs::write(temp.path().join("package.json"), "{}").unwrap();
+        let agent = minimal_agent();
+        let result = agent.suggest_verification_command(temp.path());
+        // Should NOT suggest cargo test since Cargo.toml is absent
+        if let Some(cmd) = result {
+            assert!(
+                !cmd.contains("cargo"),
+                "should not suggest cargo when Cargo.toml is missing"
+            );
+        }
+    }
+
+    fn which_exists(cmd: &str) -> bool {
+        Command::new("sh")
+            .arg("-c")
+            .arg(format!("which {}", cmd))
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
     }
 }

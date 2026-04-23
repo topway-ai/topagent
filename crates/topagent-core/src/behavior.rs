@@ -198,6 +198,7 @@ fn default_identity_policy() -> ProductIdentityPolicy {
         non_goals: &[
             "generic agent framework behavior",
             "multi-agent swarm orchestration in this pass",
+            "fabricating summaries about external repositories or packages the agent has not actually read",
         ],
     }
 }

@@ -49,15 +49,39 @@ pub(super) fn approval_reply_markup(request_id: &str) -> TelegramInlineKeyboardM
 
 pub(super) fn format_approval_resolution(entry: &ApprovalEntry, approve: bool) -> String {
     format!(
-        "Approval {} {}.",
+        "Approval {} {}: {}.",
         entry.request.id,
-        if approve { "approved" } else { "denied" }
+        if approve { "approved" } else { "denied" },
+        entry.request.short_summary
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use topagent_core::{
+        ApprovalEntry, ApprovalRequest, ApprovalState, ApprovalTriggerKind,
+    };
+    use std::time::SystemTime;
+
+    fn sample_entry(approved: bool) -> ApprovalEntry {
+        ApprovalEntry {
+            request: ApprovalRequest {
+                id: "apr-1".to_string(),
+                action_kind: ApprovalTriggerKind::GitCommit,
+                short_summary: "git commit: ship it".to_string(),
+                exact_action: "git_commit(message=\"ship it\")".to_string(),
+                reason: "commits publish a durable repo milestone".to_string(),
+                scope_of_impact: "Creates a new git commit.".to_string(),
+                expected_effect: "Staged changes become a commit.".to_string(),
+                rollback_hint: Some("Use git revert.".to_string()),
+                created_at: SystemTime::UNIX_EPOCH,
+            },
+            state: if approved { ApprovalState::Approved } else { ApprovalState::Denied },
+            resolved_at: Some(SystemTime::UNIX_EPOCH),
+            decision_note: None,
+        }
+    }
 
     #[test]
     fn test_parse_approval_callback_data_recognizes_buttons() {
@@ -88,5 +112,16 @@ mod tests {
             markup.inline_keyboard[0][1].callback_data,
             "approval:deny:apr-5"
         );
+    }
+
+    #[test]
+    fn test_format_approval_resolution_includes_short_summary() {
+        let entry = sample_entry(true);
+        let result = format_approval_resolution(&entry, true);
+        assert_eq!(result, "Approval apr-1 approved: git commit: ship it.");
+
+        let entry = sample_entry(false);
+        let result = format_approval_resolution(&entry, false);
+        assert_eq!(result, "Approval apr-1 denied: git commit: ship it.");
     }
 }

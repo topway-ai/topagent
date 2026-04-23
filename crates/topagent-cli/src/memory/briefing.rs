@@ -505,11 +505,23 @@ fn render_transcript_section(
     let lower_instruction = instruction.to_ascii_lowercase();
     let recall_like = looks_like_recall_query(&lower_instruction);
 
-    let mut windows = match_windows(&transcript, &instruction_tokens, recall_like);
-    if windows.is_empty() && recall_like {
-        let start = transcript.len().saturating_sub(4);
-        windows.push((start, transcript.len() - 1));
+    let keyword_windows = match_windows(&transcript, &instruction_tokens, recall_like);
+    let had_keyword_match = !keyword_windows.is_empty();
+
+    let mut windows = keyword_windows;
+
+    // When keyword matching found nothing, include the most recent
+    // exchange as a baseline so the agent has minimum working memory
+    // of the immediate conversation. This prevents context loss when
+    // follow-up questions share few tokens with the prior exchange.
+    // (When keyword matching *does* find targeted snippets, the
+    // targeting is preserved without polluting with unrelated recent
+    // content.)
+    if windows.is_empty() && transcript.len() >= 2 {
+        let recent_start = transcript.len().saturating_sub(4);
+        windows.push((recent_start, transcript.len() - 1));
     }
+
     if windows.is_empty() {
         return None;
     }
@@ -543,8 +555,10 @@ fn render_transcript_section(
             snippet_count,
             if recall_like {
                 "recall-like query"
+            } else if had_keyword_match {
+                "keyword overlap + recent baseline"
             } else {
-                "keyword overlap"
+                "recent baseline"
             }
         ))],
     })
@@ -576,7 +590,7 @@ fn match_windows(
     });
 
     let best_score = scored.first().map(|(score, _)| *score).unwrap_or(0);
-    if !recall_like && best_score < 6 {
+    if !recall_like && best_score < 3 {
         return Vec::new();
     }
     if recall_like && best_score == 0 {
