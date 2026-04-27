@@ -1,3 +1,4 @@
+use crate::capability::AccessMode;
 use crate::context::ToolContext;
 use crate::file_util::read_text_file_with_limit;
 use crate::tool_spec::ToolSpec;
@@ -32,7 +33,11 @@ impl crate::tools::Tool for ReadTool {
     fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
         let args: ReadArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
-        let full_path = ctx.exec.resolve_path(&args.path)?;
+        let full_path = ctx.resolve_path_for_access(
+            &args.path,
+            AccessMode::Read,
+            "read the file requested by the operator",
+        )?;
         read_text_file_with_limit(&full_path, ctx.runtime.max_read_bytes)
     }
 }
@@ -53,7 +58,7 @@ mod tests {
         let runtime = RuntimeOptions::default();
         let ctx = ToolContext::new(&exec, &runtime);
         let tool = ReadTool::new();
-        fs::write(ctx.exec.resolve_path("test.txt").unwrap(), "hello world").unwrap();
+        fs::write(ctx.resolve_path("test.txt").unwrap(), "hello world").unwrap();
         let result = tool.execute(serde_json::json!({"path": "test.txt"}), &ctx);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "hello world");
@@ -100,7 +105,7 @@ mod tests {
         let ctx = ToolContext::new(&exec, &runtime);
         let tool = ReadTool::new();
         fs::write(
-            ctx.exec.resolve_path("binary.bin").unwrap(),
+            ctx.resolve_path("binary.bin").unwrap(),
             b"\x00\x01\x02binary",
         )
         .unwrap();
@@ -118,7 +123,7 @@ mod tests {
         let ctx = ToolContext::new(&exec, &runtime);
         let tool = ReadTool::new();
         let large_content = "x".repeat(100 * 1024);
-        fs::write(ctx.exec.resolve_path("large.txt").unwrap(), &large_content).unwrap();
+        fs::write(ctx.resolve_path("large.txt").unwrap(), &large_content).unwrap();
         let result = tool.execute(serde_json::json!({"path": "large.txt"}), &ctx);
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -142,7 +147,7 @@ mod tests {
         let ctx = ToolContext::new(&exec, &runtime);
         let tool = ReadTool::new();
         let content = "x".repeat(200);
-        fs::write(ctx.exec.resolve_path("test.txt").unwrap(), &content).unwrap();
+        fs::write(ctx.resolve_path("test.txt").unwrap(), &content).unwrap();
         let result = tool.execute(serde_json::json!({"path": "test.txt"}), &ctx);
         assert!(result.is_ok());
         let output = result.unwrap();
@@ -163,7 +168,7 @@ mod tests {
         let tool = ReadTool::new();
         let emoji = "\u{1F600}"; // 4-byte UTF-8 character
         let repeated = emoji.repeat(20_000); // creates 80KB of content (4 bytes each)
-        fs::write(ctx.exec.resolve_path("emoji.txt").unwrap(), &repeated).unwrap();
+        fs::write(ctx.resolve_path("emoji.txt").unwrap(), &repeated).unwrap();
         let result = tool.execute(serde_json::json!({"path": "emoji.txt"}), &ctx);
         assert!(result.is_ok(), "{:?}", result);
         let output = result.unwrap();

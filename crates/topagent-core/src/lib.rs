@@ -2,12 +2,14 @@ pub mod agent;
 pub mod approval;
 pub mod behavior;
 pub mod cancel;
+pub mod capability;
 pub mod channel;
 pub mod command_exec;
 pub mod compaction;
 pub mod context;
 pub mod error;
 pub mod file_util;
+pub mod harness;
 pub mod message;
 pub mod model;
 pub mod openrouter;
@@ -23,6 +25,7 @@ mod run_state;
 pub mod runtime;
 pub mod secrets;
 pub mod session;
+pub mod skills;
 pub mod task_result;
 pub mod tool_spec;
 pub mod tools;
@@ -35,6 +38,13 @@ pub use approval::{
 };
 pub use behavior::{BashCommandClass, BehaviorContract, RunStateSnapshot};
 pub use cancel::CancellationToken;
+pub use capability::{
+    assess_computer_action, assess_shell_command, is_secret_target, redact_sensitive_target,
+    AccessConfig, AccessConfigDocument, AccessMode, AuditEvent, CapabilityApprovalDraft,
+    CapabilityApprovalRequest, CapabilityAuditLog, CapabilityAuditRecord, CapabilityDecision,
+    CapabilityDecisionDetail, CapabilityError, CapabilityGrant, CapabilityKind, CapabilityManager,
+    CapabilityProfile, CapabilityRequest, GrantScope, RiskLevel, ShellAssessment,
+};
 pub use channel::telegram::{ChannelError, TelegramAdapter, POLL_TIMEOUT_SECS};
 pub use command_exec::CommandSandboxPolicy;
 pub use compaction::{
@@ -43,6 +53,7 @@ pub use compaction::{
 };
 pub use context::ExecutionContext;
 pub use error::{Error, Result};
+pub use harness::{AgentHarness, AgentPhase, ContextBundle, SkillDispatcher, SkillExecution};
 pub use message::{Content, Message, Role};
 pub use model::{
     ModelRoute, ProviderKind, DEFAULT_OPENCODE_MODEL_ID, DEFAULT_OPENROUTER_MODEL_ID,
@@ -70,6 +81,10 @@ pub use run_snapshot::{
 pub use runtime::RuntimeOptions;
 pub use secrets::SecretRegistry;
 pub use session::Session;
+pub use skills::{
+    default_effects_for_skill, Skill, SkillContext, SkillEffect, SkillEffects, SkillInput,
+    SkillOutput, SkillRegistry, SkillResult, SkillSchema, ToolBackedSkill,
+};
 pub use task_result::{
     DeliveryOutcome, ExecutionSessionOutcome, TaskEvidence, TaskResult, ToolTraceStep,
     VerificationCommand,

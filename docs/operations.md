@@ -105,6 +105,12 @@ topagent service restart     # restart the service (keeps current config)
 topagent run diff            # preview the restore diff for the latest run snapshot
 topagent run restore         # restore the latest run snapshot and clear Telegram transcripts
 topagent run status          # What happened in my last run? (run snapshot, transcripts, restore guidance)
+topagent access status       # show active access profile, defaults, and grants
+topagent access set developer # recommended local development profile
+topagent access set full     # enable broad local access with a visible warning
+topagent access grant ~/Downloads read --scope task # create a scoped grant
+topagent access audit        # show recent access-sensitive events
+topagent access lockdown     # restore workspace mode and clear grants
 topagent config inspect      # What provider/model/keys am I actually using?
 topagent doctor              # Is everything healthy? (deep diagnostics)
 topagent upgrade             # download and install the latest GitHub release binary; stops/restarts service
@@ -455,7 +461,7 @@ Code-changing runs end with a structured delivery summary that explicitly surfac
 
 ## Command lanes
 
-TopAgent commands fall into three operator-facing lanes. Understanding the lane helps operators know when to use each command and what side effects to expect.
+TopAgent commands fall into four operator-facing lanes. Understanding the lane helps operators know when to use each command and what side effects to expect.
 
 ### Install and lifecycle
 
@@ -481,6 +487,22 @@ Commands that read and display state without side effects unless noted. `topagen
 | `topagent run status` | What happened in my last run? (run snapshot, transcripts, restore guidance) |
 | `topagent run diff` | Preview what restore would change |
 | `topagent run restore` | Roll back to the latest run snapshot (clears transcripts) |
+| `topagent access status` | Show active access profile, defaults, and grants |
+| `topagent access audit` | Show recent access-sensitive events |
+| `topagent access lockdown` | Restore the workspace profile and clear grants |
+
+### Access management
+
+Commands that change the local permission profile or scoped grants. `developer` is the recommended default; `full` is broad and prints a visible warning before it is enabled. Telegram exposes the same controls through `/access`.
+
+| Command | When to use |
+|---------|-------------|
+| `topagent access set workspace` | Return to the safest workspace-scoped profile |
+| `topagent access set developer` | Allow normal workspace development with network/web lookup |
+| `topagent access set computer` | Enable the controlled computer_use capability |
+| `topagent access set full` | Enable broad local access while preserving high-impact approval gates |
+| `topagent access grant <target> <mode> --scope <scope>` | Add a once/task/path/session/permanent grant |
+| `topagent access revoke <target>` | Remove grants by target or grant id |
 
 ### Memory and learning management
 
@@ -504,6 +526,7 @@ The source-of-truth commands are:
 - Runtime contract: `topagent config inspect` owns provider, effective model, API key presence, workspace, Telegram admission, and runtime options.
 - Install/service health: `topagent status` owns installation presence, managed service files, service enabled/running state, and configured default model.
 - Run snapshots: `topagent run status` owns latest run snapshot, transcript count, and restore guidance.
+- Access: `topagent access status` owns active profile, defaults, and grant visibility.
 - Workspace learning: `topagent memory status` owns workspace schema, operator model, memory index, notes, procedures, trajectories, and exports.
 
 Changing the configured model with `topagent model set <model-id>` updates the managed env file's model value, preserves the provider and other managed values, and restarts the Telegram service only if it is installed. Changing provider remains part of the install flow: run `topagent install`.

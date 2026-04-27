@@ -69,6 +69,7 @@ pub enum CommandSandboxPolicy {
     #[default]
     Host,
     Workspace,
+    WorkspaceNetwork,
 }
 
 impl CommandSandboxPolicy {
@@ -77,6 +78,9 @@ impl CommandSandboxPolicy {
             CommandSandboxPolicy::Host => "host execution; no workspace sandbox",
             CommandSandboxPolicy::Workspace => {
                 "sandboxed workspace; commands have no outbound network access"
+            }
+            CommandSandboxPolicy::WorkspaceNetwork => {
+                "sandboxed workspace; outbound network access allowed by access profile"
             }
         }
     }
@@ -103,7 +107,9 @@ fn build_command_plan(
             args: args.to_vec(),
             current_dir: workspace_root.to_path_buf(),
         },
-        CommandSandboxPolicy::Workspace if probe.available => {
+        CommandSandboxPolicy::Workspace | CommandSandboxPolicy::WorkspaceNetwork
+            if probe.available =>
+        {
             let mut bwrap_args = Vec::new();
             for path in &probe.ro_binds {
                 bwrap_args.push("--ro-bind".to_string());
@@ -120,11 +126,11 @@ fn build_command_plan(
                 "/dev".to_string(),
                 "--proc".to_string(),
                 "/proc".to_string(),
-                "--unshare-net".to_string(),
-                "--chdir".to_string(),
-                workspace,
-                program.to_string(),
             ]);
+            if sandbox == CommandSandboxPolicy::Workspace {
+                bwrap_args.push("--unshare-net".to_string());
+            }
+            bwrap_args.extend(["--chdir".to_string(), workspace, program.to_string()]);
             bwrap_args.extend(args.iter().cloned());
 
             CommandPlan {
@@ -133,7 +139,7 @@ fn build_command_plan(
                 current_dir: workspace_root.to_path_buf(),
             }
         }
-        CommandSandboxPolicy::Workspace => CommandPlan {
+        CommandSandboxPolicy::Workspace | CommandSandboxPolicy::WorkspaceNetwork => CommandPlan {
             program: program.to_string(),
             args: args.to_vec(),
             current_dir: workspace_root.to_path_buf(),

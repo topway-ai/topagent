@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use topagent_core::{AccessMode, CapabilityProfile, GrantScope};
 
 use crate::commands::surface::{
     HELP_CONFIG_INSPECT, HELP_DOCTOR, HELP_MEMORY_LINT, HELP_MEMORY_RECALL, HELP_MEMORY_STATUS,
@@ -101,6 +102,11 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: RunCommands,
     },
+    /// Inspect and change TopAgent access profiles and grants.
+    Access {
+        #[command(subcommand)]
+        command: Option<AccessCommands>,
+    },
     /// Upgrade the TopAgent binary to the latest GitHub release and restart the service.
     Upgrade {
         /// Build from source via `cargo install --git` instead of downloading a release binary.
@@ -123,6 +129,27 @@ pub(crate) enum RunCommands {
     Diff,
     #[command(about = HELP_RUN_RESTORE)]
     Restore,
+}
+
+#[derive(Subcommand)]
+pub(crate) enum AccessCommands {
+    /// Show the active access profile, defaults, and grants.
+    Status,
+    /// Set the active access profile.
+    Set { profile: CapabilityProfile },
+    /// Create a scoped access grant.
+    Grant {
+        target: String,
+        mode: AccessMode,
+        #[arg(long, default_value = "permanent")]
+        scope: GrantScope,
+    },
+    /// Revoke grants by target or grant id.
+    Revoke { target: String },
+    /// Show recent access audit records.
+    Audit,
+    /// Revert to workspace profile and clear grants.
+    Lockdown,
 }
 
 #[derive(Subcommand)]
@@ -247,6 +274,7 @@ mod tests {
                 "config",
                 "doctor",
                 "run",
+                "access",
                 "upgrade",
                 "uninstall",
             ]
@@ -276,6 +304,10 @@ mod tests {
         assert_eq!(
             subcommand_names(&find_subcommand(&command, "run")),
             vec!["status", "diff", "restore"]
+        );
+        assert_eq!(
+            subcommand_names(&find_subcommand(&command, "access")),
+            vec!["status", "set", "grant", "revoke", "audit", "lockdown"]
         );
         assert_eq!(
             subcommand_names(&find_subcommand(&command, "config")),

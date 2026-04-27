@@ -375,23 +375,20 @@ mod tests {
         let request = provider.build_request(&messages, "test-model");
 
         let tools = request.tools.unwrap();
-        assert_eq!(tools.len(), 10);
         let names: Vec<_> = tools.iter().map(|t| t.function.name.as_str()).collect();
-        assert_eq!(
-            names,
-            vec![
-                "read",
-                "write",
-                "edit",
-                "bash",
-                "git_status",
-                "git_diff",
-                "git_branch",
-                "git_add",
-                "git_commit",
-                "git_clone"
-            ]
-        );
+        let mut expected = vec!["read", "write", "edit", "bash"];
+        #[cfg(feature = "computer-use")]
+        expected.push("computer_use");
+        expected.extend([
+            "git_status",
+            "git_diff",
+            "git_branch",
+            "git_add",
+            "git_commit",
+            "git_clone",
+        ]);
+        assert_eq!(tools.len(), expected.len());
+        assert_eq!(names, expected);
     }
 
     #[test]

@@ -51,10 +51,7 @@ fn reject_binary_installation_path(workspace: &Path) -> anyhow::Result<()> {
     // avoids false positives on paths like
     //   /home/user/projects/bin-management-tool/
     // which contain "bin" but are legitimate project directories.
-    let file_name = workspace
-        .file_name()
-        .unwrap_or_default()
-        .to_string_lossy();
+    let file_name = workspace.file_name().unwrap_or_default().to_string_lossy();
     let parent_name = workspace
         .parent()
         .and_then(|p| p.file_name())
@@ -62,7 +59,10 @@ fn reject_binary_installation_path(workspace: &Path) -> anyhow::Result<()> {
         .to_string_lossy();
 
     let is_known_bin_dir = (file_name == "bin"
-        && matches!(parent_name.as_ref(), ".cargo" | ".local" | "usr" | "local" | ""))
+        && matches!(
+            parent_name.as_ref(),
+            ".cargo" | ".local" | "usr" | "local" | ""
+        ))
         || (file_name == "sbin" && parent_name.is_empty());
 
     if is_known_bin_dir {
@@ -231,7 +231,11 @@ mod tests {
         }
         // Also create a Cargo.toml (project marker) — this should override
         // the executable heuristic.
-        std::fs::write(project_dir.path().join("Cargo.toml"), "[package]\nname=\"test\"\n").unwrap();
+        std::fs::write(
+            project_dir.path().join("Cargo.toml"),
+            "[package]\nname=\"test\"\n",
+        )
+        .unwrap();
         let resolved = resolve_workspace_path_with_current_dir(
             Some(project_dir.path().to_path_buf()),
             Err(std::io::Error::new(std::io::ErrorKind::NotFound, "missing")),

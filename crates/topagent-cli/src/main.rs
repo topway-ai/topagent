@@ -1,5 +1,6 @@
 // TopAgent CLI entry point - supports one-shot execution and Telegram bot mode.
 // Run: topagent "task" or topagent telegram
+mod access;
 mod commands;
 mod config;
 mod doctor;

@@ -1,4 +1,5 @@
 use crate::approval::ApprovalRequest;
+use crate::capability::CapabilityError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -44,6 +45,9 @@ pub enum Error {
 
     #[error("approval required: {0}")]
     ApprovalRequired(Box<ApprovalRequest>),
+
+    #[error("capability error: {0}")]
+    Capability(Box<CapabilityError>),
 
     #[error("project instruction error: {0}")]
     ProjectInstruction(String),

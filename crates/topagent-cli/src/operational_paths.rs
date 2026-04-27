@@ -5,6 +5,8 @@ use crate::config::defaults::TELEGRAM_SERVICE_UNIT_NAME;
 
 const TELEGRAM_SERVICE_ENV_DIR: &str = "topagent/services";
 const TELEGRAM_SERVICE_ENV_FILE: &str = "topagent-telegram.env";
+const ACCESS_CONFIG_FILE: &str = "topagent/access.toml";
+const ACCESS_AUDIT_FILE: &str = "topagent/access-audit.jsonl";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ServicePaths {
@@ -39,6 +41,14 @@ pub(crate) fn service_paths() -> Result<ServicePaths> {
 
 pub(crate) fn managed_service_env_path() -> Result<PathBuf> {
     Ok(service_paths()?.env_path)
+}
+
+pub(crate) fn access_config_path() -> Result<PathBuf> {
+    Ok(resolve_config_home()?.join(ACCESS_CONFIG_FILE))
+}
+
+pub(crate) fn access_audit_path() -> Result<PathBuf> {
+    Ok(resolve_config_home()?.join(ACCESS_AUDIT_FILE))
 }
 
 fn service_paths_from_config_home(config_home: PathBuf) -> ServicePaths {

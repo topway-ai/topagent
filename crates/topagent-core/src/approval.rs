@@ -1,4 +1,5 @@
 use crate::cancel::CancellationToken;
+use crate::capability::{CapabilityApprovalDraft, CapabilityApprovalRequest, GrantScope};
 use std::fmt;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, SystemTime};
@@ -21,6 +22,7 @@ pub struct ApprovalTriggerRule {
 pub enum ApprovalTriggerKind {
     GitCommit,
     DestructiveShellMutation,
+    CapabilityAccess,
 }
 
 impl ApprovalTriggerKind {
@@ -28,6 +30,7 @@ impl ApprovalTriggerKind {
         match self {
             Self::GitCommit => "git commit",
             Self::DestructiveShellMutation => "shell mutation",
+            Self::CapabilityAccess => "access request",
         }
     }
 }
@@ -47,6 +50,7 @@ pub struct ApprovalRequestDraft {
     pub scope_of_impact: String,
     pub expected_effect: String,
     pub rollback_hint: Option<String>,
+    pub capability: Option<CapabilityApprovalDraft>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -59,11 +63,16 @@ pub struct ApprovalRequest {
     pub scope_of_impact: String,
     pub expected_effect: String,
     pub rollback_hint: Option<String>,
+    pub capability: Option<CapabilityApprovalRequest>,
     pub created_at: SystemTime,
 }
 
 impl ApprovalRequest {
     pub fn render_details(&self) -> String {
+        if let Some(capability) = &self.capability {
+            return capability.render_access_request();
+        }
+
         let mut body = format!(
             "Approval required\n\n\
              Id: {}\n\
@@ -127,6 +136,7 @@ pub struct ApprovalEntry {
     pub state: ApprovalState,
     pub resolved_at: Option<SystemTime>,
     pub decision_note: Option<String>,
+    pub capability_scope: Option<GrantScope>,
 }
 
 impl ApprovalEntry {
@@ -263,6 +273,12 @@ impl ApprovalMailbox {
                     scope_of_impact: draft.scope_of_impact,
                     expected_effect: draft.expected_effect,
                     rollback_hint: draft.rollback_hint,
+                    capability: draft.capability.map(|draft| {
+                        CapabilityApprovalRequest::from_draft(
+                            format!("apr-{}", state.next_id),
+                            draft,
+                        )
+                    }),
                     created_at: SystemTime::now(),
                 };
                 let entry = ApprovalEntry {
@@ -270,6 +286,7 @@ impl ApprovalMailbox {
                     state: ApprovalState::Pending,
                     resolved_at: None,
                     decision_note: None,
+                    capability_scope: None,
                 };
                 state.entries.push(entry.clone());
                 (entry, true)
@@ -318,7 +335,16 @@ impl ApprovalMailbox {
         id: &str,
         note: Option<String>,
     ) -> std::result::Result<ApprovalEntry, ApprovalResolveError> {
-        self.resolve(id, ApprovalState::Approved, note)
+        self.resolve(id, ApprovalState::Approved, note, None)
+    }
+
+    pub fn approve_with_scope(
+        &self,
+        id: &str,
+        scope: GrantScope,
+        note: Option<String>,
+    ) -> std::result::Result<ApprovalEntry, ApprovalResolveError> {
+        self.resolve(id, ApprovalState::Approved, note, Some(scope))
     }
 
     pub fn deny(
@@ -326,7 +352,7 @@ impl ApprovalMailbox {
         id: &str,
         note: Option<String>,
     ) -> std::result::Result<ApprovalEntry, ApprovalResolveError> {
-        self.resolve(id, ApprovalState::Denied, note)
+        self.resolve(id, ApprovalState::Denied, note, None)
     }
 
     pub fn expire_pending(&self, note: impl Into<String>) -> usize {
@@ -360,11 +386,13 @@ impl ApprovalMailbox {
                         scope_of_impact: "unknown".to_string(),
                         expected_effect: "approval could not be resolved".to_string(),
                         rollback_hint: None,
+                        capability: None,
                         created_at: SystemTime::now(),
                     },
                     state: ApprovalState::Expired,
                     resolved_at: Some(SystemTime::now()),
                     decision_note: Some("approval request disappeared from mailbox".to_string()),
+                    capability_scope: None,
                 };
                 return ApprovalCheck::Expired(synthetic);
             }
@@ -375,6 +403,7 @@ impl ApprovalMailbox {
                     id,
                     ApprovalState::Expired,
                     Some("task stopped before approval was resolved".to_string()),
+                    None,
                 )
                 .ok()
                 .or_else(|| {
@@ -403,9 +432,10 @@ impl ApprovalMailbox {
         id: &str,
         target: ApprovalState,
         note: Option<String>,
+        capability_scope: Option<GrantScope>,
     ) -> std::result::Result<ApprovalEntry, ApprovalResolveError> {
         let mut state = self.inner.state.lock().unwrap();
-        let entry = Self::resolve_locked(&mut state, id, target, note)?;
+        let entry = Self::resolve_locked(&mut state, id, target, note, capability_scope)?;
         self.inner.condvar.notify_all();
         Ok(entry)
     }
@@ -415,6 +445,7 @@ impl ApprovalMailbox {
         id: &str,
         target: ApprovalState,
         note: Option<String>,
+        capability_scope: Option<GrantScope>,
     ) -> std::result::Result<ApprovalEntry, ApprovalResolveError> {
         if target == ApprovalState::Pending {
             return Err(ApprovalResolveError::InvalidState(target));
@@ -438,6 +469,9 @@ impl ApprovalMailbox {
         entry.state = target;
         entry.resolved_at = Some(SystemTime::now());
         entry.decision_note = note;
+        if target == ApprovalState::Approved {
+            entry.capability_scope = capability_scope;
+        }
         Ok(entry.clone())
     }
 
@@ -451,6 +485,7 @@ impl ApprovalMailbox {
             entry.state = target;
             entry.resolved_at = Some(SystemTime::now());
             entry.decision_note = Some(note.clone());
+            entry.capability_scope = None;
             resolved += 1;
         }
         if resolved > 0 {
@@ -473,6 +508,7 @@ mod tests {
             scope_of_impact: "Creates a new git commit in the workspace repository.".to_string(),
             expected_effect: "Staged changes become a durable commit.".to_string(),
             rollback_hint: Some("Use git revert or git reset if the commit was mistaken.".into()),
+            capability: None,
         }
     }
 

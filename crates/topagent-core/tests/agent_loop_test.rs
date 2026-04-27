@@ -1547,7 +1547,11 @@ fn test_bounded_verification_follow_through_adds_verification_when_files_changed
     let (ctx, _temp) = make_test_context();
     // Workspace needs a Cargo.toml so suggest_verification_command can find
     // a matching build-system marker and propose `cargo test`.
-    std::fs::write(ctx.resolve_path("Cargo.toml").unwrap(), "[package]\nname=\"t\"\nversion=\"0.1.0\"\nedition=\"2021\"\n").unwrap();
+    std::fs::write(
+        ctx.resolve_path("Cargo.toml").unwrap(),
+        "[package]\nname=\"t\"\nversion=\"0.1.0\"\nedition=\"2021\"\n",
+    )
+    .unwrap();
 
     // Provider returns just a write (file change) but NO verification command.
     // The bounded follow-through should add a verification attempt.
@@ -2151,7 +2155,7 @@ fn test_agent_uses_configured_base_route_for_provider_calls() {
 }
 
 #[test]
-fn test_agent_syncs_current_tools_to_provider() {
+fn test_agent_syncs_phase_scoped_skills_to_provider() {
     let (ctx, _temp) = make_test_context();
     let provider = RecordingProvider::new(ProviderResponse::Message(Message::assistant("done")));
     let tool_names = provider.tool_names_handle();
@@ -2169,7 +2173,8 @@ fn test_agent_syncs_current_tools_to_provider() {
     assert!(tool_names.contains(&"read".to_string()));
     assert!(tool_names.contains(&"update_plan".to_string()));
     assert!(tool_names.contains(&"bash".to_string()));
-    assert!(tool_names.contains(&"write".to_string()));
+    assert!(!tool_names.contains(&"write".to_string()));
+    assert!(!tool_names.contains(&"edit".to_string()));
 }
 
 #[test]
@@ -2883,7 +2888,11 @@ fn test_final_output_contains_failed_verification_explicitly() {
     let (ctx, _temp) = make_test_context();
     // Workspace needs a Cargo.toml so suggest_verification_command can find
     // a matching build-system marker and propose `cargo test`.
-    std::fs::write(ctx.resolve_path("Cargo.toml").unwrap(), "[package]\nname=\"t\"\nversion=\"0.1.0\"\nedition=\"2021\"\n").unwrap();
+    std::fs::write(
+        ctx.resolve_path("Cargo.toml").unwrap(),
+        "[package]\nname=\"t\"\nversion=\"0.1.0\"\nedition=\"2021\"\n",
+    )
+    .unwrap();
     let src_dir = ctx.resolve_path("src").unwrap();
     std::fs::create_dir_all(&src_dir).unwrap();
     std::fs::write(ctx.resolve_path("src/main.rs").unwrap(), "fn main()").unwrap();

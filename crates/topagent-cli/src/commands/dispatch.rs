@@ -1,5 +1,6 @@
 use anyhow::Result;
 
+use crate::access::run_access_command;
 use crate::commands::memory_cli::run_memory_command;
 use crate::commands::procedure_cli::run_procedure_command;
 use crate::config::defaults::CliParams;
@@ -34,6 +35,7 @@ pub(crate) fn dispatch(
             RunCommands::Diff => run_snapshot_diff(params.workspace),
             RunCommands::Restore => run_snapshot_restore(params.workspace),
         },
+        Some(Commands::Access { command }) => run_access_command(command),
         Some(Commands::Upgrade { use_cargo }) => run_upgrade(use_cargo),
         Some(Commands::Uninstall { purge }) => run_uninstall(purge),
         Some(Commands::Service { command }) => run_service_command(command),

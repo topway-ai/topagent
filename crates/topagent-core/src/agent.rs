@@ -1,6 +1,7 @@
 use crate::behavior::{BashCommandClass, BehaviorContract};
 use crate::compaction::{CompactionRuntimeState, TranscriptCompactor};
 use crate::context::ExecutionContext;
+use crate::harness::{AgentHarness, AgentPhase};
 use crate::model::ModelRoute;
 use crate::plan::{self, Plan};
 use crate::progress::{ProgressCallback, ProgressUpdate};
@@ -9,10 +10,9 @@ use crate::prompt::BehaviorPromptContext;
 use crate::run_state::AgentRunState;
 use crate::runtime::RuntimeOptions;
 use crate::session::Session;
+use crate::skills::SkillRegistry;
 use crate::task_result::TaskResult;
-use crate::tools::{
-    ManageOperatorPreferenceTool, SaveNoteTool, Tool, ToolRegistry, UpdatePlanTool,
-};
+use crate::tools::{ManageOperatorPreferenceTool, SaveNoteTool, Tool, UpdatePlanTool};
 use crate::{Error, Message, Provider, ProviderResponse, Result, ToolSpec};
 use std::sync::{Arc, Mutex};
 
@@ -45,7 +45,7 @@ mod tool_execution;
 pub struct Agent {
     session: Session,
     provider: Box<dyn Provider>,
-    tools: ToolRegistry,
+    harness: AgentHarness,
     options: RuntimeOptions,
     behavior: BehaviorContract,
     plan: Arc<Mutex<Plan>>,
@@ -96,22 +96,23 @@ impl Agent {
         options: RuntimeOptions,
     ) -> Self {
         let behavior = BehaviorContract::from_runtime_options(&options);
-        let mut registry = ToolRegistry::new();
+        let mut registry = SkillRegistry::new();
         for tool in tools {
-            registry.add(tool);
+            registry.add_tool(tool);
         }
 
         let plan = Arc::new(Mutex::new(Plan::new()));
         let planning_tool = UpdatePlanTool::with_plan(plan.clone());
-        registry.add(Box::new(planning_tool));
+        registry.add_tool(Box::new(planning_tool));
 
-        registry.add(Box::new(SaveNoteTool::new()));
-        registry.add(Box::new(ManageOperatorPreferenceTool::new()));
+        registry.add_tool(Box::new(SaveNoteTool::new()));
+        registry.add_tool(Box::new(ManageOperatorPreferenceTool::new()));
+        let harness = AgentHarness::new(registry);
 
         Self {
             session: Session::new(),
             provider,
-            tools: registry,
+            harness,
             options,
             behavior,
             plan,
@@ -131,7 +132,7 @@ impl Agent {
     }
 
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
-        self.tools.specs()
+        self.harness.skill_specs()
     }
 
     pub fn changed_files(&self) -> Vec<String> {
@@ -494,8 +495,22 @@ impl Agent {
         BehaviorContract::default().classify_bash_command(cmd)
     }
 
-    fn sync_provider_tools(&mut self) {
-        self.provider.set_tool_specs(self.tools.specs());
+    fn current_agent_phase(&self) -> AgentPhase {
+        if self.planning.is_active() && !self.plan_exists() {
+            return AgentPhase::Plan;
+        }
+
+        match self.execution_stage {
+            ExecutionStage::Research => AgentPhase::Investigate,
+            ExecutionStage::Edit => AgentPhase::Patch,
+            ExecutionStage::Review => AgentPhase::Verify,
+        }
+    }
+
+    fn sync_provider_tools(&mut self, ctx: &ExecutionContext) {
+        let phase = self.current_agent_phase();
+        self.provider
+            .set_tool_specs(self.harness.available_skills(ctx, phase));
     }
 
     fn reset_run_state(&mut self, ctx: &ExecutionContext, instruction: &str) -> Result<()> {
@@ -519,7 +534,9 @@ impl Agent {
 
     fn build_run_system_prompt(&self, ctx: &ExecutionContext) -> Result<String> {
         let project_instructions = get_project_instructions_or_error(&ctx.workspace_root)?;
-        let available_tools = self.tools.specs();
+        let available_tools = self
+            .harness
+            .available_skills(ctx, self.current_agent_phase());
         let plan_guard = self.plan.lock().ok();
         let current_plan = plan_guard
             .as_ref()
@@ -704,6 +721,7 @@ path = "src/lib.rs"
                 rollback_hint: Some(
                     "Use git revert or git reset if the commit was mistaken.".to_string(),
                 ),
+                capability: None,
             },
             None,
         );
@@ -719,6 +737,7 @@ path = "src/lib.rs"
                 rollback_hint: Some(
                     "Restore the files from git if the deletion was mistaken.".to_string(),
                 ),
+                capability: None,
             },
             None,
         );
@@ -1224,5 +1243,25 @@ path = "src/lib.rs"
             })
             .expect("compaction summary should be present");
         assert!(summary.contains("Files were modified but no verification commands were run"));
+    }
+
+    #[test]
+    fn test_agent_tool_calls_go_through_harness_dispatcher() {
+        let (_temp, ctx) = create_temp_crate();
+        let provider = ScriptedProvider::new(vec![
+            tool_call("read-1", "read", serde_json::json!({"path": "src/lib.rs"})),
+            assistant_message("read complete"),
+        ]);
+        let mut agent = Agent::with_options(
+            Box::new(provider),
+            default_tools().into_inner(),
+            RuntimeOptions::default(),
+        );
+
+        assert_eq!(agent.harness.dispatch_count(), 0);
+        let result = agent.run(&ctx, "read src/lib.rs").unwrap();
+
+        assert!(result.contains("read complete"));
+        assert_eq!(agent.harness.dispatch_count(), 1);
     }
 }

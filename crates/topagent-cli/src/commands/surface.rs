@@ -44,6 +44,7 @@ pub(crate) enum TelegramCommandKind {
     Approvals,
     Approve,
     Deny,
+    Access,
     Reset,
 }
 
@@ -109,6 +110,12 @@ pub(crate) const TELEGRAM_COMMANDS: &[TelegramCommandSpec] = &[
         description: "deny a pending action",
     },
     TelegramCommandSpec {
+        kind: TelegramCommandKind::Access,
+        command: "/access",
+        arguments: "[status|set|grant|revoke|audit|lockdown]",
+        description: "inspect or change access profile and grants",
+    },
+    TelegramCommandSpec {
         kind: TelegramCommandKind::Reset,
         command: "/reset",
         arguments: "",
@@ -161,6 +168,11 @@ pub(crate) const LIFECYCLE_LANES: &[LifecycleLane] = &[
         owns: "latest run snapshot, transcript count, and restore guidance",
     },
     LifecycleLane {
+        name: "access control",
+        source_of_truth_command: "topagent access status",
+        owns: "active access profile, network/computer defaults, grants, lockdown state, and audit visibility",
+    },
+    LifecycleLane {
         name: "workspace learning",
         source_of_truth_command: "topagent memory status",
         owns: "workspace schema, operator model, memory index, notes, procedures, trajectories, exports",
@@ -199,6 +211,7 @@ mod tests {
         assert!(commands.contains("topagent status"));
         assert!(commands.contains("topagent run status"));
         assert!(commands.contains("topagent memory status"));
+        assert!(commands.contains("topagent access status"));
 
         let names = LIFECYCLE_LANES
             .iter()
@@ -210,6 +223,7 @@ mod tests {
                 "runtime contract",
                 "install/service health",
                 "run snapshots",
+                "access control",
                 "workspace learning",
             ]
         );

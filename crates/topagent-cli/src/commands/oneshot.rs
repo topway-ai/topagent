@@ -11,6 +11,7 @@ use topagent_core::{
 };
 use tracing::{error, info, warn};
 
+use crate::access::load_access_manager;
 use crate::config::defaults::load_persisted_telegram_defaults;
 use crate::config::defaults::CliParams;
 use crate::config::runtime::resolve_one_shot_config;
@@ -30,9 +31,14 @@ pub(crate) fn run_one_shot(params: CliParams, instruction: String) -> Result<()>
     let cancel_token = CancellationToken::new();
     let interactive_approvals = io::stdin().is_terminal() && io::stderr().is_terminal();
     let approval_mailbox = build_cli_approval_mailbox(interactive_approvals);
+    let task_id = format!("cli-{}-{}", std::process::id(), unix_now());
+    let access_manager = load_access_manager("operator", "cli")?;
     let mut ctx = ExecutionContext::new(workspace.clone())
         .with_cancel_token(cancel_token.clone())
         .with_approval_mailbox(approval_mailbox)
+        .with_capability_manager(access_manager)
+        .with_session_id("cli")
+        .with_task_id(task_id)
         .with_workspace_run_snapshot_store(WorkspaceRunSnapshotStore::new(workspace));
     let workspace_memory = prepare_workspace_memory(ctx.workspace_root.clone());
     let prepared_run = prepare_run_context(&ctx, &workspace_memory, &instruction, None);
@@ -124,6 +130,13 @@ pub(crate) fn run_one_shot(params: CliParams, instruction: String) -> Result<()>
             std::process::exit(1);
         }
     }
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 pub(crate) fn build_cli_approval_mailbox(interactive: bool) -> ApprovalMailbox {
@@ -232,6 +245,7 @@ mod tests {
             scope_of_impact: "Creates a new git commit in the workspace repository.".to_string(),
             expected_effect: "Staged changes become a durable repo milestone.".to_string(),
             rollback_hint: Some("Use git revert or git reset if the commit was mistaken.".into()),
+            capability: None,
             created_at: std::time::SystemTime::now(),
         }
     }

@@ -1,3 +1,4 @@
+use crate::capability::{AccessMode, CapabilityKind, CapabilityRequest, RiskLevel};
 use crate::context::ToolContext;
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
@@ -66,6 +67,13 @@ impl crate::tools::Tool for SaveNoteTool {
     fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
         let args: SaveNoteArgs = serde_json::from_value(args)
             .map_err(|e| Error::InvalidInput(format!("save_note: invalid input: {}", e)))?;
+        ctx.authorize_capability(CapabilityRequest::new(
+            CapabilityKind::MemoryWrite,
+            ".topagent/notes",
+            AccessMode::Write,
+            RiskLevel::Moderate,
+            "persist a durable workspace note",
+        ))?;
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -83,7 +91,7 @@ impl crate::tools::Tool for SaveNoteTool {
             .replace(' ', "-");
 
         let filename = format!("{}-{}.md", timestamp, slug);
-        let notes_dir = ctx.exec.workspace_root.join(NOTES_DIR);
+        let notes_dir = ctx.workspace_root().join(NOTES_DIR);
         std::fs::create_dir_all(&notes_dir).map_err(|e| {
             Error::ToolFailed(format!("save_note: failed to create directory: {}", e))
         })?;

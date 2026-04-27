@@ -2,6 +2,7 @@ use anyhow::Result;
 use topagent_core::{context::ExecutionContext, TelegramAdapter, POLL_TIMEOUT_SECS};
 use tracing::{debug, error, info, warn};
 
+use crate::access::load_access_manager;
 use crate::config::defaults::{load_persisted_telegram_defaults, CliParams};
 use crate::config::runtime::resolve_telegram_mode_config;
 use crate::operational_paths::managed_service_env_path;
@@ -30,6 +31,7 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
     let options = config.options;
     let route = config.route;
     let adapter = TelegramAdapter::new(&token);
+    let access_manager = load_access_manager("operator", "telegram")?;
 
     match adapter.check_webhook() {
         Ok(true) => {
@@ -65,7 +67,7 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
         bot_info.id,
     );
 
-    let mut session_manager = ChatSessionManager::new(
+    let mut session_manager = ChatSessionManager::new_with_access_manager(
         route,
         configured_default_model,
         api_key,
@@ -75,6 +77,7 @@ pub(crate) fn run_telegram(token: Option<String>, params: CliParams) -> Result<(
         allowed_dm_username,
         bound_dm_user_id,
         Some(managed_service_env_path().ok()).flatten(),
+        access_manager,
     );
     let mut offset = 0i64;
     let mut polling_retries = 0usize;

@@ -50,7 +50,6 @@ impl Agent {
     fn run_inner(&mut self, ctx: &ExecutionContext, instruction: &str) -> Result<String> {
         self.check_cancelled(ctx)?;
         self.reset_run_state(ctx, instruction)?;
-        self.sync_provider_tools();
         self.emit_progress(self.current_working_progress());
 
         self.session.add_message(Message::user(instruction));
@@ -68,6 +67,7 @@ impl Agent {
             }
 
             self.maybe_compact_context(ctx);
+            self.sync_provider_tools(ctx);
             if self.behavior.compaction.refresh_system_prompt_each_turn || counters.steps == 0 {
                 self.session
                     .set_system_prompt(&self.build_run_system_prompt(ctx)?);
@@ -352,8 +352,8 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Agent;
     use crate::tools::ReadTool;
+    use crate::Agent;
     use tempfile::TempDir;
 
     fn minimal_agent() -> Agent {

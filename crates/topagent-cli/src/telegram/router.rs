@@ -64,12 +64,12 @@ fn route_callback_query_with_outbound<T: TelegramOutbound + ?Sized>(
 
     info!("received callback from chat {}: {}", chat_id, data);
 
-    let Some((approve, id)) = parse_approval_callback_data(data) else {
+    let Some((approve, id, scope)) = parse_approval_callback_data(data) else {
         let _ = outbound.answer_callback_query(&callback.id, Some("Unsupported action."), false);
         return;
     };
 
-    match session_manager.resolve_approval_callback(chat_id, id, approve) {
+    match session_manager.resolve_approval_callback(chat_id, id, approve, scope) {
         Ok(entry) => {
             let reply = format_approval_resolution(&entry, approve);
             if let Err(err) = outbound.answer_callback_query(&callback.id, Some(&reply), false) {
@@ -424,6 +424,7 @@ mod tests {
                 rollback_hint: Some(
                     "Use git revert or git reset if the commit was mistaken.".to_string(),
                 ),
+                capability: None,
             },
             None,
         );
@@ -714,7 +715,10 @@ mod tests {
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0].chat_id, 42);
         assert_eq!(edits[0].message_id, 17);
-        assert_eq!(edits[0].text, "Approval apr-1 approved: git commit: ship it.");
+        assert_eq!(
+            edits[0].text,
+            "Approval apr-1 approved: git commit: ship it."
+        );
         assert_eq!(
             mailbox.get("apr-1").unwrap().state,
             topagent_core::ApprovalState::Approved

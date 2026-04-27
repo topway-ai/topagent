@@ -1,6 +1,6 @@
 use super::{extract_exit_code, Agent};
 use crate::behavior::BashCommandClass;
-use crate::context::{ExecutionContext, ToolContext};
+use crate::context::ExecutionContext;
 use crate::provenance::fetched_content_source;
 use crate::run_snapshot::WorkspaceRunSnapshotStatus;
 use crate::tools::risky_shell_changed_path_hints;
@@ -27,7 +27,7 @@ impl Agent {
         name: String,
         args: serde_json::Value,
     ) -> Result<()> {
-        if self.tools.get(&name).is_none() {
+        if !self.harness.has_skill(&name) {
             self.record_tool_result(
                 id,
                 name.clone(),
@@ -47,7 +47,6 @@ impl Agent {
             return Ok(());
         }
 
-        let tool = self.tools.get(&name).unwrap();
         let changed_before = self.run_state.changed_files();
         let snapshot_status_before = if name == "bash" {
             ctx.run_snapshot_store()
@@ -56,7 +55,6 @@ impl Agent {
             None
         };
 
-        let tool_ctx = ToolContext::new(ctx, &self.options);
         let bash_cmd = if name == "bash" {
             Some(Self::extract_bash_command(&args))
         } else {
@@ -65,8 +63,11 @@ impl Agent {
         let mut bash_exit_code = None;
         self.emit_progress(self.tool_progress(&name, &args));
         self.check_cancelled(ctx)?;
-        let raw_result = match tool.execute(args.clone(), &tool_ctx) {
-            Ok(r) => r,
+        let execution = match self
+            .harness
+            .execute_skill(&name, args.clone(), ctx, &self.options)
+        {
+            Ok(execution) => execution,
             Err(e) => {
                 self.record_tool_result(
                     id,
@@ -77,6 +78,7 @@ impl Agent {
                 return Ok(());
             }
         };
+        let raw_result = execution.output;
         self.check_cancelled(ctx)?;
 
         let mut execution_started_by_bash = false;

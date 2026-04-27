@@ -56,6 +56,7 @@ impl ApprovalPolicy {
             scope_of_impact,
             expected_effect,
             rollback_hint,
+            capability: None,
         })
     }
 }

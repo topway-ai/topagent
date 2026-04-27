@@ -4,6 +4,10 @@ version = "0.1.0"
 name = "topagent-core"
 repository = "https://github.com/TopWayAI/topagent"
 
+[features]
+default = ["computer-use"]
+computer-use = []
+
 [dependencies]
 anyhow = "1"
 thiserror = "2"

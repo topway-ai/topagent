@@ -19,6 +19,7 @@ pub(super) fn handle_parsed_command(
         TelegramCommandKind::Approvals => handle_approvals(session_manager, chat_id),
         TelegramCommandKind::Approve => handle_approve(session_manager, chat_id, command.argument),
         TelegramCommandKind::Deny => handle_deny(session_manager, chat_id, command.argument),
+        TelegramCommandKind::Access => handle_access(session_manager, command.argument),
         TelegramCommandKind::Reset => handle_reset(session_manager, chat_id),
     }
 }
@@ -67,6 +68,10 @@ pub(super) fn handle_deny(
     argument: &str,
 ) -> String {
     session_manager.resolve_approval_command(chat_id, argument, false)
+}
+
+pub(super) fn handle_access(session_manager: &mut ChatSessionManager, argument: &str) -> String {
+    session_manager.access_command_reply(argument)
 }
 
 pub(super) fn handle_reset(session_manager: &mut ChatSessionManager, chat_id: i64) -> String {

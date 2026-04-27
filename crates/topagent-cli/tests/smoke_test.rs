@@ -454,6 +454,7 @@ fn test_cli_docs_consistency_readme_covers_all_subcommands() {
         "memory",
         "procedure",
         "run",
+        "access",
         "config",
         "doctor",
         "upgrade",
@@ -482,6 +483,7 @@ fn test_readme_bot_commands_table_agrees_with_bot_commands_truth() {
         "/approvals",
         "/approve",
         "/deny",
+        "/access",
         "/reset",
     ];
 

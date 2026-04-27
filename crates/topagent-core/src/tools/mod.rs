@@ -1,4 +1,6 @@
 mod bash;
+#[cfg(feature = "computer-use")]
+mod computer_use;
 mod edit;
 mod git;
 mod operator_preference;
@@ -9,6 +11,8 @@ mod write;
 
 pub(crate) use bash::risky_shell_changed_path_hints;
 pub use bash::BashTool;
+#[cfg(feature = "computer-use")]
+pub use computer_use::ComputerUseTool;
 pub use edit::EditTool;
 pub use git::{GitAddTool, GitBranchTool, GitCloneTool, GitCommitTool, GitDiffTool, GitStatusTool};
 pub use operator_preference::ManageOperatorPreferenceTool;
@@ -84,6 +88,8 @@ pub fn default_tools() -> ToolRegistry {
     registry.add(Box::new(WriteTool::new()));
     registry.add(Box::new(EditTool::new()));
     registry.add(Box::new(BashTool::new()));
+    #[cfg(feature = "computer-use")]
+    registry.add(Box::new(ComputerUseTool::new()));
     registry.add(Box::new(GitStatusTool::new()));
     registry.add(Box::new(GitDiffTool::new()));
     registry.add(Box::new(GitBranchTool::new()));

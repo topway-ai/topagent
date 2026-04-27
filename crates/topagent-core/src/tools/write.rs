@@ -1,3 +1,4 @@
+use crate::capability::AccessMode;
 use crate::context::ToolContext;
 use crate::file_util::atomic_write;
 use crate::run_snapshot::{RunSnapshotCaptureMetadata, RunSnapshotCaptureSource};
@@ -34,8 +35,12 @@ impl crate::tools::Tool for WriteTool {
     fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
         let args: WriteArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
-        let full_path = ctx.exec.resolve_path(&args.path)?;
-        if let Some(run_snapshot_store) = ctx.exec.run_snapshot_store() {
+        let full_path = ctx.resolve_path_for_access(
+            &args.path,
+            AccessMode::Write,
+            "write the file requested by the operator",
+        )?;
+        if let Some(run_snapshot_store) = ctx.run_snapshot_store() {
             run_snapshot_store.capture_file(
                 &args.path,
                 RunSnapshotCaptureMetadata::new(
@@ -75,7 +80,7 @@ mod tests {
             &ctx,
         );
         assert!(result.is_ok(), "{:?}", result);
-        let content = fs::read_to_string(ctx.exec.resolve_path("test.txt").unwrap()).unwrap();
+        let content = fs::read_to_string(ctx.resolve_path("test.txt").unwrap()).unwrap();
         assert_eq!(content, "hello world");
     }
 
@@ -91,7 +96,7 @@ mod tests {
             &ctx,
         );
         assert!(result.is_ok(), "{:?}", result);
-        let content = fs::read_to_string(ctx.exec.resolve_path("a/b/c.txt").unwrap()).unwrap();
+        let content = fs::read_to_string(ctx.resolve_path("a/b/c.txt").unwrap()).unwrap();
         assert_eq!(content, "nested");
     }
 

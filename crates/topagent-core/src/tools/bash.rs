@@ -1,3 +1,6 @@
+use crate::capability::{
+    assess_shell_command, AccessMode, CapabilityKind, CapabilityRequest, RiskLevel,
+};
 use crate::command_exec::{run_command, CommandSandboxPolicy};
 use crate::context::ToolContext;
 use crate::file_util::format_command_output_with_limit;
@@ -86,27 +89,56 @@ impl crate::tools::Tool for BashTool {
     fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
         let args: BashArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
-        if ctx.exec.is_cancelled() {
+        if ctx.is_cancelled() {
             return Err(Error::Stopped("user requested stop".into()));
         }
+
+        let assessment = assess_shell_command(&args.command);
+        if assessment.network_required {
+            ctx.authorize_capability(CapabilityRequest::new(
+                CapabilityKind::Network,
+                args.command.clone(),
+                AccessMode::Read,
+                RiskLevel::Safe,
+                "shell command requires network access",
+            ))?;
+        }
+        ctx.authorize_capability(CapabilityRequest::new(
+            assessment.kind,
+            args.command.clone(),
+            AccessMode::Execute,
+            assessment.risk,
+            assessment.reason.clone(),
+        ))?;
 
         // Block commands that attempt to access secrets.
         if let Some(block_msg) = secrets::check_bash_secret_access(&args.command) {
             return Ok(block_msg);
         }
 
-        if let Some(run_snapshot_store) = ctx.exec.run_snapshot_store() {
+        if let Some(run_snapshot_store) = ctx.run_snapshot_store() {
             if let Some(plan) = run_snapshot_plan(&args.command) {
                 capture_risky_shell_run_snapshot(run_snapshot_store, &plan, ctx)?;
             }
         }
 
+        let full_profile = ctx.capability_manager().is_some_and(|manager| {
+            manager.config().profile == crate::capability::CapabilityProfile::Full
+        });
+        let sandbox = if full_profile {
+            CommandSandboxPolicy::Host
+        } else if assessment.network_required {
+            CommandSandboxPolicy::WorkspaceNetwork
+        } else {
+            CommandSandboxPolicy::Workspace
+        };
+
         let output = run_command(
             "sh",
             &["-c".to_string(), args.command],
-            &ctx.exec.workspace_root,
-            ctx.exec.cancel_token(),
-            CommandSandboxPolicy::Workspace,
+            ctx.workspace_root(),
+            ctx.cancel_token(),
+            sandbox,
             "command",
         )?;
         Ok(format_command_output_with_limit(
@@ -152,10 +184,10 @@ fn normalize_run_snapshot_paths(paths: &[String], ctx: &ToolContext) -> Vec<Stri
             normalized.insert(".".to_string());
             continue;
         }
-        let Ok(full_path) = ctx.exec.resolve_path(path) else {
+        let Ok(full_path) = ctx.resolve_path(path) else {
             continue;
         };
-        if let Ok(relative_path) = full_path.strip_prefix(&ctx.exec.workspace_root) {
+        if let Ok(relative_path) = full_path.strip_prefix(ctx.workspace_root()) {
             let relative = relative_path.to_string_lossy().replace('\\', "/");
             if relative.is_empty() {
                 normalized.insert(".".to_string());

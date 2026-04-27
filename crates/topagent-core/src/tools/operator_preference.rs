@@ -1,4 +1,5 @@
 use crate::behavior::default_memory_policy;
+use crate::capability::{AccessMode, CapabilityKind, CapabilityRequest, RiskLevel};
 use crate::context::ToolContext;
 use crate::operator_profile::{
     load_operator_profile, save_operator_profile, OperatorPreferenceRecord, PreferenceCategory,
@@ -108,9 +109,16 @@ impl crate::tools::Tool for ManageOperatorPreferenceTool {
 }
 
 fn set_preference(args: ManageOperatorPreferenceArgs, ctx: &ToolContext<'_>) -> Result<String> {
+    ctx.authorize_capability(CapabilityRequest::new(
+        CapabilityKind::MemoryWrite,
+        USER_PROFILE_RELATIVE_PATH,
+        AccessMode::Write,
+        RiskLevel::High,
+        "persist a durable operator preference",
+    ))?;
     if let Some(reason) = default_memory_policy().memory_write_block_reason(
         "manage_operator_preference",
-        ctx.exec.run_trust_context(),
+        ctx.run_trust_context(),
         false,
     ) {
         return Err(Error::ToolFailed(format!(
@@ -151,7 +159,7 @@ fn set_preference(args: ManageOperatorPreferenceArgs, ctx: &ToolContext<'_>) -> 
         validate_preference_value(reason)?;
     }
 
-    let mut profile = load_operator_profile(&ctx.exec.workspace_root)?;
+    let mut profile = load_operator_profile(ctx.workspace_root())?;
     let existed = profile.upsert(OperatorPreferenceRecord {
         key: key.clone(),
         category,
@@ -159,7 +167,7 @@ fn set_preference(args: ManageOperatorPreferenceArgs, ctx: &ToolContext<'_>) -> 
         rationale: rationale.clone(),
         updated_at: current_timestamp()?,
     });
-    save_operator_profile(&ctx.exec.workspace_root, &profile)?;
+    save_operator_profile(ctx.workspace_root(), &profile)?;
 
     let verb = if existed { "Updated" } else { "Stored" };
     let mut response = format!(
@@ -177,9 +185,16 @@ fn set_preference(args: ManageOperatorPreferenceArgs, ctx: &ToolContext<'_>) -> 
 }
 
 fn remove_preference(args: ManageOperatorPreferenceArgs, ctx: &ToolContext<'_>) -> Result<String> {
+    ctx.authorize_capability(CapabilityRequest::new(
+        CapabilityKind::MemoryWrite,
+        USER_PROFILE_RELATIVE_PATH,
+        AccessMode::Write,
+        RiskLevel::High,
+        "remove a durable operator preference",
+    ))?;
     if let Some(reason) = default_memory_policy().memory_write_block_reason(
         "manage_operator_preference",
-        ctx.exec.run_trust_context(),
+        ctx.run_trust_context(),
         false,
     ) {
         return Err(Error::ToolFailed(format!(
@@ -195,7 +210,7 @@ fn remove_preference(args: ManageOperatorPreferenceArgs, ctx: &ToolContext<'_>) 
     })?;
     let key = normalize_key(raw_key)?;
 
-    let mut profile = load_operator_profile(&ctx.exec.workspace_root)?;
+    let mut profile = load_operator_profile(ctx.workspace_root())?;
     if !profile.remove(&key) {
         return Ok(format!(
             "No durable operator preference stored for `{}`.",
@@ -203,12 +218,12 @@ fn remove_preference(args: ManageOperatorPreferenceArgs, ctx: &ToolContext<'_>) 
         ));
     }
 
-    save_operator_profile(&ctx.exec.workspace_root, &profile)?;
+    save_operator_profile(ctx.workspace_root(), &profile)?;
     Ok(format!("Removed operator preference `{}`.", key))
 }
 
 fn list_preferences(ctx: &ToolContext<'_>) -> Result<String> {
-    let profile = load_operator_profile(&ctx.exec.workspace_root)?;
+    let profile = load_operator_profile(ctx.workspace_root())?;
     if profile.preferences.is_empty() {
         return Ok("No durable operator preferences stored.".to_string());
     }
@@ -279,7 +294,7 @@ fn normalize_preference_text(
         )));
     }
 
-    let redacted = ctx.exec.secrets().redact(&collapsed);
+    let redacted = ctx.secrets().redact(&collapsed);
     if redacted.as_ref() != collapsed {
         return Err(Error::InvalidInput(format!(
             "manage_operator_preference: {} contains secret-like material and cannot be stored durably",

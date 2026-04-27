@@ -1,8 +1,13 @@
 use crate::approval::ApprovalMailbox;
+use crate::approval::{ApprovalCheck, ApprovalRequestDraft, ApprovalTriggerKind};
+use crate::capability::{
+    redact_sensitive_target, AccessMode, CapabilityDecision, CapabilityError, CapabilityKind,
+    CapabilityManager, CapabilityRequest, GrantScope, RiskLevel,
+};
 use crate::provenance::RunTrustContext;
 use crate::run_snapshot::WorkspaceRunSnapshotStore;
 use crate::secrets::SecretRegistry;
-use crate::{cancel::CancellationToken, runtime::RuntimeOptions};
+use crate::{cancel::CancellationToken, runtime::RuntimeOptions, Error};
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -15,6 +20,9 @@ pub struct ExecutionContext {
     run_trust_context: RunTrustContext,
     approval_mailbox: Option<ApprovalMailbox>,
     run_snapshot_store: Option<WorkspaceRunSnapshotStore>,
+    capability_manager: Option<CapabilityManager>,
+    task_id: Option<String>,
+    session_id: Option<String>,
 }
 
 impl ExecutionContext {
@@ -28,6 +36,9 @@ impl ExecutionContext {
             run_trust_context: RunTrustContext::default(),
             approval_mailbox: None,
             run_snapshot_store: None,
+            capability_manager: None,
+            task_id: None,
+            session_id: None,
         }
     }
 
@@ -79,6 +90,21 @@ impl ExecutionContext {
         self
     }
 
+    pub fn with_capability_manager(mut self, capability_manager: CapabilityManager) -> Self {
+        self.capability_manager = Some(capability_manager);
+        self
+    }
+
+    pub fn with_task_id(mut self, task_id: impl Into<String>) -> Self {
+        self.task_id = Some(task_id.into());
+        self
+    }
+
+    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+        self.session_id = Some(session_id.into());
+        self
+    }
+
     pub fn secrets(&self) -> &SecretRegistry {
         &self.secrets
     }
@@ -101,6 +127,18 @@ impl ExecutionContext {
 
     pub fn run_snapshot_store(&self) -> Option<&WorkspaceRunSnapshotStore> {
         self.run_snapshot_store.as_ref()
+    }
+
+    pub fn capability_manager(&self) -> Option<&CapabilityManager> {
+        self.capability_manager.as_ref()
+    }
+
+    pub fn task_id(&self) -> Option<&str> {
+        self.task_id.as_deref()
+    }
+
+    pub fn session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
     }
 
     pub fn is_cancelled(&self) -> bool {
@@ -155,17 +193,276 @@ impl ExecutionContext {
 
         Ok(target)
     }
+
+    pub fn resolve_path_for_access(
+        &self,
+        path: &str,
+        mode: AccessMode,
+        reason: impl Into<String>,
+    ) -> Result<PathBuf, super::Error> {
+        if self.capability_manager.is_none() {
+            return self.resolve_path(path);
+        }
+
+        let target = self.resolve_access_target(path)?;
+        let target_label = target.display().to_string();
+        let kind = if crate::capability::is_secret_target(&target_label) {
+            CapabilityKind::SecretRead
+        } else {
+            CapabilityKind::Filesystem
+        };
+        let risk = if kind == CapabilityKind::SecretRead {
+            RiskLevel::Critical
+        } else if path_in_workspace(&target, &self.workspace_root) {
+            RiskLevel::Safe
+        } else {
+            RiskLevel::Moderate
+        };
+        self.authorize_capability(CapabilityRequest::new(
+            kind,
+            target_label,
+            mode,
+            risk,
+            reason,
+        ))?;
+        Ok(target)
+    }
+
+    pub fn authorize_capability(&self, request: CapabilityRequest) -> Result<(), super::Error> {
+        let request = request
+            .with_task_id(self.task_id.clone())
+            .with_session_id(self.session_id.clone());
+        let Some(manager) = &self.capability_manager else {
+            return Ok(());
+        };
+
+        match manager.check(&request, &self.workspace_root) {
+            CapabilityDecision::Allow(_) => {
+                manager
+                    .authorize(&request, &self.workspace_root)
+                    .map_err(|err| Error::Capability(Box::new(err)))?;
+                Ok(())
+            }
+            CapabilityDecision::Deny(detail) => {
+                Err(Error::Capability(Box::new(CapabilityError::Denied {
+                    kind: detail.kind,
+                    target: detail.target,
+                    mode: detail.mode,
+                    risk: detail.risk,
+                    reason: detail.reason,
+                })))
+            }
+            CapabilityDecision::NeedsApproval(draft) => {
+                manager.record_approval_requested(&request);
+                let Some(mailbox) = &self.approval_mailbox else {
+                    return Err(Error::Capability(Box::new(
+                        CapabilityError::NeedsApproval {
+                            request_id: "unavailable".to_string(),
+                            kind: draft.detail.kind,
+                            target: draft.detail.target,
+                            mode: draft.detail.mode,
+                            risk: draft.detail.risk,
+                            reason: draft.detail.reason,
+                            approval_options: draft.approval_options,
+                        },
+                    )));
+                };
+
+                let short_summary = format!(
+                    "{} {} access to {}",
+                    draft.detail.kind,
+                    draft.detail.mode.label(),
+                    redact_sensitive_target(&draft.detail.target)
+                );
+                let approval = ApprovalRequestDraft {
+                    action_kind: ApprovalTriggerKind::CapabilityAccess,
+                    short_summary,
+                    exact_action: draft.detail.target.clone(),
+                    reason: draft.detail.reason.clone(),
+                    scope_of_impact: format!(
+                        "{} {} access under the {} profile",
+                        draft.detail.kind,
+                        draft.detail.mode.label(),
+                        draft.detail.profile
+                    ),
+                    expected_effect: "Creates a scoped grant if approved, then retries the blocked operation."
+                        .to_string(),
+                    rollback_hint: Some(
+                        "Use `topagent access revoke <target>` or `topagent access lockdown` to remove grants."
+                            .to_string(),
+                    ),
+                    capability: Some(draft),
+                };
+
+                match mailbox.request_decision(approval, self.cancel_token()) {
+                    ApprovalCheck::Approved(entry) => {
+                        let Some(capability) = &entry.request.capability else {
+                            return Ok(());
+                        };
+                        let scope = entry
+                            .capability_scope
+                            .or_else(|| capability.approval_options.first().copied())
+                            .unwrap_or(GrantScope::Once);
+                        let persisted = scope == GrantScope::Permanent;
+                        let grant = capability
+                            .to_grant(scope, persisted)
+                            .with_task_id(request.task_id.clone())
+                            .with_session_id(request.session_id.clone());
+                        manager.add_grant(grant);
+                        manager.record_approval_result(
+                            &request,
+                            true,
+                            format!("approved with {} scope", scope.as_str()),
+                        );
+                        manager
+                            .authorize(&request, &self.workspace_root)
+                            .map_err(|err| Error::Capability(Box::new(err)))
+                    }
+                    ApprovalCheck::Pending(entry) => {
+                        Err(Error::ApprovalRequired(Box::new(entry.request)))
+                    }
+                    ApprovalCheck::Denied(entry) => {
+                        manager.record_approval_result(&request, false, "approval denied");
+                        Err(Error::Capability(Box::new(CapabilityError::Denied {
+                            kind: request.kind,
+                            target: request.target,
+                            mode: request.mode,
+                            risk: request.risk,
+                            reason: format!("approval denied for {}", entry.request.short_summary),
+                        })))
+                    }
+                    ApprovalCheck::Expired(entry) | ApprovalCheck::Superseded(entry) => {
+                        manager.record_approval_result(
+                            &request,
+                            false,
+                            format!("approval {}", entry.state.label()),
+                        );
+                        Err(Error::Capability(Box::new(
+                            CapabilityError::NeedsApproval {
+                                request_id: entry.request.id,
+                                kind: request.kind,
+                                target: request.target,
+                                mode: request.mode,
+                                risk: request.risk,
+                                reason: format!("approval {}", entry.state.label()),
+                                approval_options: Vec::new(),
+                            },
+                        )))
+                    }
+                }
+            }
+        }
+    }
+
+    fn resolve_access_target(&self, path: &str) -> Result<PathBuf, super::Error> {
+        let raw = expand_home(path);
+        let candidate = if raw.is_absolute() {
+            raw
+        } else {
+            self.workspace_root.join(raw)
+        };
+        let normalized = normalize_path(candidate);
+        if let Ok(canonical) = normalized.canonicalize() {
+            Ok(canonical)
+        } else {
+            Ok(normalized)
+        }
+    }
+}
+
+fn expand_home(path: &str) -> PathBuf {
+    if path == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(path)
+}
+
+fn normalize_path(path: PathBuf) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            Component::Normal(part) => normalized.push(part),
+            Component::RootDir | Component::Prefix(_) => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn path_in_workspace(target: &Path, workspace_root: &Path) -> bool {
+    let workspace = workspace_root
+        .canonicalize()
+        .unwrap_or_else(|_| normalize_path(workspace_root.to_path_buf()));
+    let target = target
+        .canonicalize()
+        .unwrap_or_else(|_| normalize_path(target.to_path_buf()));
+    target.starts_with(workspace)
 }
 
 #[derive(Debug, Clone)]
 pub struct ToolContext<'a> {
-    pub exec: &'a ExecutionContext,
+    pub(crate) exec: &'a ExecutionContext,
     pub runtime: &'a RuntimeOptions,
 }
 
 impl<'a> ToolContext<'a> {
     pub fn new(exec: &'a ExecutionContext, runtime: &'a RuntimeOptions) -> Self {
         Self { exec, runtime }
+    }
+
+    pub fn workspace_root(&self) -> &Path {
+        &self.exec.workspace_root
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.exec.is_cancelled()
+    }
+
+    pub fn cancel_token(&self) -> Option<&CancellationToken> {
+        self.exec.cancel_token()
+    }
+
+    pub fn secrets(&self) -> &SecretRegistry {
+        self.exec.secrets()
+    }
+
+    pub fn run_trust_context(&self) -> &RunTrustContext {
+        self.exec.run_trust_context()
+    }
+
+    pub fn run_snapshot_store(&self) -> Option<&WorkspaceRunSnapshotStore> {
+        self.exec.run_snapshot_store()
+    }
+
+    pub fn capability_manager(&self) -> Option<&CapabilityManager> {
+        self.exec.capability_manager()
+    }
+
+    pub fn resolve_path(&self, relative_path: &str) -> Result<PathBuf, super::Error> {
+        self.exec.resolve_path(relative_path)
+    }
+
+    pub fn resolve_path_for_access(
+        &self,
+        path: &str,
+        mode: AccessMode,
+        reason: impl Into<String>,
+    ) -> Result<PathBuf, super::Error> {
+        self.exec.resolve_path_for_access(path, mode, reason)
+    }
+
+    pub fn authorize_capability(&self, request: CapabilityRequest) -> Result<(), super::Error> {
+        self.exec.authorize_capability(request)
     }
 }
 
@@ -267,5 +564,41 @@ mod tests {
         ));
         let ctx = ctx.with_run_trust_context(trust.clone());
         assert_eq!(ctx.run_trust_context(), &trust);
+    }
+
+    #[test]
+    fn test_tool_context_exposes_authorized_runtime_boundary() {
+        use crate::capability::{AccessConfig, CapabilityProfile};
+
+        let workspace = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let manager = CapabilityManager::new(
+            AccessConfig::for_profile(CapabilityProfile::Workspace),
+            Vec::new(),
+            "test",
+            "unit",
+        );
+        let exec =
+            ExecutionContext::new(workspace.path().to_path_buf()).with_capability_manager(manager);
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        let workspace_target = ctx
+            .resolve_path_for_access(
+                "file.txt",
+                AccessMode::Read,
+                "read a workspace file through the skill context",
+            )
+            .unwrap();
+        assert!(workspace_target.starts_with(ctx.workspace_root()));
+
+        let outside_target = outside.path().join("file.txt");
+        let denied = ctx.resolve_path_for_access(
+            outside_target.to_str().unwrap(),
+            AccessMode::Read,
+            "read a file outside the workspace through the skill context",
+        );
+        assert!(denied.is_err());
+        assert!(denied.unwrap_err().to_string().contains("approval"));
     }
 }

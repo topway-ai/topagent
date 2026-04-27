@@ -1,6 +1,6 @@
 # TopAgent
 
-A Telegram-first, CLI-backed local coding agent that reads one repository, plans changes, and executes them with file tools and local shell commands.
+A Telegram-first, CLI-backed local coding agent that reads one repository, plans changes, and executes work through Harness-dispatched Skills such as file reads/writes, shell commands, git operations, memory writes, and a controlled computer_use scaffold.
 
 Supports two LLM providers through one shared OpenAI-compatible transport seam:
 - **OpenRouter** (default) — default model: `minimax/minimax-m2.7`
@@ -76,6 +76,50 @@ TopAgent also keeps a narrow trust boundary for external content:
 - low-trust content can still be analyzed as data, but risky actions and durable memory writes get stricter gating when that content materially influences the run
 - TopAgent does not claim to solve prompt injection; it only keeps provenance explicit enough to avoid silent promotion or silent risky-action drift
 
+## Architecture model
+
+TopAgent is split into three runtime layers:
+
+| Layer | Owns |
+|-------|------|
+| Agent | The decision loop: user goal, task state, plan, model turns, phase, interpreting Skill results, and final answers. |
+| Skills | Executable capabilities: stable schema, declared effects, risk metadata, read-only/mutating/destructive flags, parallel-safety metadata, and implementation. |
+| Harness | Runtime control: context bundle, phase-based Skill exposure, dispatch, access profiles, grants, approvals, audit, sandbox hooks, and future computer/search controls. |
+
+The Agent does not call raw tool implementations directly. Existing built-in tools are wrapped as Skills and executed through the Harness dispatcher. Skills are exposed by phase (`Investigate`, `Plan`, `Patch`, `Verify`, `Finalize`) so ordinary model turns do not see every capability at once.
+
+### How to add a new Skill
+
+1. Define the input schema and output behavior.
+2. Declare effects, risk, capability requirements, read-only/mutating/destructive flags, and parallel-safety.
+3. Implement execution behind the Skill boundary using existing redaction, sandbox, and bounded-output helpers.
+4. Register the Skill in the registry used by the Agent Harness.
+5. Add tests for effects, phase exposure, capability/approval behavior, and execution.
+6. Document any operator-visible command, access requirement, or limitation.
+
+## Access profiles
+
+TopAgent uses an explicit access profile plus scoped grants. The recommended profile for real development is `developer`.
+
+| Profile | Behavior |
+|---------|----------|
+| `workspace` | Safest mode. Workspace filesystem access only; network/web access is disabled unless granted; destructive actions require approval. |
+| `developer` | Recommended default. Workspace read/write and normal build/test/git/package-doc lookup workflows are smooth; network/web search is enabled by default; destructive, global, private, deploy, send/upload, sudo, and git push actions require approval. |
+| `computer` | Developer mode plus the `computer_use` capability. UI actions still go through high-impact approval gates. |
+| `full` | Broad local filesystem, shell, and network access. It is easy to enable, but never silent; high-impact actions still require approval. |
+
+Full access still requires approval for sudo, destructive deletes, secret paths, credential stores, system service changes, external sending/posting/uploading, purchases/payments, deploy/release, git push, chmod/chown outside the workspace, and global package installs.
+
+```bash
+topagent access status
+topagent access set developer
+topagent access set full
+topagent access grant ~/Downloads read --scope task
+topagent access lockdown
+```
+
+`topagent access lockdown` immediately returns to the `workspace` profile, disables broad network and `computer_use`, and clears grants. Access-sensitive events are written to a local audit log and shown with `topagent access audit`.
+
 ### Bot commands
 
 | Command | Action |
@@ -86,6 +130,13 @@ TopAgent also keeps a narrow trust boundary for external content:
 | `/approvals` | List pending approvals for this chat |
 | `/approve <id>` | Approve a pending action |
 | `/deny <id>` | Deny a pending action |
+| `/access` | Show access status |
+| `/access status` | Show access status |
+| `/access set developer` | Switch to recommended developer profile |
+| `/access set full` | Switch to full profile with a visible warning |
+| `/access grant ...` | Create a scoped grant |
+| `/access revoke ...` | Revoke grants |
+| `/access lockdown` | Revert to workspace mode and clear grants |
 | `/reset` | Clear this chat's saved transcript |
 
 ### Service management
@@ -115,6 +166,12 @@ topagent service restart     # restart the background service
 topagent service uninstall   # stop service, remove unit+env files, keep binary
 topagent run diff            # preview what restore would change
 topagent run restore         # restore the latest run snapshot and clear Telegram transcripts
+topagent access status       # show active access profile, defaults, and grants
+topagent access set developer # use the recommended developer profile
+topagent access set full     # enable broad local access with a visible warning
+topagent access grant ~/Downloads read --scope task # allow a scoped path read
+topagent access audit        # show recent access-sensitive events
+topagent access lockdown     # return to workspace mode and clear grants
 topagent config inspect      # What provider/model/keys am I actually using?
 topagent run status          # What happened in my last run? (run snapshot, transcripts, restore guidance)
 topagent doctor              # Is everything healthy? (deep diagnostics)
@@ -178,6 +235,7 @@ Saved trajectories now include provenance labels from the run. A trajectory can 
 - Telegram: private chats only, text messages only
 - One workspace per process
 - Linux only (systemd required for background service)
+- `computer_use` is a scaffolded, feature-gated tool surface in this release. It enforces the access profile and approval gates and prepares an isolated workspace session directory, but it does not yet perform real desktop automation without a future provider/sidecar integration.
 
 ## Verified delivery
 

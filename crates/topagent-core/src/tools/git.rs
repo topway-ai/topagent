@@ -1,3 +1,4 @@
+use crate::capability::{AccessMode, CapabilityKind, CapabilityRequest, RiskLevel};
 use crate::context::ToolContext;
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
@@ -39,9 +40,16 @@ impl crate::tools::Tool for GitStatusTool {
     }
 
     fn execute(&self, _args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
+        ctx.authorize_capability(CapabilityRequest::new(
+            CapabilityKind::Git,
+            "git status",
+            AccessMode::Execute,
+            RiskLevel::Safe,
+            "inspect workspace git status",
+        ))?;
         let output = Command::new("git")
             .args(["status", "--short"])
-            .current_dir(&ctx.exec.workspace_root)
+            .current_dir(ctx.workspace_root())
             .output()
             .map_err(|e| Error::ToolFailed(format!("failed to execute git status: {}", e)))?;
 
@@ -93,16 +101,23 @@ impl crate::tools::Tool for GitDiffTool {
     fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
         let args: GitDiffArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
+        ctx.authorize_capability(CapabilityRequest::new(
+            CapabilityKind::Git,
+            "git diff",
+            AccessMode::Execute,
+            RiskLevel::Safe,
+            "inspect workspace git diff",
+        ))?;
 
         let mut cmd = Command::new("git");
         cmd.args(["diff"]);
 
         if let Some(path) = &args.path {
-            let full_path = ctx.exec.resolve_path(path)?;
+            let full_path = ctx.resolve_path(path)?;
             cmd.arg(full_path);
         }
 
-        cmd.current_dir(&ctx.exec.workspace_root);
+        cmd.current_dir(ctx.workspace_root());
 
         let output = cmd
             .output()
@@ -153,9 +168,16 @@ impl crate::tools::Tool for GitBranchTool {
     }
 
     fn execute(&self, _args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
+        ctx.authorize_capability(CapabilityRequest::new(
+            CapabilityKind::Git,
+            "git branch",
+            AccessMode::Execute,
+            RiskLevel::Safe,
+            "inspect current git branch",
+        ))?;
         let output = Command::new("git")
             .args(["branch", "--show-current"])
-            .current_dir(&ctx.exec.workspace_root)
+            .current_dir(ctx.workspace_root())
             .output()
             .map_err(|e| Error::ToolFailed(format!("failed to execute git branch: {}", e)))?;
 
@@ -216,9 +238,23 @@ impl crate::tools::Tool for GitCloneTool {
     fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
         let args: GitCloneArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
+        ctx.authorize_capability(CapabilityRequest::new(
+            CapabilityKind::Network,
+            args.url.clone(),
+            AccessMode::Read,
+            RiskLevel::Safe,
+            "clone a remote git repository",
+        ))?;
+        ctx.authorize_capability(CapabilityRequest::new(
+            CapabilityKind::Git,
+            args.url.clone(),
+            AccessMode::Execute,
+            RiskLevel::Moderate,
+            "clone a git repository into the workspace",
+        ))?;
 
         let target_dir = if let Some(dir) = args.directory {
-            ctx.exec.workspace_root.join(dir)
+            ctx.workspace_root().join(dir)
         } else {
             let repo_name = args
                 .url
@@ -226,7 +262,7 @@ impl crate::tools::Tool for GitCloneTool {
                 .split('/')
                 .next_back()
                 .unwrap_or("repo");
-            ctx.exec.workspace_root.join(repo_name)
+            ctx.workspace_root().join(repo_name)
         };
 
         if target_dir.exists() {
@@ -239,7 +275,7 @@ impl crate::tools::Tool for GitCloneTool {
         let mut cmd = Command::new("git");
         cmd.args(["clone", &args.url])
             .arg(&target_dir)
-            .current_dir(&ctx.exec.workspace_root);
+            .current_dir(ctx.workspace_root());
 
         let output = cmd
             .output()
@@ -301,6 +337,13 @@ impl crate::tools::Tool for GitAddTool {
     fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
         let args: GitAddArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
+        ctx.authorize_capability(CapabilityRequest::new(
+            CapabilityKind::Git,
+            "git add",
+            AccessMode::Execute,
+            RiskLevel::Moderate,
+            "stage workspace files in git",
+        ))?;
 
         if args.paths.is_empty() {
             return Err(Error::InvalidInput(
@@ -312,11 +355,11 @@ impl crate::tools::Tool for GitAddTool {
         cmd.args(["add"]);
 
         for path in &args.paths {
-            let full_path = ctx.exec.resolve_path(path)?;
+            let full_path = ctx.resolve_path(path)?;
             cmd.arg(full_path);
         }
 
-        cmd.current_dir(&ctx.exec.workspace_root);
+        cmd.current_dir(ctx.workspace_root());
 
         let output = cmd
             .output()
@@ -373,6 +416,13 @@ impl crate::tools::Tool for GitCommitTool {
     fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String> {
         let args: GitCommitArgs =
             serde_json::from_value(args).map_err(|e| Error::InvalidInput(e.to_string()))?;
+        ctx.authorize_capability(CapabilityRequest::new(
+            CapabilityKind::Git,
+            "git commit",
+            AccessMode::Execute,
+            RiskLevel::Moderate,
+            "create a local git commit",
+        ))?;
 
         if args.message.trim().is_empty() {
             return Err(Error::InvalidInput(
@@ -382,7 +432,7 @@ impl crate::tools::Tool for GitCommitTool {
 
         let output = Command::new("git")
             .args(["commit", "-m", &args.message])
-            .current_dir(&ctx.exec.workspace_root)
+            .current_dir(ctx.workspace_root())
             .output()
             .map_err(|e| Error::ToolFailed(format!("failed to execute git commit: {}", e)))?;
 

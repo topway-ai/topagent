@@ -8,6 +8,9 @@ use topagent_core::{
     ApprovalMailboxMode, CancellationToken, Message, ProgressCallback, ProgressUpdate,
     RuntimeOptions, TelegramAdapter, WorkspaceRunSnapshotStore,
 };
+use topagent_core::{
+    AccessMode, CapabilityGrant, CapabilityManager, CapabilityProfile, GrantScope,
+};
 use tracing::{error, info, warn};
 
 use crate::config::defaults::TELEGRAM_BOUND_DM_USER_ID_KEY;
@@ -37,6 +40,7 @@ pub(crate) struct ChatSessionManager {
     pub allowed_dm_username: Option<String>,
     pub bound_dm_user_id: Option<i64>,
     env_path: Option<PathBuf>,
+    access_manager: CapabilityManager,
 }
 
 pub(crate) struct RunningChatTask {
@@ -50,7 +54,7 @@ pub(crate) struct RunningChatTask {
 }
 
 impl ChatSessionManager {
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, dead_code)]
     pub fn new(
         route: ModelRoute,
         configured_default_model: String,
@@ -61,6 +65,33 @@ impl ChatSessionManager {
         allowed_dm_username: Option<String>,
         bound_dm_user_id: Option<i64>,
         env_path: Option<PathBuf>,
+    ) -> Self {
+        Self::new_with_access_manager(
+            route,
+            configured_default_model,
+            api_key,
+            options,
+            workspace_root,
+            secrets,
+            allowed_dm_username,
+            bound_dm_user_id,
+            env_path,
+            CapabilityManager::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_access_manager(
+        route: ModelRoute,
+        configured_default_model: String,
+        api_key: String,
+        options: RuntimeOptions,
+        workspace_root: PathBuf,
+        secrets: topagent_core::SecretRegistry,
+        allowed_dm_username: Option<String>,
+        bound_dm_user_id: Option<i64>,
+        env_path: Option<PathBuf>,
+        access_manager: CapabilityManager,
     ) -> Self {
         let (completed_tx, completed_rx) = mpsc::channel();
         let memory = prepare_workspace_memory(workspace_root.clone());
@@ -79,6 +110,7 @@ impl ChatSessionManager {
             allowed_dm_username,
             bound_dm_user_id,
             env_path,
+            access_manager,
         }
     }
 
@@ -187,9 +219,13 @@ impl ChatSessionManager {
         let transcript = self.load_redacted_transcript(chat_id);
         let prepared = prepare_run_context(ctx, &self.memory, instruction, Some(&transcript));
         PreparedRunContext {
-            run_ctx: prepared.run_ctx.with_workspace_run_snapshot_store(
-                WorkspaceRunSnapshotStore::new(ctx.workspace_root.clone()),
-            ),
+            run_ctx: prepared
+                .run_ctx
+                .with_workspace_run_snapshot_store(WorkspaceRunSnapshotStore::new(
+                    ctx.workspace_root.clone(),
+                ))
+                .with_capability_manager(self.access_manager.clone())
+                .with_session_id(format!("telegram-chat-{chat_id}")),
             loaded_procedure_files: prepared.loaded_procedure_files,
         }
     }
@@ -298,11 +334,87 @@ impl ChatSessionManager {
         reply
     }
 
+    pub(crate) fn access_command_reply(&mut self, argument: &str) -> String {
+        let parts = argument.split_whitespace().collect::<Vec<_>>();
+        match parts.as_slice() {
+            [] | ["status"] => crate::access::render_access_status(&self.access_manager),
+            ["set", profile] => match profile.parse::<CapabilityProfile>() {
+                Ok(profile) => {
+                    let warning = if profile == CapabilityProfile::Full {
+                        "WARNING: full access enables broad local filesystem, shell, and network access. High-impact actions still require explicit approval.\n"
+                    } else {
+                        ""
+                    };
+                    self.access_manager
+                        .set_profile(profile, format!("set from Telegram to {profile}"));
+                    format!("{warning}Access profile set to {profile}.")
+                }
+                Err(err) => err,
+            },
+            ["grant", target, mode] => self.create_telegram_grant(target, mode, GrantScope::Session),
+            ["grant", target, mode, "--scope", scope] => match scope.parse::<GrantScope>() {
+                Ok(scope) => self.create_telegram_grant(target, mode, scope),
+                Err(err) => err,
+            },
+            ["revoke", target] => {
+                let removed = self
+                    .access_manager
+                    .revoke_grants_for_target(&crate::access::normalize_target(target));
+                if removed == 0 {
+                    format!("No grants matched {target}.")
+                } else {
+                    format!("Revoked {removed} grant(s) matching {target}.")
+                }
+            }
+            ["lockdown"] => {
+                self.access_manager.lockdown();
+                "Lockdown activated: profile is workspace, network/computer_use are disabled, and grants were cleared.".to_string()
+            }
+            ["audit"] => match crate::operational_paths::access_audit_path()
+                .map(topagent_core::CapabilityAuditLog::new)
+                .and_then(|audit| audit.read_recent(10).map_err(Into::into))
+            {
+                Ok(records) if records.is_empty() => "No access audit records.".to_string(),
+                Ok(records) => records
+                    .into_iter()
+                    .map(|record| {
+                        format!(
+                            "{} {:?} {} {}",
+                            record.timestamp_unix, record.event, record.decision, record.reason
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                Err(err) => format!("Could not read access audit: {err}"),
+            },
+            _ => "Usage: /access status | /access set developer | /access set full | /access grant <target> <mode> [--scope once|task|path|session|permanent] | /access revoke <target> | /access audit | /access lockdown".to_string(),
+        }
+    }
+
+    fn create_telegram_grant(&self, target: &str, mode: &str, scope: GrantScope) -> String {
+        let mode = match mode.parse::<AccessMode>() {
+            Ok(mode) => mode,
+            Err(err) => return err,
+        };
+        let grant = CapabilityGrant::new(
+            crate::access::infer_kind(target),
+            crate::access::normalize_target(target),
+            mode,
+            scope,
+            "operator-created Telegram grant",
+        )
+        .persisted(scope == GrantScope::Permanent);
+        let id = grant.id.clone();
+        self.access_manager.add_grant(grant);
+        format!("Created {scope} grant {id} for {mode} access to {target}.")
+    }
+
     fn resolve_approval_request(
         &self,
         chat_id: i64,
         id: &str,
         approve: bool,
+        scope: Option<GrantScope>,
         note: &str,
     ) -> std::result::Result<ApprovalEntry, String> {
         let Some(task) = self.sessions.get(&chat_id) else {
@@ -310,7 +422,12 @@ impl ChatSessionManager {
         };
 
         let result = if approve {
-            task.approval_mailbox.approve(id, Some(note.to_string()))
+            if let Some(scope) = scope {
+                task.approval_mailbox
+                    .approve_with_scope(id, scope, Some(note.to_string()))
+            } else {
+                task.approval_mailbox.approve(id, Some(note.to_string()))
+            }
         } else {
             task.approval_mailbox.deny(id, Some(note.to_string()))
         };
@@ -327,17 +444,26 @@ impl ChatSessionManager {
         argument: &str,
         approve: bool,
     ) -> String {
-        let id = argument.trim();
+        let mut parts = argument.split_whitespace();
+        let id = parts.next().unwrap_or("");
         if id.is_empty() {
             return if approve {
-                "Usage: /approve <id>".to_string()
+                "Usage: /approve <id> [once|task|path|session|permanent]".to_string()
             } else {
                 "Usage: /deny <id>".to_string()
             };
         }
+        let scope = parts
+            .next()
+            .and_then(|value| value.parse::<GrantScope>().ok());
 
-        match self.resolve_approval_request(chat_id, id, approve, "resolved from Telegram command")
-        {
+        match self.resolve_approval_request(
+            chat_id,
+            id,
+            approve,
+            scope,
+            "resolved from Telegram command",
+        ) {
             Ok(entry) => format_approval_resolution(&entry, approve),
             Err(err) => err,
         }
@@ -348,8 +474,9 @@ impl ChatSessionManager {
         chat_id: i64,
         id: &str,
         approve: bool,
+        scope: Option<GrantScope>,
     ) -> std::result::Result<ApprovalEntry, String> {
-        self.resolve_approval_request(chat_id, id, approve, "resolved from Telegram button")
+        self.resolve_approval_request(chat_id, id, approve, scope, "resolved from Telegram button")
     }
 
     pub(crate) fn start_message(
@@ -371,17 +498,25 @@ impl ChatSessionManager {
         let mut agent = self.create_agent();
 
         let cancel_token = CancellationToken::new();
+        let task_id = format!("telegram-{chat_id}-{}", unix_now());
         let approval_mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Wait);
         let approval_adapter = adapter.clone();
         let approval_secrets = self.secrets.clone();
         approval_mailbox.set_notifier(Arc::new(move |request| {
             let mut message = request.render_details();
-            message.push_str(&format!(
-                "\n\nTap Approve or Deny below, or reply with /approve {} or /deny {}.",
-                request.id, request.id
-            ));
+            if request.capability.is_some() {
+                message.push_str(&format!(
+                    "\n\nTap a scope button below, or reply with /approve {} once|task|path|session. Use /deny {} to reject.",
+                    request.id, request.id
+                ));
+            } else {
+                message.push_str(&format!(
+                    "\n\nTap Approve or Deny below, or reply with /approve {} or /deny {}.",
+                    request.id, request.id
+                ));
+            }
             let chunks = topagent_core::channel::telegram::chunk_text(&message, 4000);
-            let reply_markup = approval_reply_markup(&request.id);
+            let reply_markup = approval_reply_markup(&request);
             send_telegram_with_markup(
                 &approval_adapter,
                 chat_id,
@@ -393,7 +528,8 @@ impl ChatSessionManager {
         let prepared_run = self.build_run_context(
             &ctx.clone()
                 .with_cancel_token(cancel_token.clone())
-                .with_approval_mailbox(approval_mailbox.clone()),
+                .with_approval_mailbox(approval_mailbox.clone())
+                .with_task_id(task_id.clone()),
             chat_id,
             text,
         );
@@ -416,6 +552,8 @@ impl ChatSessionManager {
         let adapter = adapter.clone();
         let instruction = text.to_string();
         let distill_options = self.options.clone();
+        let access_manager = self.access_manager.clone();
+        let worker_task_id = task_id.clone();
 
         thread::spawn(move || {
             let has_progress = worker_progress_callback.is_some();
@@ -480,6 +618,8 @@ impl ChatSessionManager {
                 &history_store,
                 &worker_secrets,
             );
+
+            access_manager.clear_task_temporary_grants(&worker_task_id);
 
             let _ = completed_tx.send(chat_id);
         });
@@ -578,6 +718,13 @@ pub(crate) fn current_model_label_for_help(
     }
 }
 
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -625,11 +772,33 @@ mod tests {
                 rollback_hint: Some(
                     "Use git revert or git reset if the commit was mistaken.".to_string(),
                 ),
+                capability: None,
             },
             None,
         );
         assert!(matches!(check, ApprovalCheck::Pending(_)));
         mailbox
+    }
+
+    #[test]
+    fn test_access_grant_command_normalizes_home_targets() {
+        let temp = TempDir::new().unwrap();
+        let mut manager = test_manager(temp.path().to_path_buf());
+        let reply = manager.access_command_reply("grant ~/Downloads read --scope task");
+        assert!(reply.contains("Created task grant"));
+
+        let expected = std::env::var_os("HOME")
+            .map(|home| PathBuf::from(home).join("Downloads").display().to_string())
+            .unwrap_or_else(|| "~/Downloads".to_string());
+        let grants = manager.access_manager.grants();
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].target, expected);
+        assert_eq!(grants[0].mode, AccessMode::Read);
+        assert_eq!(grants[0].scope, GrantScope::ThisTask);
+
+        let reply = manager.access_command_reply("revoke ~/Downloads");
+        assert!(reply.contains("Revoked 1 grant"));
+        assert!(manager.access_manager.grants().is_empty());
     }
 
     #[derive(Debug, Default)]
@@ -810,7 +979,7 @@ mod tests {
         );
 
         let entry = manager
-            .resolve_approval_callback(42, "apr-1", false)
+            .resolve_approval_callback(42, "apr-1", false, None)
             .unwrap();
         assert_eq!(entry.state, topagent_core::ApprovalState::Denied);
         assert_eq!(

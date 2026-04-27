@@ -7,7 +7,7 @@ TopAgent is a Rust workspace with two crates:
 ```
 topagent/
   crates/
-    topagent-core/     # Agent loop, tools, provider seam, Telegram primitives
+    topagent-core/     # Agent loop, Skills, Harness, provider seam, Telegram primitives
     topagent-cli/      # CLI binary, Telegram runtime, memory, service management
   scripts/
     install.sh         # One-line installer
@@ -17,13 +17,16 @@ The `topagent` binary is built from `topagent-cli`.
 
 ## topagent-core
 
-The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and provider interface.
+The engine crate. No CLI command parsing or Telegram polling logic -- just the agent loop, Skills, Harness, provider interface, and channel primitives.
 
 | Module | Responsibility |
 |--------|---------------|
-| `agent` | Agent struct and orchestration shell; internal `agent/gates`, `agent/planning_gate`, `agent/tool_execution`, and `agent/run_loop` keep loop control, gate sequencing, planning state, and tool-result application narrow |
+| `agent` | Decision loop, task state, planning gate, provider turns, skill-result interpretation, and final answer assembly. It asks Harness for exposed skills and skill execution instead of owning raw execution. |
+| `skills/` | Canonical executable capability surface. `Skill`, `SkillRegistry`, schemas, effects, risk metadata, and the compatibility wrapper around current tool implementations live here. |
+| `harness/` | Runtime/control boundary for context bundles, phase-based skill exposure, and `SkillDispatcher` execution. It is the layer where capability, approval, audit, sandbox, and future recovery/telemetry controls meet execution. |
 | `behavior` | Typed behavior contract and policy root; internal task/action/approval/durability/compaction modules keep runtime policy seams narrow |
 | `approval` | Approval mailbox, request/state transitions, runtime approval enforcement objects |
+| `capability` | Typed access profiles, capability decisions, scoped grants, risk classification, and JSONL audit records |
 | `compaction` | Layered transcript compaction and prompt rebuild support |
 | `run_state` | In-run objective, changed/active file tracking, bash verification history, compact tool trace capture, baseline attribution, proof-of-work assembly; finalizes into `TaskResult` with `ExecutionSessionOutcome` on all terminal paths (completed, stopped, max-steps, failed) |
 | `session` | Conversation history management, truncation |
@@ -32,7 +35,7 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 | `openrouter` | OpenRouter API implementation |
 | `model` | ModelRoute |
 | `runtime` | RuntimeOptions (step limits, timeouts, truncation thresholds) |
-| `tools/` | Tool trait, ToolRegistry, built-in tools (read, write, edit, bash, git_*) |
+| `tools/` | Compatibility layer and existing built-in implementations (read, write, edit, bash, git_*, feature-gated computer_use scaffold). New architecture treats these as Skill-backed implementations, not the Agent-owned registry. |
 | `tool_spec` | Tool specification (name, description, parameters) |
 | `context` | ExecutionContext (workspace root, cancel token, secrets), ToolContext |
 | `secrets` | SecretRegistry: value-based and pattern-based redaction |
@@ -45,6 +48,39 @@ The engine crate. No CLI or Telegram logic -- just the agent loop, tools, and pr
 | `progress` | Progress update types for UI feedback |
 | `file_util` | File hashing for change detection |
 
+## Agent / Skills / Harness boundary
+
+TopAgent now keeps the decision loop separate from executable capability and runtime control:
+
+- **Agent** owns the model conversation, current objective, plan, run state, phase, progress, and final user-facing answer. It decides what to ask the model and how to interpret returned skill results.
+- **Skills** describe executable capabilities with a stable name, schema, effects, read-only/mutating/destructive flags, parallel-safety metadata, workspace scope, outside-workspace capability, and dynamic risk classification. The current `tools/` implementations are wrapped as Skills so there is one conceptual execution surface.
+- **Harness** owns which Skills are exposed for each phase and routes execution through `SkillDispatcher`. Capability checks, approvals, audit records, sandbox choices, and future computer/search/recovery controls attach at this boundary rather than in the Agent loop.
+
+Skill implementations receive `ToolContext` as their runtime boundary. They should use that API for workspace paths, capability authorization, snapshots, cancellation, trust context, and secret redaction instead of reaching directly into `ExecutionContext` internals.
+
+Phase exposure is intentionally narrower than the full registry:
+
+| Phase | Typical exposed skills |
+|-------|------------------------|
+| `Investigate` | read-only filesystem, git read, research-safe shell, planning |
+| `Plan` | read-only skills, research shell, `update_plan` |
+| `Patch` | edit/write, shell, git mutation, computer_use only when profile/grant allows |
+| `Verify` | read-only skills, shell/test/build, git diff/status |
+| `Finalize` | read-only summaries plus durable-memory skills |
+
+This phase filter is an exposure policy, not a substitute for enforcement. Mutating, destructive, high-impact, secret, network, and computer-use actions still go through capability and approval checks before execution.
+
+## How to add a new Skill
+
+1. Define the input schema in the Skill implementation or in an existing implementation wrapped by `ToolBackedSkill`.
+2. Declare `SkillEffects`, including read-only/mutating/destructive flags, parallel safety, workspace scope, and outside-workspace capability.
+3. Implement dynamic `risk(input, ctx)` when risk depends on the target, command, URL, or action.
+4. Declare and enforce capability requirements inside execution or the Harness boundary using `CapabilityRequest` through `ToolContext`.
+5. Implement execution with bounded output and existing redaction/sandbox helpers where applicable.
+6. Register the Skill in the Skill registry used to build the Agent Harness.
+7. Add tests for phase exposure, effects metadata, capability decisions, approval rendering, and execution behavior.
+8. Document any operator-visible behavior, access requirements, or limitations.
+
 ## topagent-cli
 
 The binary crate. Handles CLI parsing, user interaction, and service management.
@@ -52,7 +88,8 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 | Module | Responsibility |
 |--------|---------------|
 | `main` | Entry point: parses CLI args, converts to params, dispatches to command handlers |
-| `commands` | CLI command types, dispatch, and rendering; `commands/types` owns all clap definitions, `commands/dispatch` owns the top-level match, per-domain modules (`memory_cli`, `procedure_cli`) own CLI rendering, `config` and `run` own their subcommand handlers (the `run` module dispatches run snapshot subcommands: `run status`, `run diff`, `run restore`; trajectory commands live under `memory trajectory`), `oneshot` owns the one-shot runner, and `artifact_util` shares file-list and path-resolution helpers |
+| `commands` | CLI command types, dispatch, and rendering; `commands/types` owns all clap definitions, `commands/dispatch` owns the top-level match, per-domain modules (`memory_cli`, `procedure_cli`) own CLI rendering, `config`, `access`, and `run` own their subcommand handlers (the `run` module dispatches run snapshot subcommands: `run status`, `run diff`, `run restore`; trajectory commands live under `memory trajectory`), `oneshot` owns the one-shot runner, and `artifact_util` shares file-list and path-resolution helpers |
+| `access` | CLI rendering and persistence hookup for access profiles, grants, lockdown, and audit status |
 | `config` | CliParams struct, parameter validation, route/options construction |
 | `operational_paths` | Shared config-home, service unit, and managed env path ownership for the operational control plane |
 | `run_context` | Shared agent/provider/context assembly for one-shot CLI and Telegram runs |
@@ -73,16 +110,16 @@ CLI parses args
   -> build workspace memory briefing from .topagent/MEMORY.md + relevant procedures + relevant workspace notes
   -> classify run-level trust context from operator instruction + loaded memory/transcript sources
   -> create ExecutionContext with workspace + cancel token + operator model + workspace memory briefing + trust context
-  -> create Agent with provider + tools + options
+  -> create Agent with provider + Skills wrapped by Harness + options
   -> agent.run(ctx, instruction)
      -> load TOPAGENT.md
      -> render policy-driven system prompt (+ project instructions + workspace memory briefing + compact run-state artifacts)
      -> classify task complexity -> activate planning gate if non-trivial
      -> enter step loop:
         1. send conversation to LLM
-        2. LLM returns text (final answer) or tool calls
-        3. tool calls: run preflight (planning gate, verification gate, provenance-aware approval/memory enforcement)
-        4. execute tool, record result in session
+        2. LLM returns text (final answer) or skill calls
+        3. skill calls: run preflight (planning gate, verification gate, provenance-aware approval/memory enforcement)
+        4. Harness dispatches the Skill, then Agent records result in session
         5. if a fetch-like shell command introduced low-trust external content, keep that influence in run state
         5. repeat until text response or max steps
 -> append proof-of-work (changed files, diff summary, trust notes when low-trust content shaped the run)
@@ -111,9 +148,10 @@ CLI parses args
         - /start, /help -> reply with config summary
         - /stop -> cancel running task for that chat
         - /reset -> clear persisted transcript for that chat
-         - /approvals -> list pending approvals for this chat
-         - /approve <id> -> approve a pending action
+        - /approvals -> list pending approvals for this chat
+         - /approve <id> [scope] -> approve a pending action or scoped access request
          - /deny <id> -> deny a pending action
+         - /access ... -> inspect/change access profile, grants, audit, or lockdown
          - text -> start_message:
           a. load `.topagent/MEMORY.md` (always)
           b. load matching `.topagent/procedures/*.md` files only if relevant, capped to a small subset
@@ -152,26 +190,49 @@ Secrets are protected at multiple layers:
 
 2. **Command blocking**: bash commands that dump env vars (`env`, `printenv`, `export`) or read known secret files are blocked before execution
 
-3. **Output redaction**: tool output is scanned for registered secret values and common secret patterns (API keys, bot tokens, key=value assignments) and replaced with `[REDACTED_SECRET]`
+3. **Output redaction**: skill output is scanned for registered secret values and common secret patterns (API keys, bot tokens, key=value assignments) and replaced with `[REDACTED_SECRET]`
 
-4. **Filesystem sandboxing**: when bubblewrap (`bwrap`) is available, bash commands run in a sandbox with:
+4. **Capability profiles and grants**: runtime Skills ask the central capability manager before sensitive actions. The default profile is `developer`: workspace read/write and network/web lookup are allowed, while high-impact actions require explicit approval. The `workspace`, `developer`, `computer`, and `full` profiles share the same typed decision path.
+
+5. **Filesystem sandboxing**: when bubblewrap (`bwrap`) is available, bash commands run in a sandbox with:
    - read-only access to system directories (`/usr`, `/bin`, `/lib`, `/etc`)
    - read-write access only to the workspace and `/tmp`
-   - network access disabled (`--unshare-net`)
+   - network disabled in restricted profiles and allowed only when the active access profile or grant permits it
 
-5. **Path validation**: file tools reject absolute paths and parent directory traversal (`../`)
+   In `full`, shell commands use host execution after capability checks so broad local access is explicit rather than silently blocked.
 
-6. **Reply redaction**: Telegram replies are scanned for secrets before sending
+6. **Path authorization**: filesystem Skills resolve relative, absolute, and `~/` paths through the capability manager. Workspace paths are smooth in developer/computer/full; paths outside the workspace request scoped approval unless full profile allows them. Secret paths still require explicit approval or are denied.
 
-7. **Approval enforcement**: risky actions such as destructive bash commands and `git_commit` must pass the central approval gate before execution
+7. **Reply redaction**: Telegram replies are scanned for secrets before sending
 
-8. **Provenance-aware trust boundaries**:
+8. **Approval enforcement**: risky actions such as destructive bash commands, sudo, global package installs, external send/upload/deploy/release, git push, secret reads, system service changes, high-impact computer_use actions, and `git_commit` must pass the central approval gate before execution
+
+9. **Provenance-aware trust boundaries**:
    - direct operator instructions, generated memory artifacts, transcripts, and fetched content are labeled at ingress with a small source/trust model
    - low-trust content can be summarized or analyzed as data, but risky actions and durable memory writes become stricter when that content materially influences the run
    - approvals mention the low-trust source briefly and concretely instead of failing silently
    - durable promotion is stricter than temporary planning: low-trust content can block `USER.md`, procedure promotion, and trajectory review/export
 
-9. **Prompt rules**: the system prompt instructs the LLM to never reveal credentials
+10. **Access audit log**: profile changes, grant creation/use/revocation/expiry, approval requests/results, high-risk allow/block decisions, and lockdown are appended as redacted JSONL records. Audit records are not prompt memory and are read only through explicit status/audit commands.
+
+11. **Prompt rules**: the system prompt instructs the LLM to never reveal credentials
+
+### Access control flow
+
+```
+Skill builds CapabilityRequest
+  -> CapabilityManager checks profile + grants + risk
+  -> Allow: Skill runs, grant use is audited when applicable
+  -> Deny: Skill returns a structured capability error with the concrete reason
+  -> NeedsApproval:
+       - CLI interactive prompt or Telegram scoped buttons render the request
+       - approval creates a once/task/path/session/permanent grant
+       - denial reports the exact blocked capability
+```
+
+`topagent access set full` prints a warning before changing the persisted profile. `/access set full` does the same in Telegram. `topagent access lockdown` and `/access lockdown` restore `workspace`, disable broad network and `computer_use`, clear grants, and append a lockdown audit record.
+
+The `computer_use` Skill is currently a controlled scaffold. It exposes typed `observe`, `navigate`, `click`, `type`, and `scroll` actions and creates an isolated workspace session directory, but does not claim complete desktop control until a real provider/sidecar is wired and tested. The access profile and high-impact approval gates are enforced before the scaffold accepts an action.
 
 ### Memory and persistence flow
 
@@ -220,11 +281,12 @@ Curated consolidation keeps the index practical:
 - Trajectories are export artifacts, not prompt memory. Saving more trajectories must not make normal task startup heavier.
 - Provenance/trust metadata stays lightweight and attached at key boundaries only. It must not become deep always-on analysis over every artifact.
 - Durable artifact count must not imply linear growth in prompt assembly cost, retrieval cost, approval checks, or planning work.
+- Access audit growth must not imply prompt growth. `access audit` reads a capped recent slice, and ordinary skill checks examine only the active profile plus loaded grants.
 
 ### Planning flow
 
 1. Agent classifies incoming task as trivial or non-trivial
-2. Non-trivial tasks activate the **planning gate**, which blocks mutation tools
+2. Non-trivial tasks activate the **planning gate**, which blocks mutation Skills
 3. Agent researches (reads files, checks git) while gate is active
 4. Agent creates a plan via `update_plan` -> gate deactivates
 5. Agent executes plan steps, updating status as it goes
