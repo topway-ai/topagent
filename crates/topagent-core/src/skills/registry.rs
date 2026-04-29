@@ -142,6 +142,11 @@ pub fn default_effects_for_skill(name: &str) -> SkillEffects {
         .with_destructive(true)
         .with_workspace_scoped(false)
         .with_outside_workspace_capable(true),
+        "web_search" => {
+            SkillEffects::read_only(vec![SkillEffect::WebSearch, SkillEffect::NetworkAccess])
+                .with_workspace_scoped(false)
+                .with_outside_workspace_capable(true)
+        }
         "git_status" | "git_diff" | "git_branch" => {
             SkillEffects::read_only(vec![SkillEffect::GitRead])
         }
@@ -165,7 +170,7 @@ pub fn default_effects_for_skill(name: &str) -> SkillEffects {
 
 fn risk_for_skill(name: &str, input: &SkillInput) -> RiskLevel {
     match name {
-        "read" | "git_status" | "git_diff" | "git_branch" => RiskLevel::Safe,
+        "read" | "web_search" | "git_status" | "git_diff" | "git_branch" => RiskLevel::Safe,
         "write" | "edit" | "git_clone" | "git_add" | "save_note" => RiskLevel::Moderate,
         "git_commit" => RiskLevel::High,
         "manage_operator_preference" => {

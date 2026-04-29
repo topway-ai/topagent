@@ -499,12 +499,43 @@ impl Agent {
         if self.planning.is_active() && !self.plan_exists() {
             return AgentPhase::Plan;
         }
+        if self.planning.is_active() && self.plan_exists() {
+            return AgentPhase::Patch;
+        }
 
         match self.execution_stage {
             ExecutionStage::Research => AgentPhase::Investigate,
             ExecutionStage::Edit => AgentPhase::Patch,
             ExecutionStage::Review => AgentPhase::Verify,
         }
+    }
+
+    fn agent_phase_for_tool_execution(&self, name: &str, args: &serde_json::Value) -> AgentPhase {
+        if self.planning.is_active() && !self.plan_exists() {
+            return AgentPhase::Plan;
+        }
+
+        if self.behavior.is_memory_write_tool(name) {
+            return AgentPhase::Finalize;
+        }
+
+        if name == "bash" {
+            let command = args
+                .get("command")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            return match self.behavior.classify_bash_command(command) {
+                BashCommandClass::MutationRisk => AgentPhase::Patch,
+                BashCommandClass::Verification => AgentPhase::Verify,
+                BashCommandClass::ResearchSafe => self.current_agent_phase(),
+            };
+        }
+
+        if self.behavior.is_mutation_tool(name) {
+            return AgentPhase::Patch;
+        }
+
+        self.current_agent_phase()
     }
 
     fn sync_provider_tools(&mut self, ctx: &ExecutionContext) {
@@ -589,7 +620,7 @@ mod tests {
     use crate::provider::{ProviderResponse, ScriptedProvider};
     use crate::runtime::RuntimeOptions;
     use crate::tools::default_tools;
-    use crate::{Error, Message};
+    use crate::{AccessConfig, CapabilityManager, CapabilityProfile, Content, Error, Message};
     use std::fs;
     use std::sync::Arc;
     use tempfile::TempDir;
@@ -675,6 +706,20 @@ path = "src/lib.rs"
                 "command": "cargo check --offline",
             }),
         )
+    }
+
+    fn tool_result_text(agent: &Agent, id: &str) -> String {
+        agent
+            .conversation_messages()
+            .into_iter()
+            .find_map(|message| match message.content {
+                Content::ToolResult {
+                    id: result_id,
+                    result,
+                } if result_id == id => Some(result),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("missing tool result for {id}"))
     }
 
     fn run_git(workspace: &std::path::Path, args: &[&str]) {
@@ -905,6 +950,128 @@ path = "src/lib.rs"
             )
             .unwrap();
         assert_eq!(result, "inspection complete");
+    }
+
+    #[test]
+    fn test_no_mailbox_capability_approval_required_renders_structured_tool_result() {
+        let (_temp, ctx) = create_temp_crate();
+        let outside = TempDir::new().unwrap();
+        let outside_path = outside.path().join("report.txt");
+        fs::write(&outside_path, "outside").unwrap();
+        let manager = CapabilityManager::new(
+            AccessConfig::for_profile(CapabilityProfile::Workspace),
+            Vec::new(),
+            "test",
+            "unit",
+        );
+        let ctx = ctx.with_capability_manager(manager);
+        let mut agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![
+                tool_call(
+                    "read-outside",
+                    "read",
+                    serde_json::json!({"path": outside_path.display().to_string()}),
+                ),
+                assistant_message("blocked cleanly"),
+            ])),
+            default_tools().into_inner(),
+            RuntimeOptions::default(),
+        );
+
+        let result = agent.run(&ctx, "read the outside report").unwrap();
+
+        assert_eq!(result, "blocked cleanly");
+        let tool_result = tool_result_text(&agent, "read-outside");
+        assert!(tool_result.contains("approval_required"));
+        assert!(tool_result.contains("capability: filesystem"));
+        assert!(tool_result.contains("topagent access grant"));
+        assert!(tool_result.contains("retry: approve the request or grant access"));
+    }
+
+    #[test]
+    fn test_denied_capability_approval_renders_clear_tool_result() {
+        let (_temp, ctx) = create_temp_crate();
+        let outside = TempDir::new().unwrap();
+        let outside_path = outside.path().join("report.txt");
+        fs::write(&outside_path, "outside").unwrap();
+        let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Wait);
+        let mailbox_for_notifier = mailbox.clone();
+        mailbox.set_notifier(Arc::new(move |request| {
+            mailbox_for_notifier
+                .deny(&request.id, Some("not for this task".to_string()))
+                .unwrap();
+        }));
+        let manager = CapabilityManager::new(
+            AccessConfig::for_profile(CapabilityProfile::Workspace),
+            Vec::new(),
+            "test",
+            "unit",
+        );
+        let ctx = ctx
+            .with_capability_manager(manager)
+            .with_approval_mailbox(mailbox);
+        let mut agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![
+                tool_call(
+                    "read-outside",
+                    "read",
+                    serde_json::json!({"path": outside_path.display().to_string()}),
+                ),
+                assistant_message("denial handled"),
+            ])),
+            default_tools().into_inner(),
+            RuntimeOptions::default(),
+        );
+
+        let result = agent.run(&ctx, "read the outside report").unwrap();
+
+        assert_eq!(result, "denial handled");
+        let tool_result = tool_result_text(&agent, "read-outside");
+        assert!(tool_result.contains("access_denied"));
+        assert!(tool_result.contains("approval denied"));
+        assert!(tool_result.contains("status: operation was not executed"));
+    }
+
+    #[test]
+    fn test_approved_capability_request_executes_without_model_guessing() {
+        let (_temp, ctx) = create_temp_crate();
+        let outside = TempDir::new().unwrap();
+        let outside_path = outside.path().join("report.txt");
+        fs::write(&outside_path, "approved content").unwrap();
+        let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Wait);
+        let mailbox_for_notifier = mailbox.clone();
+        mailbox.set_notifier(Arc::new(move |request| {
+            mailbox_for_notifier
+                .approve(&request.id, Some("approved in test".to_string()))
+                .unwrap();
+        }));
+        let manager = CapabilityManager::new(
+            AccessConfig::for_profile(CapabilityProfile::Workspace),
+            Vec::new(),
+            "test",
+            "unit",
+        );
+        let ctx = ctx
+            .with_capability_manager(manager)
+            .with_approval_mailbox(mailbox);
+        let mut agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![
+                tool_call(
+                    "read-outside",
+                    "read",
+                    serde_json::json!({"path": outside_path.display().to_string()}),
+                ),
+                assistant_message("read complete"),
+            ])),
+            default_tools().into_inner(),
+            RuntimeOptions::default(),
+        );
+
+        let result = agent.run(&ctx, "read the outside report").unwrap();
+
+        assert_eq!(result, "read complete");
+        let tool_result = tool_result_text(&agent, "read-outside");
+        assert_eq!(tool_result, "approved content");
     }
 
     #[test]

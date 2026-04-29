@@ -233,7 +233,10 @@ fn install_ctrlc_handler(
 mod tests {
     use super::*;
     use std::io::Cursor;
-    use topagent_core::ApprovalTriggerKind;
+    use topagent_core::{
+        AccessMode, ApprovalTriggerKind, CapabilityApprovalRequest, CapabilityDecisionDetail,
+        CapabilityKind, CapabilityProfile, GrantScope, RiskLevel,
+    };
 
     fn sample_request() -> ApprovalRequest {
         ApprovalRequest {
@@ -282,5 +285,38 @@ mod tests {
 
         assert!(message.contains("non-interactive"));
         assert!(message.contains("apr-7"));
+    }
+
+    #[test]
+    fn test_format_cli_capability_approval_required_mentions_scope_and_retry() {
+        let mut request = sample_request();
+        request.action_kind = ApprovalTriggerKind::CapabilityAccess;
+        request.short_summary = "filesystem read access to /tmp/report.txt".to_string();
+        request.capability = Some(CapabilityApprovalRequest {
+            request_id: request.id.clone(),
+            detail: CapabilityDecisionDetail {
+                kind: CapabilityKind::Filesystem,
+                target: "/tmp/report.txt".to_string(),
+                mode: AccessMode::Read,
+                risk: RiskLevel::Moderate,
+                reason: "inspect the file the operator asked about".to_string(),
+                profile: CapabilityProfile::Workspace,
+                approval_possible: true,
+                suggested_scopes: vec![
+                    GrantScope::Once,
+                    GrantScope::ThisTask,
+                    GrantScope::ThisPath,
+                ],
+            },
+            approval_options: vec![GrantScope::Once, GrantScope::ThisTask, GrantScope::ThisPath],
+        });
+
+        let message = format_cli_approval_required(&request, false);
+
+        assert!(message.contains("TopAgent needs read access"));
+        assert!(message.contains("inspect the file the operator asked about"));
+        assert!(message.contains("Scope options"));
+        assert!(message.contains("non-interactive"));
+        assert!(message.contains("Re-run from an interactive terminal"));
     }
 }

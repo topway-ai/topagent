@@ -204,6 +204,17 @@ impl ExecutionContext {
             return self.resolve_path(path);
         }
 
+        let (target, request) = self.capability_request_for_path(path, mode, reason)?;
+        self.authorize_capability(request)?;
+        Ok(target)
+    }
+
+    pub(crate) fn capability_request_for_path(
+        &self,
+        path: &str,
+        mode: AccessMode,
+        reason: impl Into<String>,
+    ) -> Result<(PathBuf, CapabilityRequest), super::Error> {
         let target = self.resolve_access_target(path)?;
         let target_label = target.display().to_string();
         let kind = if crate::capability::is_secret_target(&target_label) {
@@ -218,14 +229,10 @@ impl ExecutionContext {
         } else {
             RiskLevel::Moderate
         };
-        self.authorize_capability(CapabilityRequest::new(
-            kind,
-            target_label,
-            mode,
-            risk,
-            reason,
-        ))?;
-        Ok(target)
+        Ok((
+            target,
+            CapabilityRequest::new(kind, target_label, mode, risk, reason),
+        ))
     }
 
     pub fn authorize_capability(&self, request: CapabilityRequest) -> Result<(), super::Error> {
@@ -413,11 +420,21 @@ fn path_in_workspace(target: &Path, workspace_root: &Path) -> bool {
 pub struct ToolContext<'a> {
     pub(crate) exec: &'a ExecutionContext,
     pub runtime: &'a RuntimeOptions,
+    preauthorized: Vec<CapabilityRequest>,
 }
 
 impl<'a> ToolContext<'a> {
     pub fn new(exec: &'a ExecutionContext, runtime: &'a RuntimeOptions) -> Self {
-        Self { exec, runtime }
+        Self {
+            exec,
+            runtime,
+            preauthorized: Vec::new(),
+        }
+    }
+
+    pub fn with_preauthorized(mut self, requests: Vec<CapabilityRequest>) -> Self {
+        self.preauthorized = requests;
+        self
     }
 
     pub fn workspace_root(&self) -> &Path {
@@ -458,12 +475,32 @@ impl<'a> ToolContext<'a> {
         mode: AccessMode,
         reason: impl Into<String>,
     ) -> Result<PathBuf, super::Error> {
-        self.exec.resolve_path_for_access(path, mode, reason)
+        if self.exec.capability_manager().is_none() {
+            return self.exec.resolve_path(path);
+        }
+
+        let (target, request) = self.exec.capability_request_for_path(path, mode, reason)?;
+        self.authorize_capability(request)?;
+        Ok(target)
     }
 
     pub fn authorize_capability(&self, request: CapabilityRequest) -> Result<(), super::Error> {
+        if self
+            .preauthorized
+            .iter()
+            .any(|authorized| capability_request_covers(authorized, &request))
+        {
+            return Ok(());
+        }
         self.exec.authorize_capability(request)
     }
+}
+
+fn capability_request_covers(authorized: &CapabilityRequest, request: &CapabilityRequest) -> bool {
+    authorized.kind == request.kind
+        && authorized.target == request.target
+        && authorized.mode.allows(request.mode)
+        && authorized.risk >= request.risk
 }
 
 #[cfg(test)]

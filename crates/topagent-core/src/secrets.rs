@@ -29,6 +29,9 @@ pub const SECRET_ENV_VARS: &[&str] = &[
 /// File paths (suffixes) that the bash tool should refuse to read.
 /// These are known secret-bearing config files written by `topagent install`.
 const SECRET_FILE_SUFFIXES: &[&str] = &[
+    ".ssh/id_ed25519",
+    ".ssh/id_rsa",
+    ".aws/credentials",
     "topagent/services/topagent-telegram.env",
     "topagent-telegram.env",
 ];
@@ -282,6 +285,7 @@ mod tests {
                 .is_some()
         );
         assert!(check_bash_secret_access("grep token topagent-telegram.env").is_some());
+        assert!(check_bash_secret_access("cat ~/.ssh/id_ed25519").is_some());
     }
 
     #[test]

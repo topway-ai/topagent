@@ -1,10 +1,11 @@
 use super::{extract_exit_code, Agent};
 use crate::behavior::BashCommandClass;
+use crate::capability::{redact_sensitive_target, CapabilityError, CapabilityKind};
 use crate::context::ExecutionContext;
 use crate::provenance::fetched_content_source;
 use crate::run_snapshot::WorkspaceRunSnapshotStatus;
 use crate::tools::risky_shell_changed_path_hints;
-use crate::{Message, ProgressUpdate, Result};
+use crate::{Error, Message, ProgressUpdate, Result};
 
 impl Agent {
     fn record_tool_result(
@@ -63,11 +64,40 @@ impl Agent {
         let mut bash_exit_code = None;
         self.emit_progress(self.tool_progress(&name, &args));
         self.check_cancelled(ctx)?;
-        let execution = match self
-            .harness
-            .execute_skill(&name, args.clone(), ctx, &self.options)
-        {
+        let phase = self.agent_phase_for_tool_execution(&name, &args);
+        let execution = match self.harness.execute_skill(
+            &name,
+            args.clone(),
+            phase,
+            ctx,
+            &self.options,
+        ) {
             Ok(execution) => execution,
+            Err(Error::ApprovalRequired(request)) => return Err(Error::ApprovalRequired(request)),
+            Err(Error::Capability(capability_error)) => {
+                self.record_tool_result(
+                    id,
+                    name,
+                    args,
+                    format_capability_tool_error(&capability_error),
+                );
+                return Ok(());
+            }
+            Err(Error::SkillPolicyDenied {
+                skill,
+                phase,
+                reason,
+            }) => {
+                self.record_tool_result(
+                    id,
+                    name,
+                    args,
+                    format!(
+                        "error: skill_policy_denied\nskill: {skill}\nphase: {phase}\nreason: {reason}"
+                    ),
+                );
+                return Ok(());
+            }
             Err(e) => {
                 self.record_tool_result(
                     id,
@@ -322,4 +352,73 @@ impl Agent {
             }
         }
     }
+}
+
+fn format_capability_tool_error(error: &CapabilityError) -> String {
+    match error {
+        CapabilityError::NeedsApproval {
+            request_id,
+            kind,
+            target,
+            mode,
+            risk,
+            reason,
+            approval_options,
+        } => {
+            let target = redact_sensitive_target(target);
+            let scopes = if approval_options.is_empty() {
+                "none".to_string()
+            } else {
+                approval_options
+                    .iter()
+                    .map(|scope| scope.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            format!(
+                concat!(
+                    "approval_required\n",
+                    "request: {}\n",
+                    "capability: {}\n",
+                    "mode: {}\n",
+                    "target: {}\n",
+                    "risk: {}\n",
+                    "reason: {}\n",
+                    "scope_options: {}\n",
+                    "status: operation was not executed\n",
+                    "retry: approve the request or grant access, then retry the same tool call\n",
+                    "hint: {}"
+                ),
+                request_id,
+                kind,
+                mode.label(),
+                target,
+                risk,
+                reason,
+                scopes,
+                grant_hint(*kind, &target, mode.as_str())
+            )
+        }
+        CapabilityError::Denied {
+            kind,
+            target,
+            mode,
+            risk,
+            reason,
+        } => format!(
+            "access_denied\ncapability: {kind}\nmode: {}\ntarget: {}\nrisk: {risk}\nreason: {reason}\nstatus: operation was not executed",
+            mode.label(),
+            redact_sensitive_target(target)
+        ),
+    }
+}
+
+fn grant_hint(kind: CapabilityKind, target: &str, mode: &str) -> String {
+    let grant_target = match kind {
+        CapabilityKind::Network => "network",
+        CapabilityKind::WebSearch => "web_search",
+        CapabilityKind::ComputerUse => "computer_use",
+        _ => target,
+    };
+    format!("topagent access grant {grant_target:?} {mode} --scope once")
 }

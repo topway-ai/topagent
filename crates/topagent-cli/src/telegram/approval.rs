@@ -100,7 +100,11 @@ pub(super) fn format_approval_resolution(entry: &ApprovalEntry, approve: bool) -
 mod tests {
     use super::*;
     use std::time::SystemTime;
-    use topagent_core::{ApprovalEntry, ApprovalRequest, ApprovalState, ApprovalTriggerKind};
+    use topagent_core::{
+        AccessMode, ApprovalEntry, ApprovalRequest, ApprovalState, ApprovalTriggerKind,
+        CapabilityApprovalRequest, CapabilityDecisionDetail, CapabilityKind, CapabilityProfile,
+        RiskLevel,
+    };
 
     fn sample_entry(approved: bool) -> ApprovalEntry {
         ApprovalEntry {
@@ -161,6 +165,58 @@ mod tests {
             markup.inline_keyboard[0][1].callback_data,
             "approval:deny:apr-1"
         );
+    }
+
+    #[test]
+    fn test_capability_approval_includes_reason_and_scope_options() {
+        let request = ApprovalRequest {
+            id: "apr-2".to_string(),
+            action_kind: ApprovalTriggerKind::CapabilityAccess,
+            short_summary: "filesystem read access to /tmp/report.txt".to_string(),
+            exact_action: "/tmp/report.txt".to_string(),
+            reason: "inspect the file the operator asked about".to_string(),
+            scope_of_impact: "filesystem read access under the workspace profile".to_string(),
+            expected_effect:
+                "Creates a scoped grant if approved, then retries the blocked operation."
+                    .to_string(),
+            rollback_hint: None,
+            capability: Some(CapabilityApprovalRequest {
+                request_id: "apr-2".to_string(),
+                detail: CapabilityDecisionDetail {
+                    kind: CapabilityKind::Filesystem,
+                    target: "/tmp/report.txt".to_string(),
+                    mode: AccessMode::Read,
+                    risk: RiskLevel::Moderate,
+                    reason: "inspect the file the operator asked about".to_string(),
+                    profile: CapabilityProfile::Workspace,
+                    approval_possible: true,
+                    suggested_scopes: vec![
+                        GrantScope::Once,
+                        GrantScope::ThisTask,
+                        GrantScope::ThisPath,
+                    ],
+                },
+                approval_options: vec![
+                    GrantScope::Once,
+                    GrantScope::ThisTask,
+                    GrantScope::ThisPath,
+                ],
+            }),
+            created_at: SystemTime::UNIX_EPOCH,
+        };
+
+        let details = request.render_details();
+        assert!(details.contains("inspect the file the operator asked about"));
+        assert!(details.contains("Scope options"));
+        assert!(details.contains("once"));
+        assert!(details.contains("task"));
+        assert!(details.contains("path"));
+
+        let markup = approval_reply_markup(&request);
+        assert_eq!(markup.inline_keyboard[0][0].text, "Approve once");
+        assert_eq!(markup.inline_keyboard[0][1].text, "Approve for this task");
+        assert_eq!(markup.inline_keyboard[0][2].text, "Approve this path");
+        assert_eq!(markup.inline_keyboard[1][0].text, "Deny");
     }
 
     #[test]

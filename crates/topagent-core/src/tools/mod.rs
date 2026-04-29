@@ -7,6 +7,7 @@ mod operator_preference;
 mod planning;
 mod read;
 mod save_note;
+mod web_search;
 mod write;
 
 pub(crate) use bash::risky_shell_changed_path_hints;
@@ -19,6 +20,7 @@ pub use operator_preference::ManageOperatorPreferenceTool;
 pub use planning::UpdatePlanTool;
 pub use read::ReadTool;
 pub use save_note::{SaveNoteArgs, SaveNoteTool};
+pub use web_search::WebSearchTool;
 pub use write::WriteTool;
 
 use crate::context::ToolContext;
@@ -88,6 +90,7 @@ pub fn default_tools() -> ToolRegistry {
     registry.add(Box::new(WriteTool::new()));
     registry.add(Box::new(EditTool::new()));
     registry.add(Box::new(BashTool::new()));
+    registry.add(Box::new(WebSearchTool::new()));
     #[cfg(feature = "computer-use")]
     registry.add(Box::new(ComputerUseTool::new()));
     registry.add(Box::new(GitStatusTool::new()));

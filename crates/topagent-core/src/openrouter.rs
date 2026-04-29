@@ -376,7 +376,7 @@ mod tests {
 
         let tools = request.tools.unwrap();
         let names: Vec<_> = tools.iter().map(|t| t.function.name.as_str()).collect();
-        let mut expected = vec!["read", "write", "edit", "bash"];
+        let mut expected = vec!["read", "write", "edit", "bash", "web_search"];
         #[cfg(feature = "computer-use")]
         expected.push("computer_use");
         expected.extend([

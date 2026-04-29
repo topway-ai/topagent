@@ -16,6 +16,13 @@ pub enum Error {
     #[error("tool not found: {0}")]
     ToolNotFound(String),
 
+    #[error("skill policy denied: {skill} in {phase}: {reason}")]
+    SkillPolicyDenied {
+        skill: String,
+        phase: String,
+        reason: String,
+    },
+
     #[error("provider error: {0}")]
     Provider(String),
 

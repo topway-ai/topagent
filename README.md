@@ -1,6 +1,6 @@
 # TopAgent
 
-A Telegram-first, CLI-backed local coding agent that reads one repository, plans changes, and executes work through Harness-dispatched Skills such as file reads/writes, shell commands, git operations, memory writes, and a controlled computer_use scaffold.
+A Telegram-first, CLI-backed local coding agent that reads one repository, plans changes, and executes work through Harness-enforced Skills such as file reads/writes, shell commands, git operations, memory writes, an explicit web_search scaffold, and a controlled computer_use scaffold.
 
 Supports two LLM providers through one shared OpenAI-compatible transport seam:
 - **OpenRouter** (default) — default model: `minimax/minimax-m2.7`
@@ -84,14 +84,14 @@ TopAgent is split into three runtime layers:
 |-------|------|
 | Agent | The decision loop: user goal, task state, plan, model turns, phase, interpreting Skill results, and final answers. |
 | Skills | Executable capabilities: stable schema, declared effects, risk metadata, read-only/mutating/destructive flags, parallel-safety metadata, and implementation. |
-| Harness | Runtime control: context bundle, phase-based Skill exposure, dispatch, access profiles, grants, approvals, audit, sandbox hooks, and future computer/search controls. |
+| Harness | Mandatory execution boundary: context bundle, phase-based Skill exposure and execution checks, effect-derived capability authorization, access profiles, grants, approvals, audit, sandbox hooks, and future computer/search controls. |
 
-The Agent does not call raw tool implementations directly. Existing built-in tools are wrapped as Skills and executed through the Harness dispatcher. Skills are exposed by phase (`Investigate`, `Plan`, `Patch`, `Verify`, `Finalize`) so ordinary model turns do not see every capability at once.
+The Agent does not call raw tool implementations directly. Existing built-in tools are wrapped as Skills and executed through the Harness dispatcher. Skills are exposed by phase (`Investigate`, `Plan`, `Patch`, `Verify`, `Finalize`) so ordinary model turns do not see every capability at once. Exposure is not the enforcement boundary: Harness rechecks skill existence, phase, access profile/grants, and declared effects immediately before `skill.execute()`.
 
 ### How to add a new Skill
 
 1. Define the input schema and output behavior.
-2. Declare effects, risk, capability requirements, read-only/mutating/destructive flags, and parallel-safety.
+2. Declare effects, risk, capability requirements, read-only/mutating/destructive flags, and parallel-safety. Harness enforces declared effects before execution; tool-internal checks remain defense-in-depth.
 3. Implement execution behind the Skill boundary using existing redaction, sandbox, and bounded-output helpers.
 4. Register the Skill in the registry used by the Agent Harness.
 5. Add tests for effects, phase exposure, capability/approval behavior, and execution.
@@ -119,6 +119,10 @@ topagent access lockdown
 ```
 
 `topagent access lockdown` immediately returns to the `workspace` profile, disables broad network and `computer_use`, and clears grants. Access-sensitive events are written to a local audit log and shown with `topagent access audit`.
+
+`web_search` is present as an explicit Skill surface so access policy is honest, but it is not operational in this build: it returns a bounded NotImplemented result and performs no network request, remote-content execution, or durable memory write.
+
+`computer_use` is compiled by default through the default Cargo feature set and is profile-gated at runtime. It is exposed only under the `computer`/`full` profiles or an explicit `computer_use` grant.
 
 ### Bot commands
 
@@ -235,7 +239,8 @@ Saved trajectories now include provenance labels from the run. A trajectory can 
 - Telegram: private chats only, text messages only
 - One workspace per process
 - Linux only (systemd required for background service)
-- `computer_use` is a scaffolded, feature-gated tool surface in this release. It enforces the access profile and approval gates and prepares an isolated workspace session directory, but it does not yet perform real desktop automation without a future provider/sidecar integration.
+- `web_search` is scaffolded, not a real search provider. It returns NotImplemented text and does not make remote requests.
+- `computer_use` is a default-compiled scaffolded tool surface in this release, gated by access profile/grants. It enforces the access profile and approval gates and prepares an isolated workspace session directory, but it does not yet perform real desktop automation without a future provider/sidecar integration.
 
 ## Verified delivery
 

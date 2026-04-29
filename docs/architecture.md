@@ -23,7 +23,7 @@ The engine crate. No CLI command parsing or Telegram polling logic -- just the a
 |--------|---------------|
 | `agent` | Decision loop, task state, planning gate, provider turns, skill-result interpretation, and final answer assembly. It asks Harness for exposed skills and skill execution instead of owning raw execution. |
 | `skills/` | Canonical executable capability surface. `Skill`, `SkillRegistry`, schemas, effects, risk metadata, and the compatibility wrapper around current tool implementations live here. |
-| `harness/` | Runtime/control boundary for context bundles, phase-based skill exposure, and `SkillDispatcher` execution. It is the layer where capability, approval, audit, sandbox, and future recovery/telemetry controls meet execution. |
+| `harness/` | Runtime/control boundary for context bundles, phase-based skill exposure, execution admission, and `SkillDispatcher` execution. It is the mandatory layer where declared Skill effects become capability checks before execution. |
 | `behavior` | Typed behavior contract and policy root; internal task/action/approval/durability/compaction modules keep runtime policy seams narrow |
 | `approval` | Approval mailbox, request/state transitions, runtime approval enforcement objects |
 | `capability` | Typed access profiles, capability decisions, scoped grants, risk classification, and JSONL audit records |
@@ -35,7 +35,7 @@ The engine crate. No CLI command parsing or Telegram polling logic -- just the a
 | `openrouter` | OpenRouter API implementation |
 | `model` | ModelRoute |
 | `runtime` | RuntimeOptions (step limits, timeouts, truncation thresholds) |
-| `tools/` | Compatibility layer and existing built-in implementations (read, write, edit, bash, git_*, feature-gated computer_use scaffold). New architecture treats these as Skill-backed implementations, not the Agent-owned registry. |
+| `tools/` | Compatibility layer and existing built-in implementations (read, write, edit, bash, git_*, explicit NotImplemented web_search scaffold, default-compiled/profile-gated computer_use scaffold). New architecture treats these as Skill-backed implementations, not the Agent-owned registry. |
 | `tool_spec` | Tool specification (name, description, parameters) |
 | `context` | ExecutionContext (workspace root, cancel token, secrets), ToolContext |
 | `secrets` | SecretRegistry: value-based and pattern-based redaction |
@@ -54,7 +54,7 @@ TopAgent now keeps the decision loop separate from executable capability and run
 
 - **Agent** owns the model conversation, current objective, plan, run state, phase, progress, and final user-facing answer. It decides what to ask the model and how to interpret returned skill results.
 - **Skills** describe executable capabilities with a stable name, schema, effects, read-only/mutating/destructive flags, parallel-safety metadata, workspace scope, outside-workspace capability, and dynamic risk classification. The current `tools/` implementations are wrapped as Skills so there is one conceptual execution surface.
-- **Harness** owns which Skills are exposed for each phase and routes execution through `SkillDispatcher`. Capability checks, approvals, audit records, sandbox choices, and future computer/search/recovery controls attach at this boundary rather than in the Agent loop.
+- **Harness** owns which Skills are exposed for each phase and is the mandatory execution gate before `SkillDispatcher`. It checks skill existence, current phase, access profile/grants, and effect-derived capability authorization before any Skill implementation runs.
 
 Skill implementations receive `ToolContext` as their runtime boundary. They should use that API for workspace paths, capability authorization, snapshots, cancellation, trust context, and secret redaction instead of reaching directly into `ExecutionContext` internals.
 
@@ -68,14 +68,14 @@ Phase exposure is intentionally narrower than the full registry:
 | `Verify` | read-only skills, shell/test/build, git diff/status |
 | `Finalize` | read-only summaries plus durable-memory skills |
 
-This phase filter is an exposure policy, not a substitute for enforcement. Mutating, destructive, high-impact, secret, network, and computer-use actions still go through capability and approval checks before execution.
+This phase filter is both an exposure policy and an execution invariant. Even if a provider emits a hidden Skill name, Harness rechecks the current phase and access profile before dispatch. Skills declare effects; Harness derives and authorizes the required capabilities from those effects, the Skill name, input, risk, and runtime context. Tool-internal authorization remains defense-in-depth.
 
 ## How to add a new Skill
 
 1. Define the input schema in the Skill implementation or in an existing implementation wrapped by `ToolBackedSkill`.
 2. Declare `SkillEffects`, including read-only/mutating/destructive flags, parallel safety, workspace scope, and outside-workspace capability.
 3. Implement dynamic `risk(input, ctx)` when risk depends on the target, command, URL, or action.
-4. Declare and enforce capability requirements inside execution or the Harness boundary using `CapabilityRequest` through `ToolContext`.
+4. Declare capability effects accurately. Harness enforces those effects before execution; Skill implementations should still call `ToolContext` authorization helpers for defense-in-depth and more specific target checks.
 5. Implement execution with bounded output and existing redaction/sandbox helpers where applicable.
 6. Register the Skill in the Skill registry used to build the Agent Harness.
 7. Add tests for phase exposure, effects metadata, capability decisions, approval rendering, and execution behavior.
@@ -119,7 +119,7 @@ CLI parses args
         1. send conversation to LLM
         2. LLM returns text (final answer) or skill calls
         3. skill calls: run preflight (planning gate, verification gate, provenance-aware approval/memory enforcement)
-        4. Harness dispatches the Skill, then Agent records result in session
+        4. Harness validates phase/access/effects, authorizes required capabilities, dispatches the Skill, then Agent records result in session
         5. if a fetch-like shell command introduced low-trust external content, keep that influence in run state
         5. repeat until text response or max steps
 -> append proof-of-work (changed files, diff summary, trust notes when low-trust content shaped the run)
@@ -192,7 +192,7 @@ Secrets are protected at multiple layers:
 
 3. **Output redaction**: skill output is scanned for registered secret values and common secret patterns (API keys, bot tokens, key=value assignments) and replaced with `[REDACTED_SECRET]`
 
-4. **Capability profiles and grants**: runtime Skills ask the central capability manager before sensitive actions. The default profile is `developer`: workspace read/write and network/web lookup are allowed, while high-impact actions require explicit approval. The `workspace`, `developer`, `computer`, and `full` profiles share the same typed decision path.
+4. **Capability profiles and grants**: Harness derives capability requests from declared Skill effects before execution, and Skill implementations repeat specific checks through `ToolContext`. The default profile is `developer`: workspace read/write and network/web lookup are allowed, while high-impact actions require explicit approval. The `workspace`, `developer`, `computer`, and `full` profiles share the same typed decision path.
 
 5. **Filesystem sandboxing**: when bubblewrap (`bwrap`) is available, bash commands run in a sandbox with:
    - read-only access to system directories (`/usr`, `/bin`, `/lib`, `/etc`)
@@ -220,19 +220,22 @@ Secrets are protected at multiple layers:
 ### Access control flow
 
 ```
-Skill builds CapabilityRequest
+Harness derives CapabilityRequest(s) from SkillEffects + name + input + risk + context
   -> CapabilityManager checks profile + grants + risk
-  -> Allow: Skill runs, grant use is audited when applicable
-  -> Deny: Skill returns a structured capability error with the concrete reason
+  -> Allow: Skill runs with matching preauthorized requests available to ToolContext checks
+  -> Deny: tool execution returns a structured capability error with the concrete reason
   -> NeedsApproval:
        - CLI interactive prompt or Telegram scoped buttons render the request
        - approval creates a once/task/path/session/permanent grant
+       - approval lets the blocked operation continue or be retried without changing the tool call
        - denial reports the exact blocked capability
 ```
 
 `topagent access set full` prints a warning before changing the persisted profile. `/access set full` does the same in Telegram. `topagent access lockdown` and `/access lockdown` restore `workspace`, disable broad network and `computer_use`, clear grants, and append a lockdown audit record.
 
-The `computer_use` Skill is currently a controlled scaffold. It exposes typed `observe`, `navigate`, `click`, `type`, and `scroll` actions and creates an isolated workspace session directory, but does not claim complete desktop control until a real provider/sidecar is wired and tested. The access profile and high-impact approval gates are enforced before the scaffold accepts an action.
+The `web_search` Skill is present but not operational in this build. It declares `WebSearch` and `NetworkAccess`, is read-only and parallel-safe, is available only in `Investigate` and `Plan`, and returns bounded NotImplemented text without making remote requests, executing remote content, or writing durable memory.
+
+The `computer_use` Skill is currently a controlled scaffold compiled by default through the default Cargo feature set and gated by profile/grants at runtime. It exposes typed `observe`, `navigate`, `click`, `type`, and `scroll` actions and creates an isolated workspace session directory, but does not claim complete desktop control until a real provider/sidecar is wired and tested. The access profile and high-impact approval gates are enforced before the scaffold accepts an action.
 
 ### Memory and persistence flow
 
