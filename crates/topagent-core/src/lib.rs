@@ -8,6 +8,7 @@ pub mod command_exec;
 pub mod compaction;
 pub mod context;
 pub mod error;
+pub mod eval;
 pub mod file_util;
 pub mod harness;
 pub mod message;
@@ -53,6 +54,7 @@ pub use compaction::{
 };
 pub use context::ExecutionContext;
 pub use error::{Error, Result};
+pub use eval::{EvalRecorder, EvalRunRecord};
 pub use harness::{AgentHarness, AgentPhase, ContextBundle, SkillDispatcher, SkillExecution};
 pub use message::{Content, Message, Role};
 pub use model::{
@@ -90,3 +92,7 @@ pub use task_result::{
     VerificationCommand,
 };
 pub use tool_spec::ToolSpec;
+pub use tools::{
+    DisabledWebSearchProvider, HttpWebSearchConfig, HttpWebSearchProvider, WebSearchProvider,
+    WebSearchRequest, WebSearchResponse, WebSearchResult, WebSearchTool, WEB_SEARCH_RESULTS_PREFIX,
+};

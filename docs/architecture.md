@@ -35,7 +35,8 @@ The engine crate. No CLI command parsing or Telegram polling logic -- just the a
 | `openrouter` | OpenRouter API implementation |
 | `model` | ModelRoute |
 | `runtime` | RuntimeOptions (step limits, timeouts, truncation thresholds) |
-| `tools/` | Compatibility layer and existing built-in implementations (read, write, edit, bash, git_*, explicit NotImplemented web_search scaffold, default-compiled/profile-gated computer_use scaffold). New architecture treats these as Skill-backed implementations, not the Agent-owned registry. |
+| `eval` | Minimal explicit JSONL eval records for local measurement; not prompt memory |
+| `tools/` | Compatibility layer and existing built-in implementations (read, write, edit, bash, git_*, bounded provider-backed web_search, default-compiled/profile-gated computer_use scaffold). New architecture treats these as Skill-backed implementations, not the Agent-owned registry. |
 | `tool_spec` | Tool specification (name, description, parameters) |
 | `context` | ExecutionContext (workspace root, cancel token, secrets), ToolContext |
 | `secrets` | SecretRegistry: value-based and pattern-based redaction |
@@ -122,7 +123,7 @@ CLI parses args
         2. LLM returns text (final answer) or skill calls
         3. skill calls: run preflight (planning gate, verification gate, provenance-aware approval/memory enforcement)
         4. Harness validates phase/access/effects, authorizes required capabilities, dispatches the Skill, then Agent records result in session
-        5. if a fetch-like shell command introduced low-trust external content, keep that influence in run state
+        5. if `web_search` or a fetch-like shell command introduced low-trust external content, keep that influence in run state
         5. repeat until text response or max steps
 -> append proof-of-work (changed files, diff summary, trust notes when low-trust content shaped the run)
       -> for PlanAndExecute mode with files changed: append structured delivery summary with explicit verification status
@@ -230,15 +231,17 @@ Harness derives CapabilityRequest(s) from SkillEffects + name + input + risk + c
        - CLI interactive prompt or Telegram scoped buttons render the request
        - approval creates a once/task/path/session/permanent grant
        - Harness records the blocked skill name, input, phase, task id, and session id with the approval request
-       - waiting CLI/Telegram runs continue after approval; stopped or already-returned runs must be re-run after approval or an explicit grant
+       - waiting CLI/Telegram runs resume the blocked Skill call and append its Skill result after approval; stopped or already-returned one-shot runs must be re-run after approval or an explicit grant
        - denial reports the exact blocked capability
 ```
 
 `topagent access set full` prints a warning before changing the persisted profile. `/access set full` does the same in Telegram. `topagent access lockdown` and `/access lockdown` restore `workspace`, disable broad network and `computer_use`, clear grants, and append a lockdown audit record.
 
-The `web_search` Skill is present but not operational in this build. It declares `WebSearch` and `NetworkAccess`, is read-only and parallel-safe, is available only in `Investigate` and `Plan`, and returns bounded NotImplemented text without making remote requests, executing remote content, or writing durable memory.
+The `web_search` Skill is operational when `TOPAGENT_WEB_SEARCH_ENDPOINT` points at a generic HTTP JSON search API. Without that configuration it uses `DisabledWebSearchProvider` and returns an explicit disabled-provider message instead of fake results. The tool declares `WebSearch` and `NetworkAccess`, is read-only and parallel-safe, is available only in `Investigate` and `Plan`, is allowed by default in developer/computer/full profiles, and is blocked or grant-gated in workspace profile. Results are capped, output is capped, remote text is labeled low-trust, remote content is never executed, and search output cannot directly create durable memory.
 
-The `computer_use` Skill is currently a controlled scaffold compiled by default through the default Cargo feature set and gated by profile/grants at runtime. It exposes typed `observe`, `navigate`, `click`, `type`, and `scroll` actions and creates an isolated workspace session directory, but does not claim complete desktop control until a real provider/sidecar is wired and tested. The access profile and high-impact approval gates are enforced before the scaffold accepts an action.
+The `computer_use` Skill is currently a controlled scaffold compiled by default through the default Cargo feature set and gated by profile/grants at runtime. It exposes typed `observe`, `navigate`, `click`, `type`, and `scroll` actions and creates an isolated workspace session directory, but does not claim complete desktop control until a real isolated browser provider/sidecar is wired and tested. TopClaw's whole-desktop sidecar is intentionally not imported into this boundary. The access profile and high-impact approval gates are enforced before the scaffold accepts an action.
+
+The eval skeleton is intentionally small: `EvalRunRecord` captures task id, success/failure, wall time, model turns, skill calls, approval blocks, verification command, and files changed, and `EvalRecorder` appends JSONL only when explicitly invoked. These records are measurement artifacts, not retrieval inputs or prompt memory.
 
 ### Memory and persistence flow
 

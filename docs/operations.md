@@ -141,6 +141,10 @@ TopAgent captures a lightweight workspace run snapshot automatically before `wri
 
 `topagent run restore` restores the latest run snapshot and clears persisted Telegram transcripts for that workspace so the next chat run does not reload stale file-state context.
 
+### Local eval records
+
+The core crate exposes a minimal eval fixture (`EvalRunRecord` and `EvalRecorder`) for local measurement. A record captures task id, success/failure, wall time, model turns, skill calls, approval blocks, verification command, and files changed. The recorder appends explicit JSONL files only when a caller opts in; eval files are not durable memory, are not retrieved into prompts, and do not add hot-path cost.
+
 ### Provenance and trust boundaries
 
 TopAgent keeps a small provenance model for execution-relevant text:
@@ -148,7 +152,7 @@ TopAgent keeps a small provenance model for execution-relevant text:
 - `operator_direct`: the current operator instruction
 - `generated_memory_artifact`: `USER.md`, `MEMORY.md`, notes, procedures, and other curated memory loaded into the run
 - `transcript_prior`: prior Telegram snippets retrieved as evidence
-- `fetched_web_content`: fetch-like shell commands that pulled in external content
+- `fetched_web_content`: `web_search` results and fetch-like shell commands that pulled in external content
 - `pasted_untrusted_text`: obviously pasted or quoted external content in the current instruction
 
 These labels are not a full lineage system. They are a small run-level trust summary used for two things:
@@ -157,6 +161,25 @@ These labels are not a full lineage system. They are a small run-level trust sum
 - durable learning writes become stricter than temporary planning use
 
 Low-trust content may still be summarized, quoted, or analyzed as data. It does not automatically become durable memory, operator preferences, reusable procedures, or export-ready trajectories.
+
+### Web search backend
+
+`web_search` is available only in `Investigate` and `Plan` and goes through the same access profile, grant, approval, and redaction path as other Skills. Developer, computer, and full profiles allow it by default; workspace profile blocks it unless a scoped `web_search` grant or approval is present.
+
+Configure the generic HTTP JSON backend with:
+
+| Variable | Purpose |
+|----------|---------|
+| `TOPAGENT_WEB_SEARCH_ENDPOINT` | JSON search API endpoint. Required for real search. |
+| `TOPAGENT_WEB_SEARCH_API_KEY` | Optional API key sent in a header. |
+| `TOPAGENT_WEB_SEARCH_AUTH_HEADER` | Generic HTTP header name for the key, default `Authorization`. |
+| `TOPAGENT_WEB_SEARCH_AUTH_PREFIX` | Generic HTTP header value prefix, default `Bearer `. |
+| `TOPAGENT_WEB_SEARCH_QUERY_PARAM` | Generic HTTP query parameter name, default `q`. |
+| `TOPAGENT_WEB_SEARCH_LIMIT_PARAM` | Generic HTTP result-limit parameter name, default `limit`. |
+| `TOPAGENT_WEB_SEARCH_PROVIDER` | Label shown in bounded output, default `http`. |
+| `TOPAGENT_WEB_SEARCH_TIMEOUT_SECS` | Request timeout, default `8`. |
+
+The parser expects JSON results under `results`, `items`, `web.results`, or a top-level array, using common fields such as `title`/`name`, `url`/`link`, and `snippet`/`description`/`content`. If no endpoint is configured, TopAgent returns a clear disabled-provider message; it does not fabricate results. All result text is capped, marked low-trust, never executed, and never written to durable memory directly.
 
 ### What topagent status shows
 

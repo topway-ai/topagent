@@ -2,9 +2,9 @@ use super::{extract_exit_code, Agent};
 use crate::behavior::BashCommandClass;
 use crate::capability::{redact_sensitive_target, CapabilityError, CapabilityKind};
 use crate::context::ExecutionContext;
-use crate::provenance::fetched_content_source;
+use crate::provenance::{fetched_content_source, InfluenceMode, SourceKind, SourceLabel};
 use crate::run_snapshot::WorkspaceRunSnapshotStatus;
-use crate::tools::risky_shell_changed_path_hints;
+use crate::tools::{risky_shell_changed_path_hints, WEB_SEARCH_RESULTS_PREFIX};
 use crate::{Error, Message, ProgressUpdate, Result};
 
 impl Agent {
@@ -110,6 +110,14 @@ impl Agent {
         };
         let raw_result = execution.output;
         self.check_cancelled(ctx)?;
+
+        if name == "web_search" && raw_result.starts_with(WEB_SEARCH_RESULTS_PREFIX) {
+            self.run_state.record_observed_source(SourceLabel::low(
+                SourceKind::FetchedWebContent,
+                InfluenceMode::MayDriveAction,
+                web_search_source_summary(&args),
+            ));
+        }
 
         let mut execution_started_by_bash = false;
         if let Some(cmd) = bash_cmd.as_ref() {
@@ -421,4 +429,19 @@ fn grant_hint(kind: CapabilityKind, target: &str, mode: &str) -> String {
         _ => target,
     };
     format!("topagent access grant {grant_target:?} {mode} --scope once")
+}
+
+fn web_search_source_summary(args: &serde_json::Value) -> String {
+    let query = args
+        .get("query")
+        .and_then(|value| value.as_str())
+        .unwrap_or("web_search");
+    let compact = query.split_whitespace().collect::<Vec<_>>().join(" ");
+    if compact.chars().count() <= 96 {
+        format!("web_search: {compact}")
+    } else {
+        let mut summary = compact.chars().take(93).collect::<String>();
+        summary.push_str("...");
+        format!("web_search: {summary}")
+    }
 }

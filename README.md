@@ -1,6 +1,6 @@
 # TopAgent
 
-A Telegram-first, CLI-backed local coding agent that reads one repository, plans changes, and executes work through Harness-enforced Skills such as file reads/writes, shell commands, git operations, memory writes, an explicit web_search scaffold, and a controlled computer_use scaffold.
+A Telegram-first, CLI-backed local coding agent that reads one repository, plans changes, and executes work through Harness-enforced Skills such as file reads/writes, shell commands, git operations, memory writes, bounded web_search, and a controlled computer_use scaffold.
 
 Supports two LLM providers through one shared OpenAI-compatible transport seam:
 - **OpenRouter** (default) — default model: `minimax/minimax-m2.7`
@@ -122,11 +122,13 @@ topagent access lockdown
 
 `topagent access lockdown` immediately returns to the `workspace` profile, disables broad network and `computer_use`, and clears grants. Access-sensitive events are written to a local audit log and shown with `topagent access audit`.
 
-`web_search` is present as an explicit Skill surface so access policy is honest, but it is not operational in this build: it returns a bounded NotImplemented result and performs no network request, remote-content execution, or durable memory write.
+`web_search` is a real bounded Skill when a provider is configured. By default it uses a disabled provider and returns a clear disabled message rather than fake results. Configure a generic HTTP JSON search backend with `TOPAGENT_WEB_SEARCH_ENDPOINT`; optional knobs include `TOPAGENT_WEB_SEARCH_API_KEY`, `TOPAGENT_WEB_SEARCH_AUTH_HEADER`, `TOPAGENT_WEB_SEARCH_AUTH_PREFIX`, `TOPAGENT_WEB_SEARCH_QUERY_PARAM`, `TOPAGENT_WEB_SEARCH_LIMIT_PARAM`, `TOPAGENT_WEB_SEARCH_PROVIDER`, and `TOPAGENT_WEB_SEARCH_TIMEOUT_SECS`. Results are capped, marked low-trust, never executed, and never written to durable memory directly.
 
 `computer_use` is compiled by default through the default Cargo feature set and is profile-gated at runtime. It is exposed only under the `computer`/`full` profiles or an explicit `computer_use` grant.
 
 Capability approval requests from Harness skill execution record the blocked skill name, input, phase, task id, and session id with the approval request. Waiting CLI and Telegram runs can continue after approval; if a one-shot run has already returned, approve or grant access and re-run the task.
+
+The core crate also includes a minimal eval JSONL record shape (`EvalRunRecord`/`EvalRecorder`) for local measurement. It records task id, success/failure, wall time, model turns, skill calls, approval blocks, verification command, and files changed when explicitly used; eval records are not prompt memory.
 
 ### Bot commands
 
@@ -243,9 +245,9 @@ Saved trajectories now include provenance labels from the run. A trajectory can 
 - Telegram: private chats only, text messages only
 - One workspace per process
 - Linux only (systemd required for background service)
-- `web_search` is scaffolded, not a real search provider. It returns NotImplemented text and does not make remote requests.
-- `computer_use` is a default-compiled scaffolded tool surface in this release, gated by access profile/grants. It enforces the access profile and approval gates and prepares an isolated workspace session directory, but it does not yet perform real desktop automation without a future provider/sidecar integration.
-- Approval retry is recorded but not a universal background resume system. Waiting runs continue after approval; stopped or already-returned runs must be re-run after approving or granting access.
+- `web_search` is disabled until `TOPAGENT_WEB_SEARCH_ENDPOINT` is configured. The generic HTTP JSON adapter expects array results under `results`, `items`, `web.results`, or a top-level array.
+- `computer_use` is a default-compiled scaffolded tool surface in this release, gated by access profile/grants. It enforces the access profile and approval gates and prepares an isolated workspace session directory, but it does not yet perform real desktop automation without a future isolated browser provider/sidecar integration. TopClaw's whole-desktop sidecar is not imported here.
+- Approval resume is real for waiting CLI and Telegram runs: approval creates the scoped grant and the blocked Skill call continues. Stopped tasks and one-shot runs that already returned still need a rerun after approving or granting access.
 
 ## Verified delivery
 

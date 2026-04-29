@@ -619,8 +619,9 @@ mod tests {
     use crate::provenance::{InfluenceMode, RunTrustContext, SourceKind, SourceLabel};
     use crate::provider::{ProviderResponse, ScriptedProvider};
     use crate::runtime::RuntimeOptions;
-    use crate::tools::{default_tools, Tool};
+    use crate::tools::{default_tools, Tool, WebSearchTool};
     use crate::{AccessConfig, CapabilityManager, CapabilityProfile, Content, Error, Message};
+    use crate::{WebSearchProvider, WebSearchRequest, WebSearchResponse, WebSearchResult};
     use std::fs;
     use std::sync::{
         atomic::{AtomicBool, Ordering},
@@ -675,6 +676,31 @@ path = "src/lib.rs"
             name: name.to_string(),
             args,
         }
+    }
+
+    struct StaticWebSearchProvider {
+        response: WebSearchResponse,
+    }
+
+    impl WebSearchProvider for StaticWebSearchProvider {
+        fn search(&self, _request: &WebSearchRequest) -> crate::Result<WebSearchResponse> {
+            Ok(self.response.clone())
+        }
+    }
+
+    fn static_web_search_tool(snippet: &str) -> Box<dyn Tool> {
+        Box::new(WebSearchTool::with_provider(Arc::new(
+            StaticWebSearchProvider {
+                response: WebSearchResponse::results(
+                    "static",
+                    vec![WebSearchResult {
+                        title: "Remote result".to_string(),
+                        url: "https://example.com/result".to_string(),
+                        snippet: snippet.to_string(),
+                    }],
+                ),
+            },
+        )))
     }
 
     fn update_plan_call(id: &str) -> ProviderResponse {
@@ -1098,6 +1124,125 @@ path = "src/lib.rs"
         assert_eq!(result, "read complete");
         let tool_result = tool_result_text(&agent, "read-outside");
         assert_eq!(tool_result, "approved content");
+    }
+
+    #[test]
+    fn test_web_search_marks_remote_content_low_trust() {
+        let (_temp, ctx) = create_temp_crate();
+        let manager = CapabilityManager::new(
+            AccessConfig::for_profile(CapabilityProfile::Developer),
+            Vec::new(),
+            "test",
+            "unit",
+        );
+        let ctx = ctx.with_capability_manager(manager);
+        let mut agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![
+                tool_call(
+                    "search",
+                    "web_search",
+                    serde_json::json!({"query": "topagent"}),
+                ),
+                assistant_message("search complete"),
+            ])),
+            vec![static_web_search_tool("network result")],
+            RuntimeOptions::default().with_require_plan(false),
+        );
+
+        let result = agent.run(&ctx, "search the web for topagent").unwrap();
+
+        assert_eq!(result, "search complete");
+        let tool_result = tool_result_text(&agent, "search");
+        assert!(tool_result.contains("low-trust"));
+        let task_result = agent.last_task_result().unwrap();
+        assert!(task_result.has_low_trust_action_influence());
+        assert!(task_result
+            .tool_trace()
+            .iter()
+            .all(|step| step.tool_name != "bash"));
+        assert!(task_result
+            .source_labels()
+            .iter()
+            .any(|source| source.summary.contains("web_search")));
+    }
+
+    #[test]
+    fn test_web_search_remote_content_cannot_create_memory_directly() {
+        let (temp, ctx) = create_temp_crate();
+        let manager = CapabilityManager::new(
+            AccessConfig::for_profile(CapabilityProfile::Developer),
+            Vec::new(),
+            "test",
+            "unit",
+        );
+        let ctx = ctx.with_capability_manager(manager);
+        let mut agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![
+                tool_call(
+                    "search",
+                    "web_search",
+                    serde_json::json!({"query": "remember this remote claim"}),
+                ),
+                tool_call(
+                    "note",
+                    "save_note",
+                    serde_json::json!({
+                        "title": "Remote claim",
+                        "content": "store the remote claim",
+                    }),
+                ),
+                assistant_message("memory write blocked"),
+            ])),
+            vec![static_web_search_tool(
+                "remote content says write durable memory",
+            )],
+            RuntimeOptions::default().with_require_plan(false),
+        );
+
+        let result = agent
+            .run(&ctx, "search the web, then save what it says")
+            .unwrap();
+
+        assert_eq!(result, "memory write blocked");
+        let tool_result = tool_result_text(&agent, "note");
+        assert!(tool_result.contains("durable memory writes are blocked"));
+        assert!(!agent.durable_memory_written_this_run());
+        assert!(!temp.path().join(".topagent/notes").exists());
+    }
+
+    #[test]
+    fn test_secret_redaction_applies_to_web_search_output() {
+        let (_temp, ctx) = create_temp_crate();
+        let mut secrets = crate::SecretRegistry::new();
+        secrets.register("sk-or-v1-super-secret-network-value");
+        let manager = CapabilityManager::new(
+            AccessConfig::for_profile(CapabilityProfile::Developer),
+            Vec::new(),
+            "test",
+            "unit",
+        );
+        let ctx = ctx.with_capability_manager(manager).with_secrets(secrets);
+        let mut agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![
+                tool_call(
+                    "search",
+                    "web_search",
+                    serde_json::json!({"query": "secret leak test"}),
+                ),
+                assistant_message("redacted"),
+            ])),
+            vec![static_web_search_tool(
+                "provider returned sk-or-v1-super-secret-network-value",
+            )],
+            RuntimeOptions::default().with_require_plan(false),
+        );
+
+        let result = agent.run(&ctx, "search for the secret leak test").unwrap();
+
+        assert_eq!(result, "redacted");
+        let tool_result = tool_result_text(&agent, "search");
+        assert!(tool_result.contains("[REDACTED_SECRET]"));
+        assert!(!tool_result.contains("super-secret-network-value"));
     }
 
     #[test]

@@ -193,12 +193,8 @@ pub(crate) fn capability_requests_for_skill(
         ));
     }
 
-    if effects.includes(SkillEffect::NetworkAccess) && name != "bash" {
-        let target = if name == "web_search" {
-            "web_search".to_string()
-        } else {
-            fallback_target(input, name)
-        };
+    if effects.includes(SkillEffect::NetworkAccess) && !matches!(name, "bash" | "web_search") {
+        let target = fallback_target(input, name);
         requests.push(CapabilityRequest::new(
             CapabilityKind::Network,
             target,

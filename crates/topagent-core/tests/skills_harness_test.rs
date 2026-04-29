@@ -12,7 +12,8 @@ use topagent_core::tools::{default_tools, SaveNoteTool};
 use topagent_core::{
     AccessConfig, AccessMode, ApprovalMailbox, ApprovalMailboxMode, CapabilityGrant,
     CapabilityKind, CapabilityManager, CapabilityProfile, Error, ExecutionContext, GrantScope,
-    RiskLevel, RuntimeOptions, SkillSchema,
+    RiskLevel, RuntimeOptions, SkillSchema, WebSearchProvider, WebSearchRequest, WebSearchResponse,
+    WebSearchResult, WebSearchTool,
 };
 
 struct FakeSkill {
@@ -64,6 +65,16 @@ impl Skill for FakeSkill {
     }
 }
 
+struct StaticWebSearchProvider {
+    response: WebSearchResponse,
+}
+
+impl WebSearchProvider for StaticWebSearchProvider {
+    fn search(&self, _request: &WebSearchRequest) -> topagent_core::Result<WebSearchResponse> {
+        Ok(self.response.clone())
+    }
+}
+
 fn skill_names(specs: Vec<topagent_core::ToolSpec>) -> Vec<String> {
     specs.into_iter().map(|spec| spec.name).collect()
 }
@@ -73,6 +84,23 @@ fn default_harness() -> AgentHarness {
     for tool in default_tools().into_inner() {
         registry.add_tool(tool);
     }
+    AgentHarness::new(registry)
+}
+
+fn web_search_harness() -> AgentHarness {
+    let mut registry = SkillRegistry::new();
+    registry.add_tool(Box::new(WebSearchTool::with_provider(Arc::new(
+        StaticWebSearchProvider {
+            response: WebSearchResponse::results(
+                "static",
+                vec![WebSearchResult {
+                    title: "TopAgent".to_string(),
+                    url: "https://example.com/topagent".to_string(),
+                    snippet: "bounded search result".to_string(),
+                }],
+            ),
+        },
+    ))));
     AgentHarness::new(registry)
 }
 
@@ -542,7 +570,7 @@ fn test_harness_blocks_computer_use_unless_profile_or_grant_allows_it() {
 }
 
 #[test]
-fn test_web_search_scaffold_effects_and_phase_exposure_are_explicit() {
+fn test_web_search_effects_phase_exposure_and_workspace_block_are_explicit() {
     let temp = tempfile::tempdir().unwrap();
     let mut harness = default_harness();
     let developer = CapabilityManager::new(
@@ -593,7 +621,7 @@ fn test_web_search_scaffold_effects_and_phase_exposure_are_explicit() {
 }
 
 #[test]
-fn test_preauthorized_web_search_does_not_create_duplicate_approval() {
+fn test_developer_profile_can_run_web_search_without_approval() {
     let temp = tempfile::tempdir().unwrap();
     let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
     let manager = CapabilityManager::new(
@@ -605,7 +633,7 @@ fn test_preauthorized_web_search_does_not_create_duplicate_approval() {
     let ctx = ExecutionContext::new(temp.path().to_path_buf())
         .with_capability_manager(manager)
         .with_approval_mailbox(mailbox.clone());
-    let mut harness = default_harness();
+    let mut harness = web_search_harness();
 
     let result = harness
         .execute_skill(
@@ -617,8 +645,70 @@ fn test_preauthorized_web_search_does_not_create_duplicate_approval() {
         )
         .unwrap();
 
-    assert!(result.output.contains("web_search is not implemented"));
+    assert!(result.output.contains("web_search_results"));
+    assert!(result.output.contains("low-trust"));
     assert_eq!(mailbox.list().len(), 0);
+}
+
+#[test]
+fn test_workspace_profile_can_run_web_search_with_explicit_grant() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Workspace),
+        vec![CapabilityGrant::new(
+            CapabilityKind::WebSearch,
+            "web_search",
+            AccessMode::Read,
+            GrantScope::Permanent,
+            "test web search grant",
+        )],
+        "test",
+        "unit",
+    );
+    let ctx = ExecutionContext::new(temp.path().to_path_buf()).with_capability_manager(manager);
+    let mut harness = web_search_harness();
+
+    let result = harness
+        .execute_skill(
+            "web_search",
+            serde_json::json!({"query": "topagent", "max_results": 3}),
+            AgentPhase::Investigate,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap();
+
+    assert!(result.output.contains("web_search_results"));
+    assert!(result.output.contains("TopAgent"));
+}
+
+#[test]
+fn test_web_search_cannot_run_in_verify_or_finalize_phase() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Developer),
+        Vec::new(),
+        "test",
+        "unit",
+    );
+    let ctx = ExecutionContext::new(temp.path().to_path_buf()).with_capability_manager(manager);
+    let mut harness = web_search_harness();
+
+    for phase in [AgentPhase::Verify, AgentPhase::Finalize] {
+        let err = harness
+            .execute_skill(
+                "web_search",
+                serde_json::json!({"query": "topagent"}),
+                phase,
+                &ctx,
+                &RuntimeOptions::default(),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::SkillPolicyDenied { .. }),
+            "expected phase denial for {phase:?}, got {err:?}"
+        );
+    }
 }
 
 #[test]
@@ -715,6 +805,271 @@ fn test_outside_workspace_access_creates_one_pending_skill_approval_record() {
         pending.input,
         serde_json::json!({"path": outside_path.display().to_string()})
     );
+}
+
+#[test]
+fn test_pending_bash_high_risk_resumes_after_approval_once() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Wait);
+    let approving_mailbox = mailbox.clone();
+    mailbox.set_notifier(Arc::new(move |request| {
+        approving_mailbox
+            .approve(&request.id, Some("approved for test".to_string()))
+            .unwrap();
+    }));
+    let manager = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Developer),
+        Vec::new(),
+        "test",
+        "unit",
+    );
+    let ctx = ExecutionContext::new(workspace.path().to_path_buf())
+        .with_capability_manager(manager)
+        .with_approval_mailbox(mailbox.clone())
+        .with_task_id("task-bash")
+        .with_session_id("session-bash");
+    let mut harness = default_harness();
+
+    let result = harness
+        .execute_skill(
+            "bash",
+            serde_json::json!({"command": "printf approved >> approved.txt"}),
+            AgentPhase::Patch,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap();
+
+    assert!(result.output.contains("Exit code: 0"));
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("approved.txt")).unwrap(),
+        "approved"
+    );
+    let request = mailbox.list().pop().unwrap().request;
+    let pending = mailbox
+        .pending_skill_execution(&request.id)
+        .expect("approval should record the blocked bash skill call");
+    assert_eq!(pending.skill_name, "bash");
+    assert_eq!(pending.phase, "patch");
+    assert_eq!(pending.task_id.as_deref(), Some("task-bash"));
+    assert_eq!(pending.session_id.as_deref(), Some("session-bash"));
+}
+
+#[test]
+fn test_denied_pending_bash_approval_does_not_execute() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Wait);
+    let denying_mailbox = mailbox.clone();
+    mailbox.set_notifier(Arc::new(move |request| {
+        denying_mailbox
+            .deny(&request.id, Some("denied for test".to_string()))
+            .unwrap();
+    }));
+    let manager = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Developer),
+        Vec::new(),
+        "test",
+        "unit",
+    );
+    let ctx = ExecutionContext::new(workspace.path().to_path_buf())
+        .with_capability_manager(manager)
+        .with_approval_mailbox(mailbox);
+    let mut harness = default_harness();
+
+    let err = harness
+        .execute_skill(
+            "bash",
+            serde_json::json!({"command": "printf denied >> denied.txt"}),
+            AgentPhase::Patch,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap_err();
+
+    assert!(
+        matches!(err, Error::Capability(ref error) if matches!(**error, topagent_core::CapabilityError::Denied { .. })),
+        "expected denied capability error, got {err:?}"
+    );
+    assert!(!workspace.path().join("denied.txt").exists());
+}
+
+#[test]
+fn test_superseded_pending_bash_approval_does_not_execute() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Wait);
+    let superseding_mailbox = mailbox.clone();
+    mailbox.set_notifier(Arc::new(move |_request| {
+        superseding_mailbox.supersede_pending("superseded in test");
+    }));
+    let manager = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Developer),
+        Vec::new(),
+        "test",
+        "unit",
+    );
+    let ctx = ExecutionContext::new(workspace.path().to_path_buf())
+        .with_capability_manager(manager)
+        .with_approval_mailbox(mailbox);
+    let mut harness = default_harness();
+
+    let err = harness
+        .execute_skill(
+            "bash",
+            serde_json::json!({"command": "printf superseded >> superseded.txt"}),
+            AgentPhase::Patch,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap_err();
+
+    assert!(
+        matches!(err, Error::Capability(ref error) if matches!(**error, topagent_core::CapabilityError::NeedsApproval { .. })),
+        "expected superseded approval to stop execution, got {err:?}"
+    );
+    assert!(!workspace.path().join("superseded.txt").exists());
+}
+
+#[test]
+fn test_expired_pending_bash_approval_does_not_execute() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Wait);
+    let expiring_mailbox = mailbox.clone();
+    mailbox.set_notifier(Arc::new(move |_request| {
+        expiring_mailbox.expire_pending("expired in test");
+    }));
+    let manager = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Developer),
+        Vec::new(),
+        "test",
+        "unit",
+    );
+    let ctx = ExecutionContext::new(workspace.path().to_path_buf())
+        .with_capability_manager(manager)
+        .with_approval_mailbox(mailbox);
+    let mut harness = default_harness();
+
+    let err = harness
+        .execute_skill(
+            "bash",
+            serde_json::json!({"command": "printf expired >> expired.txt"}),
+            AgentPhase::Patch,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap_err();
+
+    assert!(
+        matches!(err, Error::Capability(ref error) if matches!(**error, topagent_core::CapabilityError::NeedsApproval { .. })),
+        "expected expired approval to stop execution, got {err:?}"
+    );
+    assert!(!workspace.path().join("expired.txt").exists());
+}
+
+#[test]
+fn test_once_approval_is_consumed_after_one_execution() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Wait);
+    let approving_mailbox = mailbox.clone();
+    mailbox.set_notifier(Arc::new(move |request| {
+        approving_mailbox
+            .approve_with_scope(
+                &request.id,
+                GrantScope::Once,
+                Some("approved once for test".to_string()),
+            )
+            .unwrap();
+    }));
+    let manager = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Developer),
+        Vec::new(),
+        "test",
+        "unit",
+    );
+    let ctx = ExecutionContext::new(workspace.path().to_path_buf())
+        .with_capability_manager(manager.clone())
+        .with_approval_mailbox(mailbox);
+    let mut harness = default_harness();
+
+    harness
+        .execute_skill(
+            "bash",
+            serde_json::json!({"command": "printf once >> once.txt"}),
+            AgentPhase::Patch,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("once.txt")).unwrap(),
+        "once"
+    );
+    assert!(
+        manager.grants().is_empty(),
+        "once grant should be consumed and removed after the approved execution"
+    );
+}
+
+#[test]
+fn test_task_scoped_approval_cannot_be_reused_by_another_task() {
+    let workspace = tempfile::tempdir().unwrap();
+    let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Wait);
+    let approving_mailbox = mailbox.clone();
+    mailbox.set_notifier(Arc::new(move |request| {
+        approving_mailbox
+            .approve_with_scope(
+                &request.id,
+                GrantScope::ThisTask,
+                Some("approved for task-a".to_string()),
+            )
+            .unwrap();
+    }));
+    let manager = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Developer),
+        Vec::new(),
+        "test",
+        "unit",
+    );
+    let command = serde_json::json!({"command": "printf task > scoped.txt"});
+    let ctx_task_a = ExecutionContext::new(workspace.path().to_path_buf())
+        .with_capability_manager(manager.clone())
+        .with_approval_mailbox(mailbox)
+        .with_task_id("task-a");
+    let mut harness = default_harness();
+
+    harness
+        .execute_skill(
+            "bash",
+            command.clone(),
+            AgentPhase::Patch,
+            &ctx_task_a,
+            &RuntimeOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(workspace.path().join("scoped.txt")).unwrap(),
+        "task"
+    );
+
+    fs::remove_file(workspace.path().join("scoped.txt")).unwrap();
+    let ctx_task_b = ExecutionContext::new(workspace.path().to_path_buf())
+        .with_capability_manager(manager)
+        .with_task_id("task-b");
+    let err = harness
+        .execute_skill(
+            "bash",
+            command,
+            AgentPhase::Patch,
+            &ctx_task_b,
+            &RuntimeOptions::default(),
+        )
+        .unwrap_err();
+
+    assert!(
+        matches!(err, Error::Capability(ref error) if matches!(**error, topagent_core::CapabilityError::NeedsApproval { .. })),
+        "expected task-scoped grant not to match task-b, got {err:?}"
+    );
+    assert!(!workspace.path().join("scoped.txt").exists());
 }
 
 #[cfg(feature = "computer-use")]
