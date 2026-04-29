@@ -64,11 +64,13 @@ Phase exposure is intentionally narrower than the full registry:
 |-------|------------------------|
 | `Investigate` | read-only filesystem, git read, research-safe shell, planning |
 | `Plan` | read-only skills, research shell, `update_plan` |
-| `Patch` | edit/write, shell, git mutation, computer_use only when profile/grant allows |
-| `Verify` | read-only skills, shell/test/build, git diff/status |
+| `Patch` | edit/write, mutation-risk shell, git mutation, computer_use only when profile/grant allows |
+| `Verify` | read-only skills, verification shell/test/build, git diff/status |
 | `Finalize` | read-only summaries plus durable-memory skills |
 
 This phase filter is both an exposure policy and an execution invariant. Even if a provider emits a hidden Skill name, Harness rechecks the current phase and access profile before dispatch. Skills declare effects; Harness derives and authorizes the required capabilities from those effects, the Skill name, input, risk, and runtime context. Tool-internal authorization remains defense-in-depth.
+
+`bash` has an additional Harness execution check because the Skill name alone is too broad. Harness classifies the submitted command: `ResearchSafe` commands are allowed only in `Investigate` or `Plan`, `Verification` commands only in `Verify`, and `MutationRisk` commands only in `Patch`. After that phase check, capability authorization still decides whether network, filesystem, git, package-manager, service, external-send, or high-risk shell access requires approval.
 
 ## How to add a new Skill
 
@@ -227,7 +229,8 @@ Harness derives CapabilityRequest(s) from SkillEffects + name + input + risk + c
   -> NeedsApproval:
        - CLI interactive prompt or Telegram scoped buttons render the request
        - approval creates a once/task/path/session/permanent grant
-       - approval lets the blocked operation continue or be retried without changing the tool call
+       - Harness records the blocked skill name, input, phase, task id, and session id with the approval request
+       - waiting CLI/Telegram runs continue after approval; stopped or already-returned runs must be re-run after approval or an explicit grant
        - denial reports the exact blocked capability
 ```
 

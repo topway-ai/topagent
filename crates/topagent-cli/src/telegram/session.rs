@@ -505,6 +505,9 @@ impl ChatSessionManager {
         approval_mailbox.set_notifier(Arc::new(move |request| {
             let mut message = request.render_details();
             if request.capability.is_some() {
+                message.push_str(
+                    "\n\nHarness recorded the blocked skill input with this approval request. Waiting Telegram tasks continue after approval; if the task is stopped, re-run it after approving or granting access.",
+                );
                 message.push_str(&format!(
                     "\n\nTap a scope button below, or reply with /approve {} once|task|path|session. Use /deny {} to reject.",
                     request.id, request.id

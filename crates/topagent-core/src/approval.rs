@@ -67,10 +67,47 @@ pub struct ApprovalRequest {
     pub created_at: SystemTime,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingSkillExecution {
+    pub request_id: String,
+    pub skill_name: String,
+    pub input: serde_json::Value,
+    pub phase: String,
+    pub task_id: Option<String>,
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingSkillExecutionDraft {
+    pub skill_name: String,
+    pub input: serde_json::Value,
+    pub phase: String,
+    pub task_id: Option<String>,
+    pub session_id: Option<String>,
+}
+
+impl PendingSkillExecutionDraft {
+    fn with_request_id(self, request_id: String) -> PendingSkillExecution {
+        PendingSkillExecution {
+            request_id,
+            skill_name: self.skill_name,
+            input: self.input,
+            phase: self.phase,
+            task_id: self.task_id,
+            session_id: self.session_id,
+        }
+    }
+}
+
 impl ApprovalRequest {
     pub fn render_details(&self) -> String {
         if let Some(capability) = &self.capability {
-            return capability.render_access_request();
+            let mut body = capability.render_access_request();
+            body.push_str(&format!("\nExpected effect: {}", self.expected_effect));
+            if let Some(rollback_hint) = &self.rollback_hint {
+                body.push_str(&format!("\nRollback hint: {rollback_hint}"));
+            }
+            return body;
         }
 
         let mut body = format!(
@@ -185,6 +222,7 @@ struct ApprovalMailboxInner {
 struct ApprovalMailboxState {
     next_id: u64,
     entries: Vec<ApprovalEntry>,
+    pending_skill_executions: Vec<PendingSkillExecution>,
 }
 
 #[derive(Clone)]
@@ -248,9 +286,28 @@ impl ApprovalMailbox {
         draft: ApprovalRequestDraft,
         cancel: Option<&CancellationToken>,
     ) -> ApprovalCheck {
+        self.request_decision_internal(draft, None, cancel)
+    }
+
+    pub(crate) fn request_decision_for_pending_skill(
+        &self,
+        draft: ApprovalRequestDraft,
+        pending_skill: PendingSkillExecutionDraft,
+        cancel: Option<&CancellationToken>,
+    ) -> ApprovalCheck {
+        self.request_decision_internal(draft, Some(pending_skill), cancel)
+    }
+
+    fn request_decision_internal(
+        &self,
+        draft: ApprovalRequestDraft,
+        pending_skill: Option<PendingSkillExecutionDraft>,
+        cancel: Option<&CancellationToken>,
+    ) -> ApprovalCheck {
+        let mut pending_skill = pending_skill;
         let (entry, is_new) = {
             let mut state = self.inner.state.lock().unwrap();
-            if let Some(existing) = state
+            let existing = state
                 .entries
                 .iter()
                 .rev()
@@ -259,8 +316,15 @@ impl ApprovalMailbox {
                         && entry.request.action_kind == draft.action_kind
                         && entry.request.exact_action == draft.exact_action
                 })
-                .cloned()
-            {
+                .cloned();
+
+            if let Some(existing) = existing {
+                if let Some(pending) = pending_skill.take() {
+                    Self::record_pending_skill_execution_locked(
+                        &mut state,
+                        pending.with_request_id(existing.request.id.clone()),
+                    );
+                }
                 (existing, false)
             } else {
                 state.next_id += 1;
@@ -281,6 +345,12 @@ impl ApprovalMailbox {
                     }),
                     created_at: SystemTime::now(),
                 };
+                if let Some(pending) = pending_skill.take() {
+                    Self::record_pending_skill_execution_locked(
+                        &mut state,
+                        pending.with_request_id(request.id.clone()),
+                    );
+                }
                 let entry = ApprovalEntry {
                     request,
                     state: ApprovalState::Pending,
@@ -308,8 +378,33 @@ impl ApprovalMailbox {
         }
     }
 
+    fn record_pending_skill_execution_locked(
+        state: &mut ApprovalMailboxState,
+        pending: PendingSkillExecution,
+    ) {
+        if state
+            .pending_skill_executions
+            .iter()
+            .any(|existing| existing.request_id == pending.request_id)
+        {
+            return;
+        }
+        state.pending_skill_executions.push(pending);
+    }
+
     pub fn list(&self) -> Vec<ApprovalEntry> {
         self.inner.state.lock().unwrap().entries.clone()
+    }
+
+    pub fn pending_skill_execution(&self, request_id: &str) -> Option<PendingSkillExecution> {
+        self.inner
+            .state
+            .lock()
+            .unwrap()
+            .pending_skill_executions
+            .iter()
+            .find(|pending| pending.request_id == request_id)
+            .cloned()
     }
 
     pub fn pending(&self) -> Vec<ApprovalEntry> {

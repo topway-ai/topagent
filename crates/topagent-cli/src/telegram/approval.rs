@@ -88,12 +88,17 @@ pub(super) fn approval_reply_markup(
 }
 
 pub(super) fn format_approval_resolution(entry: &ApprovalEntry, approve: bool) -> String {
-    format!(
-        "Approval {} {}: {}.",
-        entry.request.id,
-        if approve { "approved" } else { "denied" },
-        entry.request.short_summary
-    )
+    if approve {
+        format!(
+            "Approval {} approved: {}.",
+            entry.request.id, entry.request.short_summary
+        )
+    } else {
+        format!(
+            "Approval {} denied: {}. Operation was not executed.",
+            entry.request.id, entry.request.short_summary
+        )
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +232,9 @@ mod tests {
 
         let entry = sample_entry(false);
         let result = format_approval_resolution(&entry, false);
-        assert_eq!(result, "Approval apr-1 denied: git commit: ship it.");
+        assert_eq!(
+            result,
+            "Approval apr-1 denied: git commit: ship it. Operation was not executed."
+        );
     }
 }

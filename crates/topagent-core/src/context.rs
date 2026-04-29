@@ -1,5 +1,7 @@
 use crate::approval::ApprovalMailbox;
-use crate::approval::{ApprovalCheck, ApprovalRequestDraft, ApprovalTriggerKind};
+use crate::approval::{
+    ApprovalCheck, ApprovalRequestDraft, ApprovalTriggerKind, PendingSkillExecutionDraft,
+};
 use crate::capability::{
     redact_sensitive_target, AccessMode, CapabilityDecision, CapabilityError, CapabilityKind,
     CapabilityManager, CapabilityRequest, GrantScope, RiskLevel,
@@ -236,6 +238,22 @@ impl ExecutionContext {
     }
 
     pub fn authorize_capability(&self, request: CapabilityRequest) -> Result<(), super::Error> {
+        self.authorize_capability_with_pending_skill(request, None)
+    }
+
+    pub(crate) fn authorize_capability_for_pending_skill(
+        &self,
+        request: CapabilityRequest,
+        pending_skill: PendingSkillExecutionDraft,
+    ) -> Result<(), super::Error> {
+        self.authorize_capability_with_pending_skill(request, Some(pending_skill))
+    }
+
+    fn authorize_capability_with_pending_skill(
+        &self,
+        request: CapabilityRequest,
+        pending_skill: Option<PendingSkillExecutionDraft>,
+    ) -> Result<(), super::Error> {
         let request = request
             .with_task_id(self.task_id.clone())
             .with_session_id(self.session_id.clone());
@@ -281,6 +299,14 @@ impl ExecutionContext {
                     draft.detail.mode.label(),
                     redact_sensitive_target(&draft.detail.target)
                 );
+                let expected_effect = match &pending_skill {
+                    Some(pending) => format!(
+                        "Creates a scoped grant if approved. The blocked `{}` skill call is recorded with this request for retry; full automatic retry is not yet wired for every transport.",
+                        pending.skill_name
+                    ),
+                    None => "Creates a scoped grant if approved, then retries the blocked operation."
+                        .to_string(),
+                };
                 let approval = ApprovalRequestDraft {
                     action_kind: ApprovalTriggerKind::CapabilityAccess,
                     short_summary,
@@ -292,8 +318,7 @@ impl ExecutionContext {
                         draft.detail.mode.label(),
                         draft.detail.profile
                     ),
-                    expected_effect: "Creates a scoped grant if approved, then retries the blocked operation."
-                        .to_string(),
+                    expected_effect,
                     rollback_hint: Some(
                         "Use `topagent access revoke <target>` or `topagent access lockdown` to remove grants."
                             .to_string(),
@@ -301,7 +326,16 @@ impl ExecutionContext {
                     capability: Some(draft),
                 };
 
-                match mailbox.request_decision(approval, self.cancel_token()) {
+                let approval_check = match pending_skill {
+                    Some(pending) => mailbox.request_decision_for_pending_skill(
+                        approval,
+                        pending,
+                        self.cancel_token(),
+                    ),
+                    None => mailbox.request_decision(approval, self.cancel_token()),
+                };
+
+                match approval_check {
                     ApprovalCheck::Approved(entry) => {
                         let Some(capability) = &entry.request.capability else {
                             return Ok(());

@@ -1,3 +1,4 @@
+use std::fs;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
@@ -9,8 +10,9 @@ use topagent_core::skills::{
 };
 use topagent_core::tools::{default_tools, SaveNoteTool};
 use topagent_core::{
-    AccessConfig, AccessMode, CapabilityGrant, CapabilityKind, CapabilityManager,
-    CapabilityProfile, Error, ExecutionContext, GrantScope, RiskLevel, RuntimeOptions, SkillSchema,
+    AccessConfig, AccessMode, ApprovalMailbox, ApprovalMailboxMode, CapabilityGrant,
+    CapabilityKind, CapabilityManager, CapabilityProfile, Error, ExecutionContext, GrantScope,
+    RiskLevel, RuntimeOptions, SkillSchema,
 };
 
 struct FakeSkill {
@@ -64,6 +66,37 @@ impl Skill for FakeSkill {
 
 fn skill_names(specs: Vec<topagent_core::ToolSpec>) -> Vec<String> {
     specs.into_iter().map(|spec| spec.name).collect()
+}
+
+fn default_harness() -> AgentHarness {
+    let mut registry = SkillRegistry::new();
+    for tool in default_tools().into_inner() {
+        registry.add_tool(tool);
+    }
+    AgentHarness::new(registry)
+}
+
+fn create_temp_crate() -> tempfile::TempDir {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir_all(temp.path().join("src")).unwrap();
+    fs::write(
+        temp.path().join("Cargo.toml"),
+        r#"[package]
+name = "harness_phase_fixture"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+path = "src/lib.rs"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        temp.path().join("src/lib.rs"),
+        "pub fn answer() -> u32 {\n    42\n}\n",
+    )
+    .unwrap();
+    temp
 }
 
 #[test]
@@ -141,6 +174,23 @@ fn test_computer_use_exposure_is_profile_gated_by_harness() {
     let developer_skills = skill_names(harness.available_skills(&developer_ctx, AgentPhase::Patch));
     assert!(!developer_skills.contains(&"computer_use".to_string()));
 
+    let granted = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Developer),
+        vec![CapabilityGrant::new(
+            CapabilityKind::ComputerUse,
+            "observe",
+            AccessMode::Execute,
+            GrantScope::Permanent,
+            "test grant",
+        )],
+        "test",
+        "unit",
+    );
+    let granted_ctx =
+        ExecutionContext::new(temp.path().to_path_buf()).with_capability_manager(granted);
+    let granted_skills = skill_names(harness.available_skills(&granted_ctx, AgentPhase::Patch));
+    assert!(granted_skills.contains(&"computer_use".to_string()));
+
     let computer = CapabilityManager::new(
         AccessConfig::for_profile(CapabilityProfile::Computer),
         Vec::new(),
@@ -184,6 +234,144 @@ fn test_harness_blocks_write_skill_in_investigate_even_when_called_directly() {
         other => panic!("expected phase policy denial, got {other:?}"),
     }
     assert!(!executed.load(Ordering::SeqCst));
+}
+
+#[test]
+fn test_harness_allows_research_safe_bash_in_investigate() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut harness = default_harness();
+    let ctx = ExecutionContext::new(temp.path().to_path_buf());
+
+    let pwd = harness
+        .execute_skill(
+            "bash",
+            serde_json::json!({"command": "pwd"}),
+            AgentPhase::Investigate,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap();
+    assert!(pwd.output.contains(&temp.path().display().to_string()));
+
+    harness
+        .execute_skill(
+            "bash",
+            serde_json::json!({"command": "ls"}),
+            AgentPhase::Investigate,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap();
+}
+
+#[test]
+fn test_harness_bash_verification_only_runs_in_verify_phase() {
+    let temp = create_temp_crate();
+    let mut harness = default_harness();
+    let ctx = ExecutionContext::new(temp.path().to_path_buf());
+    let command = serde_json::json!({"command": "cargo test --quiet"});
+
+    let err = harness
+        .execute_skill(
+            "bash",
+            command.clone(),
+            AgentPhase::Investigate,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::SkillPolicyDenied { ref reason, .. } if reason.contains("verification")),
+        "expected verification phase denial, got {err:?}"
+    );
+
+    let result = harness
+        .execute_skill(
+            "bash",
+            command,
+            AgentPhase::Verify,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap();
+    assert!(result.output.contains("Exit code: 0"));
+}
+
+#[test]
+fn test_harness_bash_mutation_is_patch_only_and_capability_checked() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Developer),
+        Vec::new(),
+        "test",
+        "unit",
+    );
+    let ctx = ExecutionContext::new(temp.path().to_path_buf()).with_capability_manager(manager);
+    let mut harness = default_harness();
+    let command = serde_json::json!({"command": "echo x > file.txt"});
+
+    let err = harness
+        .execute_skill(
+            "bash",
+            command.clone(),
+            AgentPhase::Investigate,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(err, Error::SkillPolicyDenied { .. }));
+
+    let err = harness
+        .execute_skill(
+            "bash",
+            command,
+            AgentPhase::Patch,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::Capability(ref error) if matches!(**error, topagent_core::CapabilityError::NeedsApproval { .. })),
+        "expected destructive bash approval, got {err:?}"
+    );
+    assert!(!temp.path().join("file.txt").exists());
+}
+
+#[test]
+fn test_harness_bash_git_push_requires_approval_even_in_patch() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Developer),
+        Vec::new(),
+        "test",
+        "unit",
+    );
+    let ctx = ExecutionContext::new(temp.path().to_path_buf()).with_capability_manager(manager);
+    let mut harness = default_harness();
+
+    let err = harness
+        .execute_skill(
+            "bash",
+            serde_json::json!({"command": "git push origin main"}),
+            AgentPhase::Patch,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::Capability(ref error)
+                if matches!(
+                    **error,
+                    topagent_core::CapabilityError::NeedsApproval {
+                        kind: CapabilityKind::Git,
+                        ..
+                    }
+                )
+        ),
+        "expected git push approval, got {err:?}"
+    );
 }
 
 #[test]
@@ -356,11 +544,7 @@ fn test_harness_blocks_computer_use_unless_profile_or_grant_allows_it() {
 #[test]
 fn test_web_search_scaffold_effects_and_phase_exposure_are_explicit() {
     let temp = tempfile::tempdir().unwrap();
-    let mut registry = SkillRegistry::new();
-    for tool in default_tools().into_inner() {
-        registry.add_tool(tool);
-    }
-    let mut harness = AgentHarness::new(registry);
+    let mut harness = default_harness();
     let developer = CapabilityManager::new(
         AccessConfig::for_profile(CapabilityProfile::Developer),
         Vec::new(),
@@ -372,10 +556,12 @@ fn test_web_search_scaffold_effects_and_phase_exposure_are_explicit() {
     let investigate = skill_names(harness.available_skills(&ctx, AgentPhase::Investigate));
     let plan = skill_names(harness.available_skills(&ctx, AgentPhase::Plan));
     let verify = skill_names(harness.available_skills(&ctx, AgentPhase::Verify));
+    let finalize = skill_names(harness.available_skills(&ctx, AgentPhase::Finalize));
 
     assert!(investigate.contains(&"web_search".to_string()));
     assert!(plan.contains(&"web_search".to_string()));
     assert!(!verify.contains(&"web_search".to_string()));
+    assert!(!finalize.contains(&"web_search".to_string()));
 
     let effects = default_effects_for_skill("web_search");
     assert!(effects.read_only);
@@ -404,4 +590,196 @@ fn test_web_search_scaffold_effects_and_phase_exposure_are_explicit() {
         )
         .unwrap_err();
     assert!(matches!(err, Error::SkillPolicyDenied { .. }));
+}
+
+#[test]
+fn test_preauthorized_web_search_does_not_create_duplicate_approval() {
+    let temp = tempfile::tempdir().unwrap();
+    let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
+    let manager = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Developer),
+        Vec::new(),
+        "test",
+        "unit",
+    );
+    let ctx = ExecutionContext::new(temp.path().to_path_buf())
+        .with_capability_manager(manager)
+        .with_approval_mailbox(mailbox.clone());
+    let mut harness = default_harness();
+
+    let result = harness
+        .execute_skill(
+            "web_search",
+            serde_json::json!({"query": "topagent", "max_results": 3}),
+            AgentPhase::Investigate,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap();
+
+    assert!(result.output.contains("web_search is not implemented"));
+    assert_eq!(mailbox.list().len(), 0);
+}
+
+#[test]
+fn test_preauthorized_workspace_file_access_does_not_request_approval() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::write(temp.path().join("input.txt"), "workspace content").unwrap();
+    let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
+    let manager = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Workspace),
+        Vec::new(),
+        "test",
+        "unit",
+    );
+    let ctx = ExecutionContext::new(temp.path().to_path_buf())
+        .with_capability_manager(manager)
+        .with_approval_mailbox(mailbox.clone());
+    let mut harness = default_harness();
+
+    let read = harness
+        .execute_skill(
+            "read",
+            serde_json::json!({"path": "input.txt"}),
+            AgentPhase::Investigate,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(read.output, "workspace content");
+
+    harness
+        .execute_skill(
+            "write",
+            serde_json::json!({"path": "output.txt", "content": "written"}),
+            AgentPhase::Patch,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(temp.path().join("output.txt")).unwrap(),
+        "written"
+    );
+    assert_eq!(mailbox.list().len(), 0);
+}
+
+#[test]
+fn test_outside_workspace_access_creates_one_pending_skill_approval_record() {
+    let workspace = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let outside_path = outside.path().join("report.txt");
+    fs::write(&outside_path, "outside content").unwrap();
+    let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Wait);
+    let approving_mailbox = mailbox.clone();
+    mailbox.set_notifier(Arc::new(move |request| {
+        approving_mailbox
+            .approve(&request.id, Some("approved for test".to_string()))
+            .unwrap();
+    }));
+    let manager = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Workspace),
+        Vec::new(),
+        "test",
+        "unit",
+    );
+    let ctx = ExecutionContext::new(workspace.path().to_path_buf())
+        .with_capability_manager(manager)
+        .with_approval_mailbox(mailbox.clone())
+        .with_task_id("task-123")
+        .with_session_id("session-abc");
+    let mut harness = default_harness();
+
+    let result = harness
+        .execute_skill(
+            "read",
+            serde_json::json!({"path": outside_path.display().to_string()}),
+            AgentPhase::Investigate,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap();
+
+    assert_eq!(result.output, "outside content");
+    assert_eq!(mailbox.list().len(), 1);
+    let request = mailbox.list().pop().unwrap().request;
+    let pending = mailbox
+        .pending_skill_execution(&request.id)
+        .expect("approval should record the blocked skill call");
+    assert_eq!(pending.request_id, request.id);
+    assert_eq!(pending.skill_name, "read");
+    assert_eq!(pending.phase, "investigate");
+    assert_eq!(pending.task_id.as_deref(), Some("task-123"));
+    assert_eq!(pending.session_id.as_deref(), Some("session-abc"));
+    assert_eq!(
+        pending.input,
+        serde_json::json!({"path": outside_path.display().to_string()})
+    );
+}
+
+#[cfg(feature = "computer-use")]
+#[test]
+fn test_preauthorized_computer_use_profile_does_not_request_duplicate_approval() {
+    let temp = tempfile::tempdir().unwrap();
+    let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
+    let manager = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Computer),
+        Vec::new(),
+        "test",
+        "unit",
+    );
+    let ctx = ExecutionContext::new(temp.path().to_path_buf())
+        .with_capability_manager(manager)
+        .with_approval_mailbox(mailbox.clone());
+    let mut harness = default_harness();
+
+    let result = harness
+        .execute_skill(
+            "computer_use",
+            serde_json::json!({"action": "observe"}),
+            AgentPhase::Patch,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap();
+
+    assert!(result.output.contains("computer_use scaffold accepted"));
+    assert_eq!(mailbox.list().len(), 0);
+}
+
+#[test]
+fn test_full_profile_still_requires_approval_for_secret_reads_through_harness() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = CapabilityManager::new(
+        AccessConfig::for_profile(CapabilityProfile::Full),
+        Vec::new(),
+        "test",
+        "unit",
+    );
+    let ctx = ExecutionContext::new(temp.path().to_path_buf()).with_capability_manager(manager);
+    let mut harness = default_harness();
+
+    let err = harness
+        .execute_skill(
+            "read",
+            serde_json::json!({"path": "/home/operator/.ssh/id_ed25519"}),
+            AgentPhase::Investigate,
+            &ctx,
+            &RuntimeOptions::default(),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            Error::Capability(ref error)
+                if matches!(
+                    **error,
+                    topagent_core::CapabilityError::NeedsApproval {
+                        kind: CapabilityKind::SecretRead,
+                        ..
+                    }
+                )
+        ),
+        "expected secret read approval, got {err:?}"
+    );
 }

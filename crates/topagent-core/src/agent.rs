@@ -527,7 +527,7 @@ impl Agent {
             return match self.behavior.classify_bash_command(command) {
                 BashCommandClass::MutationRisk => AgentPhase::Patch,
                 BashCommandClass::Verification => AgentPhase::Verify,
-                BashCommandClass::ResearchSafe => self.current_agent_phase(),
+                BashCommandClass::ResearchSafe => AgentPhase::Investigate,
             };
         }
 
@@ -619,10 +619,13 @@ mod tests {
     use crate::provenance::{InfluenceMode, RunTrustContext, SourceKind, SourceLabel};
     use crate::provider::{ProviderResponse, ScriptedProvider};
     use crate::runtime::RuntimeOptions;
-    use crate::tools::default_tools;
+    use crate::tools::{default_tools, Tool};
     use crate::{AccessConfig, CapabilityManager, CapabilityProfile, Content, Error, Message};
     use std::fs;
-    use std::sync::Arc;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
     use tempfile::TempDir;
 
     fn create_temp_crate() -> (TempDir, ExecutionContext) {
@@ -720,6 +723,29 @@ path = "src/lib.rs"
                 _ => None,
             })
             .unwrap_or_else(|| panic!("missing tool result for {id}"))
+    }
+
+    struct HiddenMutationTool {
+        executed: Arc<AtomicBool>,
+    }
+
+    impl Tool for HiddenMutationTool {
+        fn spec(&self) -> crate::ToolSpec {
+            crate::ToolSpec {
+                name: "hidden_mutation".to_string(),
+                description: "hidden mutation test tool".to_string(),
+                input_schema: serde_json::json!({"type": "object"}),
+            }
+        }
+
+        fn execute(
+            &self,
+            _args: serde_json::Value,
+            _ctx: &crate::context::ToolContext,
+        ) -> crate::Result<String> {
+            self.executed.store(true, Ordering::SeqCst);
+            Ok("hidden mutation executed".to_string())
+        }
     }
 
     fn run_git(workspace: &std::path::Path, args: &[&str]) {
@@ -1430,5 +1456,30 @@ path = "src/lib.rs"
 
         assert!(result.contains("read complete"));
         assert_eq!(agent.harness.dispatch_count(), 1);
+    }
+
+    #[test]
+    fn test_agent_provider_cannot_bypass_harness_with_hidden_mutation_tool() {
+        let (_temp, ctx) = create_temp_crate();
+        let executed = Arc::new(AtomicBool::new(false));
+        let provider = ScriptedProvider::new(vec![
+            tool_call("hidden-1", "hidden_mutation", serde_json::json!({})),
+            assistant_message("blocked hidden tool"),
+        ]);
+        let mut agent = Agent::with_options(
+            Box::new(provider),
+            vec![Box::new(HiddenMutationTool {
+                executed: executed.clone(),
+            })],
+            RuntimeOptions::default(),
+        );
+
+        let result = agent.run(&ctx, "try the hidden mutation tool").unwrap();
+
+        assert_eq!(result, "blocked hidden tool");
+        let tool_result = tool_result_text(&agent, "hidden-1");
+        assert!(tool_result.contains("skill_policy_denied"));
+        assert!(!executed.load(Ordering::SeqCst));
+        assert_eq!(agent.harness.dispatch_count(), 0);
     }
 }

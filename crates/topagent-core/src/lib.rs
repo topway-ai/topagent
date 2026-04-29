@@ -34,7 +34,7 @@ pub use agent::{Agent, ExecutionStage};
 pub use approval::{
     ApprovalCheck, ApprovalEnforcement, ApprovalEntry, ApprovalMailbox, ApprovalMailboxMode,
     ApprovalPolicy, ApprovalRequest, ApprovalRequestDraft, ApprovalResolveError, ApprovalState,
-    ApprovalTriggerKind, ApprovalTriggerRule,
+    ApprovalTriggerKind, ApprovalTriggerRule, PendingSkillExecution,
 };
 pub use behavior::{BashCommandClass, BehaviorContract, RunStateSnapshot};
 pub use cancel::CancellationToken;

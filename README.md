@@ -88,6 +88,8 @@ TopAgent is split into three runtime layers:
 
 The Agent does not call raw tool implementations directly. Existing built-in tools are wrapped as Skills and executed through the Harness dispatcher. Skills are exposed by phase (`Investigate`, `Plan`, `Patch`, `Verify`, `Finalize`) so ordinary model turns do not see every capability at once. Exposure is not the enforcement boundary: Harness rechecks skill existence, phase, access profile/grants, and declared effects immediately before `skill.execute()`.
 
+`bash` admission is command-aware inside Harness. Research-safe commands such as `pwd`, `ls`, `rg`, and read-only `find` are admitted only in `Investigate` or `Plan`; verification commands such as `cargo test` are admitted only in `Verify`; mutation-risk commands are admitted only in `Patch` and still must pass capability and approval checks. Unknown shell commands are classified conservatively instead of being treated as clearly safe.
+
 ### How to add a new Skill
 
 1. Define the input schema and output behavior.
@@ -123,6 +125,8 @@ topagent access lockdown
 `web_search` is present as an explicit Skill surface so access policy is honest, but it is not operational in this build: it returns a bounded NotImplemented result and performs no network request, remote-content execution, or durable memory write.
 
 `computer_use` is compiled by default through the default Cargo feature set and is profile-gated at runtime. It is exposed only under the `computer`/`full` profiles or an explicit `computer_use` grant.
+
+Capability approval requests from Harness skill execution record the blocked skill name, input, phase, task id, and session id with the approval request. Waiting CLI and Telegram runs can continue after approval; if a one-shot run has already returned, approve or grant access and re-run the task.
 
 ### Bot commands
 
@@ -241,6 +245,7 @@ Saved trajectories now include provenance labels from the run. A trajectory can 
 - Linux only (systemd required for background service)
 - `web_search` is scaffolded, not a real search provider. It returns NotImplemented text and does not make remote requests.
 - `computer_use` is a default-compiled scaffolded tool surface in this release, gated by access profile/grants. It enforces the access profile and approval gates and prepares an isolated workspace session directory, but it does not yet perform real desktop automation without a future provider/sidecar integration.
+- Approval retry is recorded but not a universal background resume system. Waiting runs continue after approval; stopped or already-returned runs must be re-run after approving or granting access.
 
 ## Verified delivery
 

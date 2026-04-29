@@ -1,3 +1,4 @@
+use crate::behavior::{BashCommandClass, BehaviorContract};
 use crate::capability::{
     assess_computer_action, assess_shell_command, AccessMode, CapabilityKind, CapabilityProfile,
     CapabilityRequest, RiskLevel,
@@ -46,6 +47,59 @@ pub fn skill_allowed_in_phase(skill: &dyn Skill, phase: AgentPhase) -> bool {
         AgentPhase::Finalize => {
             effects.read_only || matches!(name, "save_note" | "manage_operator_preference")
         }
+    }
+}
+
+pub fn skill_allowed_for_execution(
+    skill: &dyn Skill,
+    phase: AgentPhase,
+    input: &SkillInput,
+) -> std::result::Result<(), String> {
+    if skill.name() == "bash" {
+        return bash_allowed_for_execution(phase, input);
+    }
+
+    if skill_allowed_in_phase(skill, phase) {
+        Ok(())
+    } else {
+        Err("skill is not allowed in the current agent phase".to_string())
+    }
+}
+
+fn bash_allowed_for_execution(
+    phase: AgentPhase,
+    input: &SkillInput,
+) -> std::result::Result<(), String> {
+    let command = string_field(input, "command").unwrap_or_default();
+    let class = BehaviorContract::default().classify_bash_command(&command);
+    let allowed = match class {
+        BashCommandClass::ResearchSafe => {
+            matches!(phase, AgentPhase::Investigate | AgentPhase::Plan)
+        }
+        BashCommandClass::Verification => phase == AgentPhase::Verify,
+        BashCommandClass::MutationRisk => phase == AgentPhase::Patch,
+    };
+
+    if allowed {
+        return Ok(());
+    }
+
+    let allowed_phase = match class {
+        BashCommandClass::ResearchSafe => "investigate or plan",
+        BashCommandClass::Verification => "verify",
+        BashCommandClass::MutationRisk => "patch",
+    };
+    Err(format!(
+        "bash command classified as {} is allowed only in {allowed_phase} phase",
+        bash_class_label(class)
+    ))
+}
+
+fn bash_class_label(class: BashCommandClass) -> &'static str {
+    match class {
+        BashCommandClass::ResearchSafe => "research_safe",
+        BashCommandClass::Verification => "verification",
+        BashCommandClass::MutationRisk => "mutation_risk",
     }
 }
 

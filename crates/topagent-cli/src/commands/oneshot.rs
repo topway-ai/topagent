@@ -199,6 +199,11 @@ pub(crate) fn prompt_for_cli_approval_with_io(
 
 pub(crate) fn format_cli_approval_required(request: &ApprovalRequest, interactive: bool) -> String {
     let mut message = request.render_details();
+    if request.capability.is_some() {
+        message.push_str(
+            "\n\nRetry note: capability approvals from Harness skill calls record the blocked skill input with the approval request. Waiting runs continue after approval; a one-shot run that has already returned should be re-run after approving or granting access.",
+        );
+    }
     if interactive {
         message.push_str(
             "\n\nThe operator declined or did not resolve the approval in this one-shot run.",
