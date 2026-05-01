@@ -323,5 +323,7 @@ mod tests {
         assert!(message.contains("Scope options"));
         assert!(message.contains("non-interactive"));
         assert!(message.contains("Re-run from an interactive terminal"));
+        assert!(message.contains("already returned"));
+        assert!(message.contains("re-run after approving or granting access"));
     }
 }

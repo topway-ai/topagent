@@ -57,6 +57,9 @@ pub struct Agent {
     compaction_state: CompactionRuntimeState,
     last_task_result: Option<TaskResult>,
     durable_memory_written_this_run: bool,
+    eval_model_turns: usize,
+    eval_skill_calls: usize,
+    eval_approval_blocks: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -124,6 +127,9 @@ impl Agent {
             compaction_state: CompactionRuntimeState::default(),
             last_task_result: None,
             durable_memory_written_this_run: false,
+            eval_model_turns: 0,
+            eval_skill_calls: 0,
+            eval_approval_blocks: 0,
         }
     }
 
@@ -550,6 +556,9 @@ impl Agent {
         self.compaction_state = CompactionRuntimeState::default();
         self.last_task_result = None;
         self.durable_memory_written_this_run = false;
+        self.eval_model_turns = 0;
+        self.eval_skill_calls = 0;
+        self.eval_approval_blocks = 0;
 
         let required_for_task = self.behavior.planning.require_plan_by_default
             && self.classify_task(instruction, ctx.cancel_token())?;
@@ -620,7 +629,9 @@ mod tests {
     use crate::provider::{ProviderResponse, ScriptedProvider};
     use crate::runtime::RuntimeOptions;
     use crate::tools::{default_tools, Tool, WebSearchTool};
-    use crate::{AccessConfig, CapabilityManager, CapabilityProfile, Content, Error, Message};
+    use crate::{
+        AccessConfig, CapabilityManager, CapabilityProfile, Content, Error, EvalRunRecord, Message,
+    };
     use crate::{WebSearchProvider, WebSearchRequest, WebSearchResponse, WebSearchResult};
     use std::fs;
     use std::sync::{
@@ -1124,6 +1135,118 @@ path = "src/lib.rs"
         assert_eq!(result, "read complete");
         let tool_result = tool_result_text(&agent, "read-outside");
         assert_eq!(tool_result, "approved content");
+    }
+
+    fn assert_waiting_approval_resumes_exact_read_call(
+        session_id: &str,
+        task_id: &str,
+        content: &str,
+    ) {
+        let workspace = TempDir::new().unwrap();
+        let outside = TempDir::new().unwrap();
+        let outside_path = outside.path().join("report.txt");
+        fs::write(&outside_path, content).unwrap();
+        let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Wait);
+        let mailbox_for_notifier = mailbox.clone();
+        mailbox.set_notifier(Arc::new(move |request| {
+            mailbox_for_notifier
+                .approve(&request.id, Some("approved in test".to_string()))
+                .unwrap();
+        }));
+        let manager = CapabilityManager::new(
+            AccessConfig::for_profile(CapabilityProfile::Workspace),
+            Vec::new(),
+            "test",
+            session_id,
+        );
+        let ctx = ExecutionContext::new(workspace.path().to_path_buf())
+            .with_capability_manager(manager)
+            .with_approval_mailbox(mailbox.clone())
+            .with_task_id(task_id)
+            .with_session_id(session_id);
+        let read_args = serde_json::json!({"path": outside_path.display().to_string()});
+        let mut agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![
+                tool_call("read-outside", "read", read_args.clone()),
+                assistant_message("read complete"),
+            ])),
+            default_tools().into_inner(),
+            RuntimeOptions::default().with_require_plan(false),
+        );
+
+        let result = agent.run(&ctx, "read the outside report").unwrap();
+
+        assert_eq!(result, "read complete");
+        assert_eq!(tool_result_text(&agent, "read-outside"), content);
+        let request = mailbox.list().pop().unwrap().request;
+        let pending = mailbox
+            .pending_skill_execution(&request.id)
+            .expect("approval should preserve exact blocked skill call");
+        assert_eq!(pending.skill_name, "read");
+        assert_eq!(pending.input, read_args);
+        assert_eq!(pending.phase, "investigate");
+        assert_eq!(pending.task_id.as_deref(), Some(task_id));
+        assert_eq!(pending.session_id.as_deref(), Some(session_id));
+    }
+
+    #[test]
+    fn test_waiting_cli_approval_resumes_exact_blocked_skill_call() {
+        assert_waiting_approval_resumes_exact_read_call(
+            "cli",
+            "cli-approval-resume",
+            "cli exact content",
+        );
+    }
+
+    #[test]
+    fn test_waiting_telegram_approval_resumes_exact_blocked_skill_call() {
+        assert_waiting_approval_resumes_exact_read_call(
+            "telegram-chat-42",
+            "telegram-42-approval-resume",
+            "telegram exact content",
+        );
+    }
+
+    #[test]
+    fn test_eval_jsonl_path_records_real_agent_run_without_prompt_memory() {
+        let workspace = TempDir::new().unwrap();
+        let eval_dir = TempDir::new().unwrap();
+        let eval_path = eval_dir.path().join("runs.jsonl");
+        let ctx = ExecutionContext::new(workspace.path().to_path_buf()).with_task_id("eval-task-1");
+        let mut agent = Agent::with_options(
+            Box::new(ScriptedProvider::new(vec![
+                tool_call(
+                    "write-output",
+                    "write",
+                    serde_json::json!({"path": "output.txt", "content": "eval content"}),
+                ),
+                assistant_message("updated output"),
+            ])),
+            default_tools().into_inner(),
+            RuntimeOptions::default()
+                .with_require_plan(false)
+                .with_eval_jsonl_path(eval_path.clone()),
+        );
+
+        let result = agent.run(&ctx, "write the output file").unwrap();
+
+        assert!(result.contains("updated output"));
+        let contents = fs::read_to_string(&eval_path).unwrap();
+        let lines = contents.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 1);
+        let record: EvalRunRecord = serde_json::from_str(lines[0]).unwrap();
+        assert_eq!(record.task_id, "eval-task-1");
+        assert!(record.success);
+        assert_eq!(record.failure, None);
+        assert_eq!(record.model_turns, 2);
+        assert_eq!(record.skill_calls, 1);
+        assert_eq!(record.approval_blocks, 0);
+        assert_eq!(record.verification_command, None);
+        assert_eq!(record.files_changed, vec!["output.txt".to_string()]);
+
+        let prompt = agent.build_run_system_prompt(&ctx).unwrap();
+        assert!(!prompt.contains(eval_path.to_str().unwrap()));
+        assert!(!prompt.contains("eval-task-1"));
     }
 
     #[test]

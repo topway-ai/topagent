@@ -4,7 +4,9 @@ use crate::capability::{redact_sensitive_target, CapabilityError, CapabilityKind
 use crate::context::ExecutionContext;
 use crate::provenance::{fetched_content_source, InfluenceMode, SourceKind, SourceLabel};
 use crate::run_snapshot::WorkspaceRunSnapshotStatus;
-use crate::tools::{risky_shell_changed_path_hints, WEB_SEARCH_RESULTS_PREFIX};
+use crate::tools::{
+    risky_shell_changed_path_hints, WEB_SEARCH_PROVIDER_ERROR_PREFIX, WEB_SEARCH_RESULTS_PREFIX,
+};
 use crate::{Error, Message, ProgressUpdate, Result};
 
 impl Agent {
@@ -48,6 +50,7 @@ impl Agent {
             return Ok(());
         }
 
+        self.eval_skill_calls += 1;
         let changed_before = self.run_state.changed_files();
         let snapshot_status_before = if name == "bash" {
             ctx.run_snapshot_store()
@@ -65,13 +68,15 @@ impl Agent {
         self.emit_progress(self.tool_progress(&name, &args));
         self.check_cancelled(ctx)?;
         let phase = self.agent_phase_for_tool_execution(&name, &args);
-        let execution = match self.harness.execute_skill(
-            &name,
-            args.clone(),
-            phase,
-            ctx,
-            &self.options,
-        ) {
+        let approvals_before = ctx
+            .approval_mailbox()
+            .map(|mailbox| mailbox.list().len())
+            .unwrap_or(0);
+        let execution_result =
+            self.harness
+                .execute_skill(&name, args.clone(), phase, ctx, &self.options);
+        self.record_eval_approval_blocks_since(ctx, approvals_before);
+        let execution = match execution_result {
             Ok(execution) => execution,
             Err(Error::ApprovalRequired(request)) => return Err(Error::ApprovalRequired(request)),
             Err(Error::Capability(capability_error)) => {
@@ -111,7 +116,10 @@ impl Agent {
         let raw_result = execution.output;
         self.check_cancelled(ctx)?;
 
-        if name == "web_search" && raw_result.starts_with(WEB_SEARCH_RESULTS_PREFIX) {
+        if name == "web_search"
+            && (raw_result.starts_with(WEB_SEARCH_RESULTS_PREFIX)
+                || raw_result.starts_with(WEB_SEARCH_PROVIDER_ERROR_PREFIX))
+        {
             self.run_state.record_observed_source(SourceLabel::low(
                 SourceKind::FetchedWebContent,
                 InfluenceMode::MayDriveAction,
@@ -207,6 +215,16 @@ impl Agent {
         );
         self.record_tool_result(id, name, args, result);
         Ok(())
+    }
+
+    fn record_eval_approval_blocks_since(&mut self, ctx: &ExecutionContext, before: usize) {
+        let Some(mailbox) = ctx.approval_mailbox() else {
+            return;
+        };
+        let after = mailbox.list().len();
+        if after > before {
+            self.eval_approval_blocks += after - before;
+        }
     }
 
     fn tool_progress(&self, name: &str, args: &serde_json::Value) -> ProgressUpdate {

@@ -1,8 +1,10 @@
 use super::Agent;
 use crate::context::ExecutionContext;
+use crate::eval::{EvalRecorder, EvalRunRecord};
 use crate::task_result::{ExecutionSessionOutcome, VerificationCommand};
 use crate::{Error, Message, ProviderResponse, Result};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 #[derive(Default)]
 struct LoopCounters {
@@ -16,6 +18,10 @@ impl Agent {
     pub fn run(&mut self, ctx: &ExecutionContext, instruction: &str) -> Result<String> {
         self.emit_progress(crate::progress::ProgressUpdate::received());
 
+        self.eval_model_turns = 0;
+        self.eval_skill_calls = 0;
+        self.eval_approval_blocks = 0;
+        let started_at = Instant::now();
         let result = self.run_inner(ctx, instruction);
 
         // On any non-Ok exit, capture a partial TaskResult so callers can
@@ -44,7 +50,46 @@ impl Agent {
                 self.emit_progress(crate::progress::ProgressUpdate::failed(err.to_string()))
             }
         }
+        self.record_eval_run(ctx, started_at.elapsed(), &result);
         result
+    }
+
+    fn record_eval_run(
+        &self,
+        ctx: &ExecutionContext,
+        wall_time: Duration,
+        result: &Result<String>,
+    ) {
+        let Some(path) = self.options.eval_jsonl_path.as_ref() else {
+            return;
+        };
+
+        let task_id = ctx.task_id().unwrap_or("unscoped").to_string();
+        let mut record = EvalRunRecord::new(task_id)
+            .with_success(result.is_ok())
+            .with_wall_time_ms(duration_millis_u64(wall_time))
+            .with_model_turns(self.eval_model_turns)
+            .with_skill_calls(self.eval_skill_calls)
+            .with_approval_blocks(self.eval_approval_blocks);
+
+        if let Err(err) = result {
+            record = record.with_failure(err.to_string());
+        }
+
+        if let Some(task_result) = self.last_task_result.as_ref() {
+            if let Some(command) = task_result.latest_verification_command() {
+                record = record.with_verification_command(command.command.clone());
+            }
+            record = record.with_files_changed(task_result.files_changed().to_vec());
+        }
+
+        if let Err(err) = EvalRecorder::new(path).append(&record) {
+            tracing::warn!(
+                path = %path.display(),
+                error = %err,
+                "failed to append TopAgent eval record"
+            );
+        }
     }
 
     fn run_inner(&mut self, ctx: &ExecutionContext, instruction: &str) -> Result<String> {
@@ -122,6 +167,7 @@ impl Agent {
             };
 
             counters.steps += 1;
+            self.eval_model_turns = counters.steps;
 
             match response {
                 ProviderResponse::Message(msg) => {
@@ -347,6 +393,10 @@ impl Agent {
         }
         None
     }
+}
+
+fn duration_millis_u64(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]

@@ -22,7 +22,8 @@ pub use read::ReadTool;
 pub use save_note::{SaveNoteArgs, SaveNoteTool};
 pub use web_search::{
     DisabledWebSearchProvider, HttpWebSearchConfig, HttpWebSearchProvider, WebSearchProvider,
-    WebSearchRequest, WebSearchResponse, WebSearchResult, WebSearchTool, WEB_SEARCH_RESULTS_PREFIX,
+    WebSearchRequest, WebSearchResponse, WebSearchResponseStatus, WebSearchResult, WebSearchTool,
+    WEB_SEARCH_PROVIDER_ERROR_PREFIX, WEB_SEARCH_RESULTS_PREFIX,
 };
 pub use write::WriteTool;
 

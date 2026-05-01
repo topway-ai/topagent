@@ -301,7 +301,7 @@ impl ExecutionContext {
                 );
                 let expected_effect = match &pending_skill {
                     Some(pending) => format!(
-                        "Creates a scoped grant if approved. The blocked `{}` skill call is recorded with this request for retry; full automatic retry is not yet wired for every transport.",
+                        "Creates a scoped grant if approved. Waiting CLI and Telegram runs resume the blocked `{}` skill call with its recorded input; stopped or already-returned one-shot runs must be re-run after approval or an explicit grant.",
                         pending.skill_name
                     ),
                     None => "Creates a scoped grant if approved, then retries the blocked operation."

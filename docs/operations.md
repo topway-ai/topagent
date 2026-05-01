@@ -143,7 +143,9 @@ TopAgent captures a lightweight workspace run snapshot automatically before `wri
 
 ### Local eval records
 
-The core crate exposes a minimal eval fixture (`EvalRunRecord` and `EvalRecorder`) for local measurement. A record captures task id, success/failure, wall time, model turns, skill calls, approval blocks, verification command, and files changed. The recorder appends explicit JSONL files only when a caller opts in; eval files are not durable memory, are not retrieved into prompts, and do not add hot-path cost.
+The core crate exposes a minimal eval fixture (`EvalRunRecord` and `EvalRecorder`) for local measurement. A record captures task id, success/failure, wall time, model turns, skill calls, approval blocks, verification command, and files changed.
+
+Set `TOPAGENT_EVAL_JSONL=/path/to/runs.jsonl` to append one record after each real CLI or Telegram agent run in that process. Eval files are not durable memory, are not retrieved into prompts, and do not add prompt cost. There is no `topagent eval` fixture runner yet; the current runtime integration is an opt-in JSONL recorder.
 
 ### Provenance and trust boundaries
 
@@ -166,7 +168,7 @@ Low-trust content may still be summarized, quoted, or analyzed as data. It does 
 
 `web_search` is available only in `Investigate` and `Plan` and goes through the same access profile, grant, approval, and redaction path as other Skills. Developer, computer, and full profiles allow it by default; workspace profile blocks it unless a scoped `web_search` grant or approval is present.
 
-Configure the generic HTTP JSON backend with:
+The default install exposes the `web_search` Skill, but actual search requires a configured provider. Configure the generic HTTP JSON backend with:
 
 | Variable | Purpose |
 |----------|---------|
@@ -179,7 +181,16 @@ Configure the generic HTTP JSON backend with:
 | `TOPAGENT_WEB_SEARCH_PROVIDER` | Label shown in bounded output, default `http`. |
 | `TOPAGENT_WEB_SEARCH_TIMEOUT_SECS` | Request timeout, default `8`. |
 
-The parser expects JSON results under `results`, `items`, `web.results`, or a top-level array, using common fields such as `title`/`name`, `url`/`link`, and `snippet`/`description`/`content`. If no endpoint is configured, TopAgent returns a clear disabled-provider message; it does not fabricate results. All result text is capped, marked low-trust, never executed, and never written to durable memory directly.
+Example for an internal JSON search proxy at `https://search.internal.example/v1/search` that accepts `q` and `limit` parameters and returns `{"results":[{"title":"...","url":"...","snippet":"..."}]}`:
+
+```bash
+export TOPAGENT_WEB_SEARCH_ENDPOINT="https://search.internal.example/v1/search"
+export TOPAGENT_WEB_SEARCH_API_KEY="..."
+export TOPAGENT_WEB_SEARCH_QUERY_PARAM="q"
+export TOPAGENT_WEB_SEARCH_LIMIT_PARAM="limit"
+```
+
+The parser expects JSON results under `results`, `items`, `web.results`, or a top-level array, using common fields such as `title`/`name`, `url`/`link`/`href`, and `snippet`/`description`/`content`/`text`. If no endpoint is configured, TopAgent returns a clear disabled-provider message; it does not fabricate results. Provider output distinguishes disabled provider, HTTP/network failure, invalid JSON, unsupported JSON schema, and supported empty results. All result text is capped, marked low-trust, never executed, and never written to durable memory directly.
 
 ### What topagent status shows
 

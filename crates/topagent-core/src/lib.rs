@@ -80,7 +80,7 @@ pub use provider::{Provider, ProviderResponse, ScriptedProvider, ToolCallEntry};
 pub use run_snapshot::{
     WorkspaceRunSnapshotRestoreReport, WorkspaceRunSnapshotStatus, WorkspaceRunSnapshotStore,
 };
-pub use runtime::RuntimeOptions;
+pub use runtime::{RuntimeOptions, ENV_EVAL_JSONL};
 pub use secrets::SecretRegistry;
 pub use session::Session;
 pub use skills::{
@@ -94,5 +94,6 @@ pub use task_result::{
 pub use tool_spec::ToolSpec;
 pub use tools::{
     DisabledWebSearchProvider, HttpWebSearchConfig, HttpWebSearchProvider, WebSearchProvider,
-    WebSearchRequest, WebSearchResponse, WebSearchResult, WebSearchTool, WEB_SEARCH_RESULTS_PREFIX,
+    WebSearchRequest, WebSearchResponse, WebSearchResponseStatus, WebSearchResult, WebSearchTool,
+    WEB_SEARCH_PROVIDER_ERROR_PREFIX, WEB_SEARCH_RESULTS_PREFIX,
 };

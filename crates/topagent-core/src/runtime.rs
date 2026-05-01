@@ -1,3 +1,7 @@
+use std::path::PathBuf;
+
+pub const ENV_EVAL_JSONL: &str = "TOPAGENT_EVAL_JSONL";
+
 #[derive(Debug, Clone)]
 pub struct RuntimeOptions {
     pub max_steps: usize,
@@ -8,6 +12,7 @@ pub struct RuntimeOptions {
     pub progress_heartbeat_secs: u64,
     pub max_messages_before_truncation: usize,
     pub require_plan: bool,
+    pub eval_jsonl_path: Option<PathBuf>,
 }
 
 impl Default for RuntimeOptions {
@@ -21,6 +26,7 @@ impl Default for RuntimeOptions {
             progress_heartbeat_secs: 10,
             max_messages_before_truncation: 100,
             require_plan: true,
+            eval_jsonl_path: env_nonempty(ENV_EVAL_JSONL).map(PathBuf::from),
         }
     }
 }
@@ -72,4 +78,21 @@ impl RuntimeOptions {
         self.require_plan = require_plan;
         self
     }
+
+    pub fn with_eval_jsonl_path(mut self, path: impl Into<PathBuf>) -> Self {
+        self.eval_jsonl_path = Some(path.into());
+        self
+    }
+
+    pub fn without_eval_jsonl_path(mut self) -> Self {
+        self.eval_jsonl_path = None;
+        self
+    }
+}
+
+fn env_nonempty(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
