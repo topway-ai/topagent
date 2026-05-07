@@ -6,6 +6,8 @@ Supports two LLM providers through one shared OpenAI-compatible transport seam:
 - **OpenRouter** (default) — default model: `minimax/minimax-m2.7`
 - **Opencode** — default model: `glm-5.1`
 
+Provider scope is intentionally narrow right now. OpenRouter is the stable/default path, Opencode is the CLI-backed alternate path, and other providers should be future extensions rather than new core complexity.
+
 Provider is selected explicitly during install.
 
 ## Install
@@ -124,7 +126,7 @@ topagent access lockdown
 
 `web_search` is a real bounded Skill when a provider is configured. By default it uses a disabled provider and returns a clear disabled message rather than fake results. Configure a generic HTTP JSON search backend with `TOPAGENT_WEB_SEARCH_ENDPOINT`; set `TOPAGENT_WEB_SEARCH_API_KEY` if the backend needs a key, and set `TOPAGENT_WEB_SEARCH_QUERY_PARAM` / `TOPAGENT_WEB_SEARCH_LIMIT_PARAM` to match the backend query shape. Optional knobs also include `TOPAGENT_WEB_SEARCH_AUTH_HEADER`, `TOPAGENT_WEB_SEARCH_AUTH_PREFIX`, `TOPAGENT_WEB_SEARCH_PROVIDER`, and `TOPAGENT_WEB_SEARCH_TIMEOUT_SECS`. Results are capped, marked low-trust, never executed, and never written to durable memory directly.
 
-`computer_use` is compiled by default through the default Cargo feature set and is profile-gated at runtime. It is exposed only under the `computer`/`full` profiles or an explicit `computer_use` grant.
+`computer_use` is compiled by default through the default Cargo feature set and is profile-gated at runtime. It is exposed only under the `computer`/`full` profiles or an explicit `computer_use` grant. Current runtime behavior is scaffold-only: it validates/gates the request and prepares an isolated workspace session directory, then returns an explicit not-performed/not-configured response because no desktop automation backend or sidecar is wired in this build.
 
 Capability approval requests from Harness skill execution record the blocked skill name, input, phase, task id, and session id with the approval request. Waiting CLI and Telegram runs can continue after approval; if a one-shot run has already returned, approve or grant access and re-run the task.
 
@@ -246,7 +248,7 @@ Saved trajectories now include provenance labels from the run. A trajectory can 
 - One workspace per process
 - Linux only (systemd required for background service)
 - `web_search` is disabled until `TOPAGENT_WEB_SEARCH_ENDPOINT` is configured. The generic HTTP JSON adapter expects array results under `results`, `items`, `web.results`, or a top-level array, and distinguishes disabled, HTTP/network failure, invalid JSON, unsupported schema, and empty-result responses.
-- `computer_use` is a default-compiled scaffolded tool surface in this release, gated by access profile/grants. It enforces the access profile and approval gates and prepares an isolated workspace session directory, but it does not yet perform real desktop automation without a future isolated browser provider/sidecar integration. TopClaw's whole-desktop sidecar is not imported here.
+- `computer_use` is a default-compiled scaffolded tool surface in this release, gated by access profile/grants. It enforces the access profile and approval gates and prepares an isolated workspace session directory, but returns an explicit scaffold-only/not-configured response and does not perform desktop automation. TopClaw's whole-desktop sidecar is not imported here.
 - Approval resume is real for waiting CLI and Telegram runs: approval creates the scoped grant and the blocked Skill call continues. Stopped tasks and one-shot runs that already returned still need a rerun after approving or granting access.
 
 ## Verified delivery

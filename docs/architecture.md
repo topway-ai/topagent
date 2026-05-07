@@ -22,6 +22,9 @@ The engine crate. No CLI command parsing or Telegram polling logic -- just the a
 | Module | Responsibility |
 |--------|---------------|
 | `agent` | Decision loop, task state, planning gate, provider turns, skill-result interpretation, and final answer assembly. It asks Harness for exposed skills and skill execution instead of owning raw execution. |
+| `agent/planning_flow` | Planning classification, planning redirects, auto-plan fallback, and runtime escalation helpers. It owns live planning flow around the existing `PlanningGate`; it is not a second planner or execution policy layer. |
+| `agent/skill_surface` | Phase-to-tool exposure helper. It syncs phase-scoped provider tool specs and computes the phase passed back into Harness for a provider tool call; it does not enforce policy itself. |
+| `agent/prompt_context` | Run prompt-context builder. It collects project instructions, exposed skill summary, current plan, bounded run state, operator context, and memory context before rendering the behavior prompt. |
 | `skills/` | Canonical executable capability surface. `Skill`, `SkillRegistry`, schemas, effects, risk metadata, and the compatibility wrapper around current tool implementations live here. |
 | `harness/` | Runtime/control boundary for context bundles, phase-based skill exposure, execution admission, and `SkillDispatcher` execution. It is the mandatory layer where declared Skill effects become capability checks before execution. |
 | `behavior` | Typed behavior contract and policy root; internal task/action/approval/durability/compaction modules keep runtime policy seams narrow |
@@ -69,9 +72,13 @@ Phase exposure is intentionally narrower than the full registry:
 | `Verify` | read-only skills, verification shell/test/build, git diff/status |
 | `Finalize` | read-only summaries plus durable-memory skills |
 
-This phase filter is both an exposure policy and an execution invariant. Even if a provider emits a hidden Skill name, Harness rechecks the current phase and access profile before dispatch. Skills declare effects; Harness derives and authorizes the required capabilities from those effects, the Skill name, input, risk, and runtime context. Tool-internal authorization remains defense-in-depth.
+This phase filter is both an exposure policy and an execution invariant. Even if a provider emits a hidden Skill name, Harness rechecks the current phase and access profile before dispatch. Skills declare effects; Harness derives and authorizes the required capabilities from those effects, the Skill name, input, risk, and runtime context. Tool-internal authorization remains defense-in-depth. Agent code must not call raw tool implementations directly; tool calls from providers go through Harness admission and `SkillDispatcher`.
 
 `bash` has an additional Harness execution check because the Skill name alone is too broad. Harness classifies the submitted command: `ResearchSafe` commands are allowed only in `Investigate` or `Plan`, `Verification` commands only in `Verify`, and `MutationRisk` commands only in `Patch`. After that phase check, capability authorization still decides whether network, filesystem, git, package-manager, service, external-send, or high-risk shell access requires approval.
+
+## Provider scope
+
+TopAgent is not trying to support every provider equally right now. The stable/default path is OpenRouter. Opencode is the CLI-backed alternate path. Additional providers should be treated as future extensions and should not add core runtime complexity until the product boundary needs them.
 
 ## How to add a new Skill
 
@@ -213,6 +220,7 @@ Secrets are protected at multiple layers:
 9. **Provenance-aware trust boundaries**:
    - direct operator instructions, generated memory artifacts, transcripts, and fetched content are labeled at ingress with a small source/trust model
    - low-trust content can be summarized or analyzed as data, but risky actions and durable memory writes become stricter when that content materially influences the run
+   - low-trust web, transcript, pasted, procedure, or memory text cannot approve file writes, shell mutation, git writes, external sends/uploads/posts, durable memory writes, access profile changes, or grants; current operator intent plus Harness/capability approval remains the authority
    - approvals mention the low-trust source briefly and concretely instead of failing silently
    - durable promotion is stricter than temporary planning: low-trust content can block `USER.md`, procedure promotion, and trajectory review/export
 
@@ -239,7 +247,7 @@ Harness derives CapabilityRequest(s) from SkillEffects + name + input + risk + c
 
 The `web_search` Skill is operational when `TOPAGENT_WEB_SEARCH_ENDPOINT` points at a generic HTTP JSON search API. Without that configuration it uses `DisabledWebSearchProvider` and returns an explicit disabled-provider message instead of fake results. Provider output separately identifies disabled provider, HTTP/network failure, invalid JSON, unsupported JSON schema, and supported empty results. The tool declares `WebSearch` and `NetworkAccess`, is read-only and parallel-safe, is available only in `Investigate` and `Plan`, is allowed by default in developer/computer/full profiles, and is blocked or grant-gated in workspace profile. Results are capped, output is capped, remote text is labeled low-trust, remote content is never executed, and search output cannot directly create durable memory.
 
-The `computer_use` Skill is currently a controlled scaffold compiled by default through the default Cargo feature set and gated by profile/grants at runtime. It exposes typed `observe`, `navigate`, `click`, `type`, and `scroll` actions and creates an isolated workspace session directory, but does not claim complete desktop control until a real isolated browser provider/sidecar is wired and tested. TopClaw's whole-desktop sidecar is intentionally not imported into this boundary. The access profile and high-impact approval gates are enforced before the scaffold accepts an action.
+The `computer_use` Skill is currently a controlled scaffold compiled by default through the default Cargo feature set and gated by profile/grants at runtime. It exposes typed `observe`, `navigate`, `click`, `type`, and `scroll` requests and creates an isolated workspace session directory, but returns an explicit scaffold-only/not-configured response and does not perform UI actions. A real isolated browser provider/sidecar would need to be wired and tested before this becomes desktop automation. TopClaw's whole-desktop sidecar is intentionally not imported into this boundary. The access profile and high-impact approval gates are enforced before the scaffold returns.
 
 The eval skeleton is intentionally small: `EvalRunRecord` captures task id, success/failure, wall time, model turns, skill calls, approval blocks, verification command, and files changed. `EvalRecorder` appends JSONL when explicitly invoked, and real agent runs append one record when `TOPAGENT_EVAL_JSONL` is set. These records are measurement artifacts, not retrieval inputs or prompt memory.
 

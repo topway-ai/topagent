@@ -12,6 +12,8 @@ curl -fsSL https://raw.githubusercontent.com/topway-ai/topagent/main/scripts/ins
 
 Downloads a precompiled binary for Linux x86_64, verifies its SHA-256 checksum, and places it in `~/.cargo/bin/`. If the terminal is interactive, it launches `topagent install` automatically.
 
+Release packaging is blocked by the same Rust quality gate as CI. The shared `scripts/ci-gate.sh` gate runs `cargo fmt --all --check`, `cargo clippy --all-targets -- -D warnings`, and `cargo test --locked`; the release workflow invokes the same gate with `--release-binary` so `cargo build --locked --release -p topagent-cli --bin topagent` also passes before assets are packaged or published.
+
 ### From source
 
 ```bash

@@ -66,7 +66,8 @@ impl PlanningGate {
         self.task_mode
     }
 
-    pub(super) fn is_blocked(&self, plan_exists: bool) -> bool {
+    #[cfg(test)]
+    fn is_blocked(&self, plan_exists: bool) -> bool {
         self.gate_active && !plan_exists && self.block_count > 0
     }
 }
