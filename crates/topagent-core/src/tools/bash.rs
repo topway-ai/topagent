@@ -309,26 +309,22 @@ fn run_snapshot_plan(command: &str) -> Option<BashRunSnapshotPlan> {
                     });
                 }
             }
-            "sed" => {
-                if has_in_place_flag(args) {
-                    if let Some(scope) = path_scope(collect_path_hints(sed_target_tokens(args))) {
-                        return Some(BashRunSnapshotPlan {
-                            reason: BashRunSnapshotReason::InPlaceEdit,
-                            detail: summarize_shell_text(segment),
-                            scope,
-                        });
-                    }
+            "sed" if has_in_place_flag(args) => {
+                if let Some(scope) = path_scope(collect_path_hints(sed_target_tokens(args))) {
+                    return Some(BashRunSnapshotPlan {
+                        reason: BashRunSnapshotReason::InPlaceEdit,
+                        detail: summarize_shell_text(segment),
+                        scope,
+                    });
                 }
             }
-            "perl" => {
-                if has_perl_in_place_flag(args) {
-                    if let Some(scope) = path_scope(collect_path_hints(perl_target_tokens(args))) {
-                        return Some(BashRunSnapshotPlan {
-                            reason: BashRunSnapshotReason::InPlaceEdit,
-                            detail: summarize_shell_text(segment),
-                            scope,
-                        });
-                    }
+            "perl" if has_perl_in_place_flag(args) => {
+                if let Some(scope) = path_scope(collect_path_hints(perl_target_tokens(args))) {
+                    return Some(BashRunSnapshotPlan {
+                        reason: BashRunSnapshotReason::InPlaceEdit,
+                        detail: summarize_shell_text(segment),
+                        scope,
+                    });
                 }
             }
             "tar" => {
@@ -425,15 +421,16 @@ fn split_shell_segments(command: &str) -> Vec<&str> {
                     start = index + ch.len_utf8();
                 }
             }
-            '&' if !in_single && !in_double => {
-                if chars.peek().is_some_and(|(_, next)| *next == '&') {
-                    let segment = command[start..index].trim();
-                    if !segment.is_empty() {
-                        segments.push(segment);
-                    }
-                    let (_, next) = chars.next().expect("peeked ampersand should exist");
-                    start = index + ch.len_utf8() + next.len_utf8();
+            '&' if !in_single
+                && !in_double
+                && chars.peek().is_some_and(|(_, next)| *next == '&') =>
+            {
+                let segment = command[start..index].trim();
+                if !segment.is_empty() {
+                    segments.push(segment);
                 }
+                let (_, next) = chars.next().expect("peeked ampersand should exist");
+                start = index + ch.len_utf8() + next.len_utf8();
             }
             _ => {}
         }

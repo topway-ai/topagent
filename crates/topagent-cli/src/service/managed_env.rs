@@ -116,7 +116,7 @@ pub(super) fn persisted_model_from_env_values(values: &HashMap<String, String>) 
 
 fn render_managed_env_values(values: &HashMap<String, String>) -> Result<String> {
     let mut entries: Vec<_> = values.iter().collect();
-    entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+    entries.sort_by_key(|(key, _)| *key);
 
     let mut rendered = String::new();
     rendered.push_str(TOPAGENT_MANAGED_HEADER);

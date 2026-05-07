@@ -143,15 +143,16 @@ impl ToolPolicy {
                         start = idx + ch.len_utf8();
                     }
                 }
-                '&' if !in_single && !in_double => {
-                    if chars.peek().is_some_and(|(_, next)| *next == '&') {
-                        let segment = cmd[start..idx].trim();
-                        if !segment.is_empty() {
-                            segments.push(segment);
-                        }
-                        let (_, next) = chars.next().expect("peeked ampersand should exist");
-                        start = idx + ch.len_utf8() + next.len_utf8();
+                '&' if !in_single
+                    && !in_double
+                    && chars.peek().is_some_and(|(_, next)| *next == '&') =>
+                {
+                    let segment = cmd[start..idx].trim();
+                    if !segment.is_empty() {
+                        segments.push(segment);
                     }
+                    let (_, next) = chars.next().expect("peeked ampersand should exist");
+                    start = idx + ch.len_utf8() + next.len_utf8();
                 }
                 _ => {}
             }
