@@ -105,14 +105,9 @@ impl CapabilityApprovalRequest {
     }
 
     pub fn to_grant(&self, scope: GrantScope, persisted: bool) -> CapabilityGrant {
-        let target = if scope == GrantScope::ThisPath {
-            self.detail.target.clone()
-        } else {
-            self.detail.target.clone()
-        };
         CapabilityGrant::new(
             self.detail.kind,
-            target,
+            self.detail.target.clone(),
             self.detail.mode,
             scope,
             self.detail.reason.clone(),

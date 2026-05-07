@@ -4,19 +4,16 @@ use std::fmt;
 use std::path::Path;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilityProfile {
     Workspace,
+    #[default]
     Developer,
     Computer,
     Full,
-}
-
-impl Default for CapabilityProfile {
-    fn default() -> Self {
-        Self::Developer
-    }
 }
 
 impl CapabilityProfile {

@@ -479,12 +479,10 @@ fn has_file_write_redirection(command: &str) -> bool {
     let mut in_single = false;
     let mut in_double = false;
     let mut escaped = false;
-    let mut previous_non_space = None;
 
     while let Some((_, ch)) = chars.next() {
         if escaped {
             escaped = false;
-            previous_non_space = Some(ch);
             continue;
         }
 
@@ -510,21 +508,13 @@ fn has_file_write_redirection(command: &str) -> bool {
                     chars.next();
                 }
 
-                if target.is_empty()
-                    || target.starts_with('&')
-                    || target == "/dev/null"
-                    || (previous_non_space == Some('2') && target == "/dev/null")
-                {
+                if target.is_empty() || target.starts_with('&') || target == "/dev/null" {
                     continue;
                 }
 
                 return true;
             }
-            _ => {
-                if !ch.is_whitespace() {
-                    previous_non_space = Some(ch);
-                }
-            }
+            _ => {}
         }
     }
     false

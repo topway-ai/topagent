@@ -179,15 +179,15 @@ impl FakeSystemctl {
             log_path,
             status_path,
         };
-        fake.set_service_status(
-            "loaded",
-            "enabled",
-            "active",
-            "running",
+        fake.set_service_status(ServiceStatus {
+            load_state: "loaded",
+            unit_file_state: "enabled",
+            active_state: "active",
+            sub_state: "running",
             fragment_path,
-            "success",
-            "0",
-        );
+            result: "success",
+            exec_main_status: "0",
+        });
         fake
     }
 
@@ -195,27 +195,24 @@ impl FakeSystemctl {
         self.path.clone()
     }
 
-    fn set_service_status(
-        &self,
-        load_state: &str,
-        unit_file_state: &str,
-        active_state: &str,
-        sub_state: &str,
-        fragment_path: &Path,
-        result: &str,
-        exec_main_status: &str,
-    ) {
+    fn set_service_status(&self, status: ServiceStatus<'_>) {
         fs::write(
             &self.status_path,
             format!(
-                "LoadState={load_state}\n\
-                 UnitFileState={unit_file_state}\n\
-                 ActiveState={active_state}\n\
-                 SubState={sub_state}\n\
+                "LoadState={}\n\
+                 UnitFileState={}\n\
+                 ActiveState={}\n\
+                 SubState={}\n\
                  FragmentPath={}\n\
-                 Result={result}\n\
-                 ExecMainStatus={exec_main_status}\n",
-                fragment_path.display()
+                 Result={}\n\
+                 ExecMainStatus={}\n",
+                status.load_state,
+                status.unit_file_state,
+                status.active_state,
+                status.sub_state,
+                status.fragment_path.display(),
+                status.result,
+                status.exec_main_status
             ),
         )
         .unwrap();
@@ -228,6 +225,16 @@ impl FakeSystemctl {
             .map(str::to_string)
             .collect()
     }
+}
+
+struct ServiceStatus<'a> {
+    load_state: &'a str,
+    unit_file_state: &'a str,
+    active_state: &'a str,
+    sub_state: &'a str,
+    fragment_path: &'a Path,
+    result: &'a str,
+    exec_main_status: &'a str,
 }
 
 fn default_path() -> OsString {

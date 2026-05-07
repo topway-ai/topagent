@@ -58,7 +58,7 @@ impl crate::tools::Tool for ComputerUseTool {
     fn spec(&self) -> ToolSpec {
         ToolSpec {
             name: "computer_use".to_string(),
-            description: "controlled computer-use scaffold for observe, navigate, click, type, and scroll actions; disabled unless the access profile or an explicit grant allows computer_use".to_string(),
+            description: "scaffold-only computer_use boundary for observe, navigate, click, type, and scroll requests; no desktop automation backend is configured in this build".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -107,7 +107,7 @@ impl crate::tools::Tool for ComputerUseTool {
         std::fs::create_dir_all(&session_dir)?;
 
         Ok(format!(
-            "computer_use scaffold accepted action `{}` for `{}` using isolated session directory {}. No desktop provider is wired in this build, so no UI action was performed.",
+            "computer_use scaffold-only response: action `{}` for `{}` was not performed. No desktop automation backend or sidecar is configured in this build. Isolated session directory prepared at {}.",
             args.action.as_str(),
             target,
             session_dir.display()
@@ -168,5 +168,29 @@ mod tests {
         let result = ComputerUseTool::new().execute(serde_json::json!({"action": "observe"}), &ctx);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("computer_use"));
+    }
+
+    #[test]
+    fn test_computer_use_profile_returns_explicit_scaffold_only_response() {
+        let temp = TempDir::new().unwrap();
+        let manager = CapabilityManager::new(
+            AccessConfig::for_profile(CapabilityProfile::Computer),
+            Vec::new(),
+            "test",
+            "unit",
+        );
+        let exec =
+            ExecutionContext::new(temp.path().to_path_buf()).with_capability_manager(manager);
+        let runtime = RuntimeOptions::default();
+        let ctx = ToolContext::new(&exec, &runtime);
+
+        let result = ComputerUseTool::new()
+            .execute(serde_json::json!({"action": "observe"}), &ctx)
+            .unwrap();
+
+        assert!(result.contains("scaffold-only"));
+        assert!(result.contains("was not performed"));
+        assert!(result.contains("No desktop automation backend or sidecar is configured"));
+        assert!(result.contains(".topagent/computer-use-session"));
     }
 }

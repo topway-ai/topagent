@@ -3,6 +3,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use topagent_core::harness::skill_policy::skill_allowed_for_execution;
 use topagent_core::harness::{AgentHarness, AgentPhase};
 use topagent_core::skills::{
     default_effects_for_skill, Skill, SkillContext, SkillEffect, SkillEffects, SkillInput,
@@ -12,8 +13,8 @@ use topagent_core::tools::{default_tools, SaveNoteTool};
 use topagent_core::{
     AccessConfig, AccessMode, ApprovalMailbox, ApprovalMailboxMode, CapabilityGrant,
     CapabilityKind, CapabilityManager, CapabilityProfile, Error, ExecutionContext, GrantScope,
-    RiskLevel, RuntimeOptions, SkillSchema, WebSearchProvider, WebSearchRequest, WebSearchResponse,
-    WebSearchResult, WebSearchTool,
+    InfluenceMode, RiskLevel, RuntimeOptions, SkillSchema, SourceKind, SourceLabel,
+    WebSearchProvider, WebSearchRequest, WebSearchResponse, WebSearchResult, WebSearchTool,
 };
 
 struct FakeSkill {
@@ -104,6 +105,15 @@ fn web_search_harness() -> AgentHarness {
     AgentHarness::new(registry)
 }
 
+fn bash_policy_skill() -> FakeSkill {
+    FakeSkill::new(
+        "bash",
+        default_effects_for_skill("bash"),
+        RiskLevel::Moderate,
+    )
+    .0
+}
+
 fn create_temp_crate() -> tempfile::TempDir {
     let temp = tempfile::tempdir().unwrap();
     fs::create_dir_all(temp.path().join("src")).unwrap();
@@ -180,6 +190,54 @@ fn test_mutating_and_destructive_effects_are_not_parallel_safe() {
     assert!(bash.includes(SkillEffect::ExecuteCommand));
     assert!(bash.destructive);
     assert!(!bash.parallel_safe);
+}
+
+#[test]
+fn test_bash_phase_admission_matrix_stays_conservative() {
+    let bash = bash_policy_skill();
+    let cases = [
+        (
+            "pwd",
+            &[AgentPhase::Investigate, AgentPhase::Plan][..],
+            "research-safe pwd",
+        ),
+        (
+            "ls -la",
+            &[AgentPhase::Investigate, AgentPhase::Plan][..],
+            "research-safe ls",
+        ),
+        (
+            "rg --files",
+            &[AgentPhase::Investigate, AgentPhase::Plan][..],
+            "research-safe rg",
+        ),
+        (
+            "find . -type f",
+            &[AgentPhase::Investigate, AgentPhase::Plan][..],
+            "read-only find",
+        ),
+        ("cargo test", &[AgentPhase::Verify][..], "verification"),
+        ("echo x > file.txt", &[AgentPhase::Patch][..], "mutation"),
+        ("some_unknown_command", &[AgentPhase::Patch][..], "unknown"),
+    ];
+
+    for (command, allowed_phases, label) in cases {
+        for phase in [
+            AgentPhase::Investigate,
+            AgentPhase::Plan,
+            AgentPhase::Patch,
+            AgentPhase::Verify,
+            AgentPhase::Finalize,
+        ] {
+            let result =
+                skill_allowed_for_execution(&bash, phase, &serde_json::json!({"command": command}));
+            assert_eq!(
+                result.is_ok(),
+                allowed_phases.contains(&phase),
+                "{label} command `{command}` had unexpected admission in {phase:?}: {result:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -567,6 +625,59 @@ fn test_harness_blocks_computer_use_unless_profile_or_grant_allows_it() {
         )
         .unwrap();
     assert!(executed_by_grant.load(Ordering::SeqCst));
+}
+
+#[test]
+fn test_external_send_effect_requires_approval_and_does_not_execute() {
+    for profile in [CapabilityProfile::Developer, CapabilityProfile::Full] {
+        let workspace = tempfile::tempdir().unwrap();
+        let (skill, executed) = FakeSkill::new(
+            "fake_external_send",
+            SkillEffects::mutating(vec![SkillEffect::ExternalSend])
+                .with_workspace_scoped(false)
+                .with_outside_workspace_capable(true),
+            RiskLevel::Moderate,
+        );
+        let mut registry = SkillRegistry::new();
+        registry.add(Box::new(skill));
+        let mut harness = AgentHarness::new(registry);
+        let mailbox = ApprovalMailbox::new(ApprovalMailboxMode::Immediate);
+        let manager = CapabilityManager::new(
+            AccessConfig::for_profile(profile),
+            Vec::new(),
+            "test",
+            "unit",
+        );
+        let mut trust = topagent_core::RunTrustContext::default();
+        trust.add_source(SourceLabel::low(
+            SourceKind::FetchedWebContent,
+            InfluenceMode::MayDriveAction,
+            "web_search result",
+        ));
+        let ctx = ExecutionContext::new(workspace.path().to_path_buf())
+            .with_capability_manager(manager)
+            .with_approval_mailbox(mailbox)
+            .with_run_trust_context(trust);
+
+        let err = harness
+            .execute_skill(
+                "fake_external_send",
+                serde_json::json!({"target": "https://example.com/upload"}),
+                AgentPhase::Patch,
+                &ctx,
+                &RuntimeOptions::default(),
+            )
+            .unwrap_err();
+
+        assert!(
+            matches!(err, Error::ApprovalRequired(ref request) if request.capability.as_ref().is_some_and(|capability| capability.detail.kind == CapabilityKind::ExternalSend)),
+            "expected external send approval for {profile:?}, got {err:?}"
+        );
+        assert!(
+            !executed.load(Ordering::SeqCst),
+            "external send must not execute before approval under {profile:?}"
+        );
+    }
 }
 
 #[test]
@@ -1098,7 +1209,10 @@ fn test_preauthorized_computer_use_profile_does_not_request_duplicate_approval()
         )
         .unwrap();
 
-    assert!(result.output.contains("computer_use scaffold accepted"));
+    assert!(result
+        .output
+        .contains("computer_use scaffold-only response"));
+    assert!(result.output.contains("was not performed"));
     assert_eq!(mailbox.list().len(), 0);
 }
 
