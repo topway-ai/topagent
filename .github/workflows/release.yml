@@ -18,12 +18,14 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
 
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@v2
 
-      - name: Build release binary
-        run: cargo build --locked --release -p topagent-cli --bin topagent
+      - name: Quality gate
+        run: scripts/ci-gate.sh --release-binary
 
       - name: Package release assets
         run: |
