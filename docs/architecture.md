@@ -80,6 +80,8 @@ Every provider tool attempt leaves a structured `ToolActionReceipt` in the run r
 
 For `PlanAndExecute` runs with a queue, finalization adds `WorkflowVerification` to the `TaskResult`. It compares queued task status with workflow-specific evidence from verification commands and receipts, so "no files changed" is enough only for simple analysis and not for audit, test, commit-review, or release-gate workflows.
 
+Receipts prove work, but they are not default prompt memory. The prompt context builder should inject only minimal decision-relevant evidence such as active files, blockers, trust notes, and compact proof anchors; the workflow verifier reads typed state and artifacts, not model prose or replayed tool output.
+
 ## Provider scope
 
 TopAgent is not trying to support every provider equally right now. The stable/default path is OpenRouter. Opencode is the CLI-backed alternate path. Additional providers should be treated as future extensions and should not add core runtime complexity until the product boundary needs them.

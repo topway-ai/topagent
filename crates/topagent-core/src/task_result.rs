@@ -524,6 +524,9 @@ impl TaskResult {
                     workflow.queue.in_progress,
                     workflow.queue.blocked
                 ));
+                if !workflow.summary.is_empty() {
+                    summary.push_str(&format!("- Summary: {}\n", workflow.summary));
+                }
                 summary.push_str(&format!(
                     "- Verification commands: {} (required evidence: {}, failed: {}, final pass: {}, final relevant pass: {})\n\n",
                     workflow.verification_command_count,
@@ -990,6 +993,42 @@ mod tests {
         assert!(summary.contains("### Workflow Status"));
         assert!(summary.contains("Result: satisfied"));
         assert!(summary.contains("2/2 done"));
+    }
+
+    #[test]
+    fn test_delivery_summary_includes_workflow_summary_without_raw_verification_output() {
+        let result = TaskResult::new("Done".to_string())
+            .with_task_mode(crate::plan::TaskMode::PlanAndExecute)
+            .with_files_changed(vec!["src/lib.rs".to_string()])
+            .with_verification_command(VerificationCommand {
+                command: "cargo test".to_string(),
+                output: "FULL_VERIFICATION_OUTPUT_MARKER_SHOULD_NOT_RETURN".to_string(),
+                exit_code: 0,
+                succeeded: true,
+            })
+            .with_delivery_outcome(DeliveryOutcome::CodeChangingVerified)
+            .with_workflow_verification(WorkflowVerification {
+                queue: TaskQueueStatus {
+                    total: 1,
+                    pending: 0,
+                    in_progress: 0,
+                    blocked: 0,
+                    done: 1,
+                    ..TaskQueueStatus::default()
+                },
+                verification_command_count: 1,
+                final_verification_passed: true,
+                required_verification_present: true,
+                failed_verification_count: 0,
+                final_relevant_verification_passed: true,
+                satisfied: true,
+                summary: "plan complete and workflow evidence satisfied".to_string(),
+            });
+
+        let summary = result.format_delivery_summary().expect("summary expected");
+        assert!(summary.contains("### Workflow Status"));
+        assert!(summary.contains("workflow evidence satisfied"));
+        assert!(!summary.contains("FULL_VERIFICATION_OUTPUT_MARKER_SHOULD_NOT_RETURN"));
     }
 
     #[test]

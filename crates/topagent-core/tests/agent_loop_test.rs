@@ -2,7 +2,7 @@ use std::sync::{Arc, RwLock};
 use tempfile::TempDir;
 use topagent_core::{
     context::ExecutionContext,
-    tools::{BashTool, EditTool, GitDiffTool, ReadTool, Tool, WriteTool},
+    tools::{default_tools, BashTool, EditTool, GitDiffTool, ReadTool, Tool, WriteTool},
     Agent, CancellationToken, Content, DeliveryOutcome, Error, ExecutionStage, Message, ModelRoute,
     ProgressKind, ProgressUpdate, Provider, ProviderResponse, Role, RuntimeOptions, TaskResult,
     ToolActionOutcome, ToolCallEntry, ToolSpec, WorkspaceRunSnapshotStore,
@@ -247,6 +247,55 @@ impl Provider for CallTrackingProvider {
         *self.complete_with_cancel_calls.write().unwrap() += 1;
         self.next_response()
     }
+}
+
+struct CapturingProvider {
+    responses: Vec<ProviderResponse>,
+    response_idx: Arc<RwLock<usize>>,
+    captured_messages: Arc<RwLock<Vec<Vec<Message>>>>,
+}
+
+impl CapturingProvider {
+    fn new(responses: Vec<ProviderResponse>) -> Self {
+        Self {
+            responses,
+            response_idx: Arc::new(RwLock::new(0)),
+            captured_messages: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    fn captured_messages_handle(&self) -> Arc<RwLock<Vec<Vec<Message>>>> {
+        self.captured_messages.clone()
+    }
+}
+
+impl Provider for CapturingProvider {
+    fn complete(
+        &self,
+        messages: &[Message],
+        _route: &topagent_core::ModelRoute,
+    ) -> topagent_core::Result<ProviderResponse> {
+        self.captured_messages
+            .write()
+            .unwrap()
+            .push(messages.to_vec());
+        let mut idx = self.response_idx.write().unwrap();
+        if let Some(response) = self.responses.get(*idx).cloned() {
+            *idx += 1;
+            Ok(response)
+        } else {
+            Err(Error::Provider("provider exhausted".into()))
+        }
+    }
+}
+
+fn captured_system_prompts(captured: &[Vec<Message>]) -> Vec<String> {
+    captured
+        .iter()
+        .filter_map(|messages| messages.first())
+        .filter(|message| message.role == Role::System)
+        .filter_map(|message| message.as_text().map(ToOwned::to_owned))
+        .collect()
 }
 
 struct MalformedArgsProvider {
@@ -809,6 +858,99 @@ fn test_task_result_records_structured_tool_receipts_for_success_and_block() {
     assert!(!receipts[1].admitted);
     assert_eq!(receipts[1].outcome, ToolActionOutcome::Blocked);
     assert!(receipts[1].summary.contains("unknown tool"));
+}
+
+#[test]
+fn test_raw_tool_receipts_and_outputs_are_not_injected_into_system_prompt() {
+    let (ctx, _temp) = make_test_context();
+    std::fs::write(
+        ctx.resolve_path("a.txt").unwrap(),
+        "RAW_TOOL_OUTPUT_MARKER_SHOULD_NOT_ENTER_PROMPT",
+    )
+    .unwrap();
+    let provider = CapturingProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "read".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path": "a.txt"}),
+        },
+        ProviderResponse::Message(Message::assistant("done")),
+    ]);
+    let captured = provider.captured_messages_handle();
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    agent.run(&ctx, "read a file").unwrap();
+
+    let prompts = captured_system_prompts(&captured.read().unwrap());
+    assert!(prompts.len() >= 2, "expected refreshed system prompts");
+    for prompt in prompts {
+        assert!(!prompt.contains("ToolActionReceipt"), "{prompt}");
+        assert!(!prompt.contains("tool_receipts"), "{prompt}");
+        assert!(!prompt.contains("\"tool_name\""), "{prompt}");
+        assert!(
+            !prompt.contains("RAW_TOOL_OUTPUT_MARKER_SHOULD_NOT_ENTER_PROMPT"),
+            "{prompt}"
+        );
+    }
+}
+
+#[test]
+fn test_long_receipt_history_does_not_grow_system_prompt() {
+    let (ctx, _temp) = make_test_context();
+    let mut responses = (0..30)
+        .map(|idx| ProviderResponse::ToolCall {
+            id: format!("unknown_{idx}"),
+            name: format!("missing_tool_{idx}"),
+            args: serde_json::json!({}),
+        })
+        .collect::<Vec<_>>();
+    responses.push(ProviderResponse::Message(Message::assistant("done")));
+    let provider = CapturingProvider::new(responses);
+    let captured = provider.captured_messages_handle();
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    agent.run(&ctx, "exercise many blocked tool calls").unwrap();
+
+    let prompts = captured_system_prompts(&captured.read().unwrap());
+    assert!(prompts.len() >= 10, "expected prompts across the run");
+    let min_len = prompts.iter().map(String::len).min().unwrap();
+    let max_len = prompts.iter().map(String::len).max().unwrap();
+    assert!(
+        max_len - min_len < 512,
+        "system prompt grew with receipt history: min={min_len} max={max_len}"
+    );
+    assert!(
+        prompts
+            .iter()
+            .all(|prompt| !prompt.contains("missing_tool_29")),
+        "raw receipt summaries should not be replayed into system prompts"
+    );
+}
+
+#[test]
+fn test_default_provider_tool_schema_surface_stays_bounded() {
+    const MAX_DEFAULT_TOOL_COUNT: usize = 24;
+    const MAX_DEFAULT_TOOL_SCHEMA_CHARS: usize = 24_000;
+
+    let agent = Agent::new(
+        Box::new(topagent_core::ScriptedProvider::new(vec![])),
+        default_tools().into_inner(),
+    );
+    let specs = agent.tool_specs();
+    let serialized_chars = specs
+        .iter()
+        .map(|spec| spec.name.len() + spec.description.len() + spec.input_schema.to_string().len())
+        .sum::<usize>();
+
+    assert!(
+        specs.len() <= MAX_DEFAULT_TOOL_COUNT,
+        "default provider tool count grew to {}; update REVIEW_RULES.md with rationale before raising the threshold",
+        specs.len()
+    );
+    assert!(
+        serialized_chars <= MAX_DEFAULT_TOOL_SCHEMA_CHARS,
+        "default provider tool schema grew to {serialized_chars} chars; update REVIEW_RULES.md with rationale before raising the threshold"
+    );
 }
 
 #[test]

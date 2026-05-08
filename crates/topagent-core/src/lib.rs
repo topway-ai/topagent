@@ -30,6 +30,7 @@ pub mod skills;
 pub mod task_result;
 pub mod tool_spec;
 pub mod tools;
+mod workflow_verification;
 
 pub use agent::{Agent, ExecutionStage};
 pub use approval::{
