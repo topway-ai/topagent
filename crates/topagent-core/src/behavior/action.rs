@@ -54,6 +54,8 @@ pub(super) fn default_tool_policy() -> ToolPolicy {
             "cargo auditable",
             "cargo deny",
             "cargo audit",
+            "scripts/ci-gate.sh",
+            "./scripts/ci-gate.sh",
             "pytest",
             "py.test",
             "make test",

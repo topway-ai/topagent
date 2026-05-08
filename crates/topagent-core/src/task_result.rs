@@ -164,6 +164,12 @@ pub struct WorkflowVerification {
     pub queue: TaskQueueStatus,
     pub verification_command_count: usize,
     pub final_verification_passed: bool,
+    #[serde(default)]
+    pub required_verification_present: bool,
+    #[serde(default)]
+    pub failed_verification_count: usize,
+    #[serde(default)]
+    pub final_relevant_verification_passed: bool,
     pub satisfied: bool,
     pub summary: String,
 }
@@ -519,8 +525,12 @@ impl TaskResult {
                     workflow.queue.blocked
                 ));
                 summary.push_str(&format!(
-                    "- Verification commands: {} (final pass: {})\n\n",
-                    workflow.verification_command_count, workflow.final_verification_passed
+                    "- Verification commands: {} (required evidence: {}, failed: {}, final pass: {}, final relevant pass: {})\n\n",
+                    workflow.verification_command_count,
+                    workflow.required_verification_present,
+                    workflow.failed_verification_count,
+                    workflow.final_verification_passed,
+                    workflow.final_relevant_verification_passed
                 ));
             }
         }
@@ -969,6 +979,9 @@ mod tests {
                 },
                 verification_command_count: 1,
                 final_verification_passed: true,
+                required_verification_present: true,
+                failed_verification_count: 0,
+                final_relevant_verification_passed: true,
                 satisfied: true,
                 summary: "plan complete".to_string(),
             });

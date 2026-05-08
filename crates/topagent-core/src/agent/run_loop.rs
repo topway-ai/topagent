@@ -1,4 +1,5 @@
 use super::Agent;
+use crate::behavior::BashCommandClass;
 use crate::context::ExecutionContext;
 use crate::eval::{EvalRecorder, EvalRunRecord};
 use crate::harness::AgentPhase;
@@ -16,6 +17,48 @@ struct LoopCounters {
     empty_response_retries: usize,
     planning_phase_steps: usize,
     planning_redirects: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkflowRequirement {
+    AnalysisOnly,
+    Patch,
+    Test,
+    Audit,
+    CommitReview,
+    ReleaseGate,
+}
+
+impl WorkflowRequirement {
+    fn label(self) -> &'static str {
+        match self {
+            Self::AnalysisOnly => "analysis_only",
+            Self::Patch => "patch",
+            Self::Test => "test",
+            Self::Audit => "audit",
+            Self::CommitReview => "commit_review",
+            Self::ReleaseGate => "release_gate",
+        }
+    }
+
+    fn requires_relevant_verification_pass(self, files_changed: bool) -> bool {
+        match self {
+            Self::Patch => files_changed,
+            Self::Test | Self::ReleaseGate => true,
+            Self::AnalysisOnly | Self::Audit | Self::CommitReview => false,
+        }
+    }
+}
+
+struct WorkflowEvidenceEvaluation {
+    verification_command_count: usize,
+    final_verification_passed: bool,
+    required_verification_present: bool,
+    failed_verification_count: usize,
+    final_relevant_verification_passed: bool,
+    satisfied: bool,
+    summary: String,
+    unrecovered_receipt_issues: Vec<String>,
 }
 
 impl Agent {
@@ -338,20 +381,16 @@ impl Agent {
             return task_result;
         };
 
-        let verification_command_count = task_result.verification_commands().len();
-        let final_verification_passed = task_result.final_verification_passed();
-        let verification_satisfied = !task_result.has_files_changed() || final_verification_passed;
-        let queue_complete = queue.is_complete();
-        let satisfied = queue_complete && verification_satisfied;
-        let summary = workflow_verification_summary(
-            queue,
-            verification_command_count,
-            final_verification_passed,
-            satisfied,
-        );
+        let evaluation = evaluate_workflow_verification(queue, &task_result);
 
-        if !satisfied {
-            let issue = format!("Workflow incomplete: {summary}");
+        for issue in &evaluation.unrecovered_receipt_issues {
+            if !task_result.unresolved_issues().contains(issue) {
+                task_result = task_result.with_unresolved_issue(issue.clone());
+            }
+        }
+
+        if !evaluation.satisfied {
+            let issue = format!("Workflow incomplete: {}", evaluation.summary);
             if !task_result.unresolved_issues().contains(&issue) {
                 task_result = task_result.with_unresolved_issue(issue);
             }
@@ -359,10 +398,13 @@ impl Agent {
 
         task_result.with_workflow_verification(WorkflowVerification {
             queue,
-            verification_command_count,
-            final_verification_passed,
-            satisfied,
-            summary,
+            verification_command_count: evaluation.verification_command_count,
+            final_verification_passed: evaluation.final_verification_passed,
+            required_verification_present: evaluation.required_verification_present,
+            failed_verification_count: evaluation.failed_verification_count,
+            final_relevant_verification_passed: evaluation.final_relevant_verification_passed,
+            satisfied: evaluation.satisfied,
+            summary: evaluation.summary,
         })
     }
 
@@ -512,17 +554,321 @@ fn duration_millis_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
+fn evaluate_workflow_verification(
+    queue: crate::plan::TaskQueueStatus,
+    task_result: &crate::task_result::TaskResult,
+) -> WorkflowEvidenceEvaluation {
+    let requirements = workflow_requirements(queue, task_result.has_files_changed());
+    let verification_command_count = task_result.verification_commands().len();
+    let final_verification_passed = task_result.final_verification_passed();
+    let failed_verification_count = task_result
+        .verification_commands()
+        .iter()
+        .filter(|command| !command.succeeded)
+        .count();
+    let final_relevant_verification_passed =
+        latest_relevant_verification_passed(&requirements, task_result.verification_commands());
+    let required_verification_present = requirements
+        .iter()
+        .all(|requirement| requirement_evidence_present(*requirement, task_result));
+    let relevant_pass_required = requirements.iter().any(|requirement| {
+        requirement.requires_relevant_verification_pass(task_result.has_files_changed())
+    });
+    let requirement_satisfied = required_verification_present
+        && (!relevant_pass_required || final_relevant_verification_passed);
+    let unrecovered_receipt_issues = unrecovered_receipt_issues(task_result.tool_receipts());
+    let satisfied =
+        queue.is_complete() && requirement_satisfied && unrecovered_receipt_issues.is_empty();
+    let summary = workflow_verification_summary(
+        queue,
+        &requirements,
+        WorkflowVerificationSummaryInput {
+            required_verification_present,
+            failed_verification_count,
+            final_relevant_verification_passed,
+            relevant_pass_required,
+            satisfied,
+            unrecovered_receipt_issue_count: unrecovered_receipt_issues.len(),
+        },
+    );
+
+    WorkflowEvidenceEvaluation {
+        verification_command_count,
+        final_verification_passed,
+        required_verification_present,
+        failed_verification_count,
+        final_relevant_verification_passed,
+        satisfied,
+        summary,
+        unrecovered_receipt_issues,
+    }
+}
+
+fn workflow_requirements(
+    queue: crate::plan::TaskQueueStatus,
+    files_changed: bool,
+) -> Vec<WorkflowRequirement> {
+    let workflow = queue.workflow;
+    let mut requirements = Vec::new();
+
+    if workflow.audit > 0 {
+        requirements.push(WorkflowRequirement::Audit);
+    }
+    if workflow.patch > 0 {
+        requirements.push(WorkflowRequirement::Patch);
+    }
+    if workflow.test > 0 {
+        requirements.push(WorkflowRequirement::Test);
+    }
+    if workflow.commit_review > 0 {
+        requirements.push(WorkflowRequirement::CommitReview);
+    }
+    if workflow.release_gate > 0 {
+        requirements.push(WorkflowRequirement::ReleaseGate);
+    }
+
+    if requirements.is_empty() {
+        if files_changed {
+            requirements.push(WorkflowRequirement::Patch);
+        } else {
+            requirements.push(WorkflowRequirement::AnalysisOnly);
+        }
+    }
+
+    requirements
+}
+
+fn requirement_evidence_present(
+    requirement: WorkflowRequirement,
+    task_result: &crate::task_result::TaskResult,
+) -> bool {
+    match requirement {
+        WorkflowRequirement::AnalysisOnly => true,
+        WorkflowRequirement::Patch => {
+            !task_result.has_files_changed()
+                || has_relevant_verification_evidence(requirement, task_result)
+        }
+        WorkflowRequirement::Test | WorkflowRequirement::ReleaseGate => {
+            has_relevant_verification_evidence(requirement, task_result)
+        }
+        WorkflowRequirement::Audit => task_result
+            .tool_receipts()
+            .iter()
+            .any(is_successful_inspection_receipt),
+        WorkflowRequirement::CommitReview => task_result
+            .tool_receipts()
+            .iter()
+            .any(is_successful_commit_review_receipt),
+    }
+}
+
+fn has_relevant_verification_evidence(
+    requirement: WorkflowRequirement,
+    task_result: &crate::task_result::TaskResult,
+) -> bool {
+    task_result
+        .verification_commands()
+        .iter()
+        .any(|command| verification_command_matches_requirement(requirement, &command.command))
+        || task_result
+            .tool_receipts()
+            .iter()
+            .any(|receipt| verification_receipt_matches_requirement(requirement, receipt))
+}
+
+fn latest_relevant_verification_passed(
+    requirements: &[WorkflowRequirement],
+    commands: &[VerificationCommand],
+) -> bool {
+    commands
+        .iter()
+        .rev()
+        .find(|command| {
+            requirements.iter().any(|requirement| {
+                verification_command_matches_requirement(*requirement, &command.command)
+            })
+        })
+        .is_some_and(|command| command.succeeded)
+}
+
+fn verification_command_matches_requirement(
+    requirement: WorkflowRequirement,
+    command: &str,
+) -> bool {
+    match requirement {
+        WorkflowRequirement::Patch | WorkflowRequirement::Test => true,
+        WorkflowRequirement::ReleaseGate => is_release_gate_verification_command(command),
+        WorkflowRequirement::AnalysisOnly
+        | WorkflowRequirement::Audit
+        | WorkflowRequirement::CommitReview => false,
+    }
+}
+
+fn verification_receipt_matches_requirement(
+    requirement: WorkflowRequirement,
+    receipt: &ToolActionReceipt,
+) -> bool {
+    if !is_successful_receipt(receipt) || receipt.tool_name != "bash" {
+        return false;
+    }
+    let Some(command) = bash_command_from_receipt(receipt) else {
+        return false;
+    };
+    match requirement {
+        WorkflowRequirement::Patch | WorkflowRequirement::Test => {
+            matches!(
+                Agent::classify_bash_command(command),
+                BashCommandClass::Verification
+            )
+        }
+        WorkflowRequirement::ReleaseGate => is_release_gate_verification_command(command),
+        WorkflowRequirement::AnalysisOnly
+        | WorkflowRequirement::Audit
+        | WorkflowRequirement::CommitReview => false,
+    }
+}
+
+fn is_release_gate_verification_command(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    [
+        "scripts/ci-gate.sh",
+        "./scripts/ci-gate.sh",
+        "cargo test",
+        "cargo clippy",
+        "cargo build",
+        "cargo fmt",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn is_successful_inspection_receipt(receipt: &ToolActionReceipt) -> bool {
+    if !is_successful_receipt(receipt) {
+        return false;
+    }
+
+    match receipt.tool_name.as_str() {
+        "read" | "rg" | "git_diff" | "git_status" | "git_branch" | "web_search" => true,
+        "bash" => bash_command_from_receipt(receipt).is_some_and(is_inspection_bash_command),
+        _ => false,
+    }
+}
+
+fn is_successful_commit_review_receipt(receipt: &ToolActionReceipt) -> bool {
+    if !is_successful_receipt(receipt) {
+        return false;
+    }
+
+    match receipt.tool_name.as_str() {
+        "git_diff" | "git_status" => true,
+        "bash" => bash_command_from_receipt(receipt).is_some_and(is_commit_review_bash_command),
+        _ => false,
+    }
+}
+
+fn is_successful_receipt(receipt: &ToolActionReceipt) -> bool {
+    receipt.admitted && receipt.outcome == ToolActionOutcome::Succeeded
+}
+
+fn bash_command_from_receipt(receipt: &ToolActionReceipt) -> Option<&str> {
+    receipt.summary.strip_prefix("bash: ").map(str::trim)
+}
+
+fn is_inspection_bash_command(command: &str) -> bool {
+    if Agent::classify_bash_command(command) != BashCommandClass::ResearchSafe {
+        return false;
+    }
+    let lower = command.trim().to_ascii_lowercase();
+    [
+        "pwd",
+        "ls",
+        "rg",
+        "find",
+        "grep",
+        "cat",
+        "head",
+        "tail",
+        "wc",
+        "git status",
+        "git diff",
+        "git log",
+        "git show",
+        "git branch",
+    ]
+    .iter()
+    .any(|prefix| lower == *prefix || lower.starts_with(&format!("{prefix} ")))
+}
+
+fn is_commit_review_bash_command(command: &str) -> bool {
+    let lower = command.trim().to_ascii_lowercase();
+    ["git diff", "git log", "git show", "git status"]
+        .iter()
+        .any(|prefix| lower == *prefix || lower.starts_with(&format!("{prefix} ")))
+}
+
+fn unrecovered_receipt_issues(receipts: &[ToolActionReceipt]) -> Vec<String> {
+    receipts
+        .iter()
+        .enumerate()
+        .filter(|(index, receipt)| {
+            receipt.outcome != ToolActionOutcome::Succeeded
+                && !has_later_successful_receipt_for_tool(receipts, *index, receipt)
+        })
+        .map(|(_, receipt)| {
+            format!(
+                "Unrecovered tool {}: {} - {}",
+                receipt.outcome.label(),
+                receipt.tool_name,
+                receipt.summary
+            )
+        })
+        .collect()
+}
+
+fn has_later_successful_receipt_for_tool(
+    receipts: &[ToolActionReceipt],
+    index: usize,
+    receipt: &ToolActionReceipt,
+) -> bool {
+    receipts.iter().skip(index + 1).any(|later| {
+        later.tool_name == receipt.tool_name
+            && later.admitted
+            && later.outcome == ToolActionOutcome::Succeeded
+    })
+}
+
+struct WorkflowVerificationSummaryInput {
+    required_verification_present: bool,
+    failed_verification_count: usize,
+    final_relevant_verification_passed: bool,
+    relevant_pass_required: bool,
+    satisfied: bool,
+    unrecovered_receipt_issue_count: usize,
+}
+
 fn workflow_verification_summary(
     queue: crate::plan::TaskQueueStatus,
-    verification_command_count: usize,
-    final_verification_passed: bool,
-    satisfied: bool,
+    requirements: &[WorkflowRequirement],
+    input: WorkflowVerificationSummaryInput,
 ) -> String {
-    if satisfied {
-        return format!(
-            "plan complete ({}/{} done) and verification satisfied",
-            queue.done, queue.total
+    let requirement_list = requirements
+        .iter()
+        .map(|requirement| requirement.label())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    if input.satisfied {
+        let mut summary = format!(
+            "plan complete ({}/{} done) and workflow evidence satisfied ({requirement_list})",
+            queue.done, queue.total,
         );
+        if input.failed_verification_count > 0 {
+            summary.push_str(&format!(
+                "; {} failed verification attempt(s) recovered by final relevant pass",
+                input.failed_verification_count
+            ));
+        }
+        return summary;
     }
 
     let mut parts = Vec::new();
@@ -532,10 +878,23 @@ fn workflow_verification_summary(
             queue.done, queue.total, queue.pending, queue.in_progress, queue.blocked
         ));
     }
-    if verification_command_count == 0 {
-        parts.push("verification missing".to_string());
-    } else if !final_verification_passed {
-        parts.push("final verification did not pass".to_string());
+    if !input.required_verification_present {
+        parts.push(format!("required evidence missing: {requirement_list}"));
+    }
+    if input.relevant_pass_required && !input.final_relevant_verification_passed {
+        parts.push("final relevant verification did not pass".to_string());
+    }
+    if input.failed_verification_count > 0 && input.final_relevant_verification_passed {
+        parts.push(format!(
+            "{} failed verification attempt(s) recovered by final relevant pass",
+            input.failed_verification_count
+        ));
+    }
+    if input.unrecovered_receipt_issue_count > 0 {
+        parts.push(format!(
+            "{} unrecovered blocked/failed tool receipt(s)",
+            input.unrecovered_receipt_issue_count
+        ));
     }
     parts.join("; ")
 }

@@ -78,7 +78,7 @@ This phase filter is both an exposure policy and an execution invariant. Even if
 
 Every provider tool attempt leaves a structured `ToolActionReceipt` in the run result, including blocked and failed attempts. Receipts record the Skill name, phase, admission result, outcome, effects/risk when execution reached Harness, and a compact redacted summary. They are evidence for the current run and trajectory artifacts, not prompt memory.
 
-For `PlanAndExecute` runs with a queue, finalization adds `WorkflowVerification` to the `TaskResult`. It compares queued task status with verification evidence, so a passing command is not treated as the whole answer when the plan still has pending, active, or blocked work.
+For `PlanAndExecute` runs with a queue, finalization adds `WorkflowVerification` to the `TaskResult`. It compares queued task status with workflow-specific evidence from verification commands and receipts, so "no files changed" is enough only for simple analysis and not for audit, test, commit-review, or release-gate workflows.
 
 ## Provider scope
 

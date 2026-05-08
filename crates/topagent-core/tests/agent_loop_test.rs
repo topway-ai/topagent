@@ -33,6 +33,36 @@ fn make_tools_with_git() -> Vec<Box<dyn Tool>> {
     ]
 }
 
+fn completed_workflow_plan(kind: &str, content: &str) -> ProviderResponse {
+    ProviderResponse::ToolCall {
+        id: format!("plan_{kind}"),
+        name: "update_plan".into(),
+        args: serde_json::json!({
+            "items": [
+                {"content": content, "status": "done", "kind": kind}
+            ]
+        }),
+    }
+}
+
+fn write_minimal_cargo_project(ctx: &ExecutionContext, lib_rs: &str) {
+    std::fs::write(
+        ctx.resolve_path("Cargo.toml").unwrap(),
+        "[package]\nname=\"workflow_test\"\nversion=\"0.1.0\"\nedition=\"2021\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(ctx.resolve_path("src").unwrap()).unwrap();
+    std::fs::write(ctx.resolve_path("src/lib.rs").unwrap(), lib_rs).unwrap();
+}
+
+fn passing_test_lib() -> &'static str {
+    "pub fn answer() -> i32 { 42 }\n#[cfg(test)] mod tests { #[test] fn answer_is_42() { assert_eq!(super::answer(), 42); } }\n"
+}
+
+fn failing_test_lib() -> &'static str {
+    "pub fn answer() -> i32 { 41 }\n#[cfg(test)] mod tests { #[test] fn answer_is_42() { assert_eq!(super::answer(), 42); } }\n"
+}
+
 struct TransientFailProvider {
     fail_count: Arc<RwLock<usize>>,
     responses: Vec<ProviderResponse>,
@@ -820,6 +850,234 @@ fn test_workflow_verification_reports_incomplete_task_queue() {
         output.contains("Workflow incomplete"),
         "final answer should surface incomplete workflow evidence: {output}"
     );
+}
+
+#[test]
+fn test_workflow_release_gate_requires_evidence_even_without_file_changes() {
+    let (ctx, _temp) = make_test_context();
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        completed_workflow_plan("release_gate", "Run the release gate"),
+        ProviderResponse::Message(Message::assistant("release gate complete")),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    agent.run(&ctx, "run the release gate").unwrap();
+
+    let task_result = agent.last_task_result().expect("task result");
+    let workflow = task_result
+        .workflow_verification()
+        .expect("workflow verification");
+    assert!(!workflow.satisfied);
+    assert_eq!(workflow.verification_command_count, 0);
+    assert!(!workflow.required_verification_present);
+    assert!(!workflow.final_relevant_verification_passed);
+    assert!(workflow.summary.contains("release_gate"));
+}
+
+#[test]
+fn test_workflow_commit_review_requires_diff_or_log_evidence_even_without_file_changes() {
+    let (ctx, _temp) = make_test_context();
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        completed_workflow_plan("commit_review", "Review the commit"),
+        ProviderResponse::Message(Message::assistant("commit review complete")),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools_with_git());
+
+    agent.run(&ctx, "review the latest commit").unwrap();
+
+    let workflow = agent
+        .last_task_result()
+        .expect("task result")
+        .workflow_verification()
+        .expect("workflow verification")
+        .clone();
+    assert!(!workflow.satisfied);
+    assert_eq!(workflow.verification_command_count, 0);
+    assert!(!workflow.required_verification_present);
+    assert!(workflow.summary.contains("commit_review"));
+}
+
+#[test]
+fn test_workflow_audit_can_be_satisfied_by_inspection_receipt_without_verification_command() {
+    let (ctx, _temp) = make_test_context();
+    std::fs::write(ctx.resolve_path("README.md").unwrap(), "project notes").unwrap();
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        completed_workflow_plan("audit", "Inspect the project notes"),
+        ProviderResponse::ToolCall {
+            id: "read".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path": "README.md"}),
+        },
+        ProviderResponse::Message(Message::assistant("audit complete")),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    agent.run(&ctx, "audit the project notes").unwrap();
+
+    let workflow = agent
+        .last_task_result()
+        .expect("task result")
+        .workflow_verification()
+        .expect("workflow verification")
+        .clone();
+    assert!(workflow.satisfied, "{}", workflow.summary);
+    assert_eq!(workflow.verification_command_count, 0);
+    assert!(workflow.required_verification_present);
+    assert!(!workflow.final_relevant_verification_passed);
+}
+
+#[test]
+fn test_workflow_patch_with_files_changed_and_final_cargo_test_pass_satisfies() {
+    let (ctx, _temp) = make_test_context();
+    write_minimal_cargo_project(&ctx, passing_test_lib());
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        completed_workflow_plan("patch", "Patch the Rust code"),
+        ProviderResponse::ToolCall {
+            id: "write".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "src/lib.rs", "content": passing_test_lib()}),
+        },
+        ProviderResponse::ToolCall {
+            id: "test".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "cargo test --quiet"}),
+        },
+        ProviderResponse::Message(Message::assistant("patch verified")),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    agent
+        .run(&ctx, "patch the code and run cargo test")
+        .unwrap();
+
+    let task_result = agent.last_task_result().expect("task result");
+    let workflow = task_result
+        .workflow_verification()
+        .expect("workflow verification");
+    assert!(task_result.has_files_changed());
+    assert!(workflow.satisfied, "{}", workflow.summary);
+    assert_eq!(workflow.verification_command_count, 1);
+    assert!(workflow.required_verification_present);
+    assert_eq!(workflow.failed_verification_count, 0);
+    assert!(workflow.final_verification_passed);
+    assert!(workflow.final_relevant_verification_passed);
+}
+
+#[test]
+fn test_workflow_patch_with_files_changed_and_no_verification_does_not_satisfy() {
+    let (ctx, _temp) = make_test_context();
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        completed_workflow_plan("patch", "Patch a text file"),
+        ProviderResponse::ToolCall {
+            id: "write".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "notes.txt", "content": "changed"}),
+        },
+        ProviderResponse::Message(Message::assistant("patch complete")),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    agent.run(&ctx, "patch a text file").unwrap();
+
+    let task_result = agent.last_task_result().expect("task result");
+    let workflow = task_result
+        .workflow_verification()
+        .expect("workflow verification");
+    assert!(task_result.has_files_changed());
+    assert!(!workflow.satisfied);
+    assert_eq!(workflow.verification_command_count, 0);
+    assert!(!workflow.required_verification_present);
+    assert!(!workflow.final_relevant_verification_passed);
+}
+
+#[test]
+fn test_workflow_failed_verification_then_relevant_pass_satisfies_and_preserves_failure() {
+    let (ctx, _temp) = make_test_context();
+    write_minimal_cargo_project(&ctx, passing_test_lib());
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        completed_workflow_plan("patch", "Patch and verify the Rust code"),
+        ProviderResponse::ToolCall {
+            id: "write_bad".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "src/lib.rs", "content": failing_test_lib()}),
+        },
+        ProviderResponse::ToolCall {
+            id: "test_bad".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "cargo test --quiet"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "write_good".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "src/lib.rs", "content": passing_test_lib()}),
+        },
+        ProviderResponse::ToolCall {
+            id: "test_good".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "cargo test --quiet"}),
+        },
+        ProviderResponse::Message(Message::assistant("patch verified after fix")),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    agent
+        .run(&ctx, "patch the code and recover from a failed test")
+        .unwrap();
+
+    let task_result = agent.last_task_result().expect("task result");
+    let workflow = task_result
+        .workflow_verification()
+        .expect("workflow verification");
+    assert!(workflow.satisfied, "{}", workflow.summary);
+    assert_eq!(workflow.verification_command_count, 2);
+    assert_eq!(workflow.failed_verification_count, 1);
+    assert!(workflow.final_relevant_verification_passed);
+    assert!(workflow.summary.contains("failed verification attempt"));
+}
+
+#[test]
+fn test_workflow_failed_verification_then_unrelated_success_does_not_satisfy() {
+    let (ctx, _temp) = make_test_context();
+    write_minimal_cargo_project(&ctx, passing_test_lib());
+    let provider = topagent_core::ScriptedProvider::new(vec![
+        completed_workflow_plan("patch", "Patch and verify the Rust code"),
+        ProviderResponse::ToolCall {
+            id: "write_bad".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "src/lib.rs", "content": failing_test_lib()}),
+        },
+        ProviderResponse::ToolCall {
+            id: "test_bad".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "cargo test --quiet"}),
+        },
+        ProviderResponse::ToolCall {
+            id: "pwd".into(),
+            name: "bash".into(),
+            args: serde_json::json!({"command": "pwd"}),
+        },
+        ProviderResponse::Message(Message::assistant("done")),
+    ]);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    agent
+        .run(&ctx, "patch the code and run an unrelated command")
+        .unwrap();
+
+    let workflow = agent
+        .last_task_result()
+        .expect("task result")
+        .workflow_verification()
+        .expect("workflow verification")
+        .clone();
+    assert!(!workflow.satisfied);
+    assert_eq!(workflow.verification_command_count, 1);
+    assert!(workflow.required_verification_present);
+    assert_eq!(workflow.failed_verification_count, 1);
+    assert!(!workflow.final_relevant_verification_passed);
+    assert!(workflow
+        .summary
+        .contains("final relevant verification did not pass"));
 }
 
 #[test]
