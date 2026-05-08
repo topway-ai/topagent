@@ -1,7 +1,9 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use topagent_core::{RunTrustContext, SourceLabel, TaskMode, ToolTraceStep, VerificationCommand};
+use topagent_core::{
+    RunTrustContext, SourceLabel, TaskMode, ToolActionReceipt, ToolTraceStep, VerificationCommand,
+};
 
 use super::{slugify, unix_timestamp_secs};
 
@@ -19,6 +21,8 @@ pub(crate) struct TrajectoryArtifact {
     pub(crate) task_mode: String,
     pub(crate) plan_summary: Vec<String>,
     pub(crate) tool_sequence: Vec<TrajectoryToolStep>,
+    #[serde(default)]
+    pub(crate) tool_receipts: Vec<ToolActionReceipt>,
     pub(crate) changed_files: Vec<String>,
     pub(crate) verification: Vec<TrajectoryVerification>,
     pub(crate) outcome_summary: String,
@@ -84,6 +88,7 @@ pub(crate) struct TrajectoryDraft {
     pub(crate) task_mode: TaskMode,
     pub(crate) plan_summary: Vec<String>,
     pub(crate) tool_sequence: Vec<ToolTraceStep>,
+    pub(crate) tool_receipts: Vec<ToolActionReceipt>,
     pub(crate) changed_files: Vec<String>,
     pub(crate) verification: Vec<VerificationCommand>,
     pub(crate) outcome_summary: String,
@@ -128,6 +133,7 @@ pub(crate) fn save_trajectory(
                 summary: step.summary.clone(),
             })
             .collect(),
+        tool_receipts: draft.tool_receipts.iter().take(64).cloned().collect(),
         changed_files: draft.changed_files.clone(),
         verification: draft
             .verification
@@ -263,6 +269,7 @@ mod tests {
                     summary: "verification: cargo test -p topagent-core".to_string(),
                 },
             ],
+            tool_receipts: Vec::new(),
             changed_files: vec!["crates/topagent-core/src/approval.rs".to_string()],
             verification: vec![VerificationCommand {
                 command: "cargo test -p topagent-core".to_string(),

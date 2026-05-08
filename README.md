@@ -92,6 +92,8 @@ The Agent does not call raw tool implementations directly. Existing built-in too
 
 `bash` admission is command-aware inside Harness. Research-safe commands such as `pwd`, `ls`, `rg`, and read-only `find` are admitted only in `Investigate` or `Plan`; verification commands such as `cargo test` are admitted only in `Verify`; mutation-risk commands are admitted only in `Patch` and still must pass capability and approval checks. Unknown shell commands are classified conservatively instead of being treated as clearly safe.
 
+Each tool attempt leaves a structured receipt in the run result, including blocked and failed attempts. For execute-mode runs with a plan queue, finalization also checks whether the queue is complete and whether verification evidence actually satisfies the coding workflow (`audit`, `patch`, `test`, `commit_review`, `release_gate`).
+
 ### How to add a new Skill
 
 1. Define the input schema and output behavior.

@@ -192,6 +192,7 @@ pub(crate) fn promote_verified_task(pc: &PromotionContext) -> Result<TaskPromoti
             task_mode,
             plan_summary: summarize_plan_items(plan),
             tool_sequence: stored_task_result.tool_trace().to_vec(),
+            tool_receipts: stored_task_result.tool_receipts().to_vec(),
             changed_files: stored_task_result.files_changed().to_vec(),
             verification: stored_task_result.verification_commands().to_vec(),
             outcome_summary: compact_text_line(&stored_task_result.outcome_summary, 220),
@@ -253,6 +254,16 @@ fn redact_task_result_for_storage(ctx: &ExecutionContext, task_result: &TaskResu
         .map(|step| topagent_core::ToolTraceStep {
             tool_name: step.tool_name.clone(),
             summary: redact_for_storage(ctx, &step.summary),
+        })
+        .collect();
+    redacted.evidence.tool_receipts = redacted
+        .evidence
+        .tool_receipts
+        .iter()
+        .map(|receipt| {
+            let mut redacted_receipt = receipt.clone();
+            redacted_receipt.summary = redact_for_storage(ctx, &receipt.summary);
+            redacted_receipt
         })
         .collect();
     redacted.evidence.verification_commands_run = redacted

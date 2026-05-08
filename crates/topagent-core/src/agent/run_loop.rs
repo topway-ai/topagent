@@ -1,7 +1,11 @@
 use super::Agent;
 use crate::context::ExecutionContext;
 use crate::eval::{EvalRecorder, EvalRunRecord};
-use crate::task_result::{ExecutionSessionOutcome, VerificationCommand};
+use crate::harness::AgentPhase;
+use crate::task_result::{
+    ExecutionSessionOutcome, ToolActionOutcome, ToolActionReceipt, VerificationCommand,
+    WorkflowVerification,
+};
 use crate::{Error, Message, ProviderResponse, Result};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -38,6 +42,7 @@ impl Agent {
                 .run_state
                 .build_task_result("", ctx, &ctx.workspace_root, &self.behavior)
                 .with_session_outcome(outcome);
+            let partial = self.attach_workflow_verification(partial);
             self.last_task_result = Some(partial);
         }
 
@@ -241,6 +246,8 @@ impl Agent {
 
         let task_result = self.run_bounded_verification_follow_through(task_result, ctx);
 
+        let task_result = self.attach_workflow_verification(task_result);
+
         let task_result = self.compute_delivery_outcome(task_result);
 
         let task_mode = task_result
@@ -312,6 +319,53 @@ impl Agent {
         task_result
     }
 
+    fn attach_workflow_verification(
+        &self,
+        mut task_result: crate::task_result::TaskResult,
+    ) -> crate::task_result::TaskResult {
+        let task_mode = task_result.task_mode().unwrap_or_else(|| self.task_mode());
+        if task_mode != crate::plan::TaskMode::PlanAndExecute {
+            return task_result;
+        }
+
+        let Some(queue) = self
+            .plan
+            .lock()
+            .ok()
+            .map(|plan| plan.queue_status())
+            .filter(|queue| queue.total > 0)
+        else {
+            return task_result;
+        };
+
+        let verification_command_count = task_result.verification_commands().len();
+        let final_verification_passed = task_result.final_verification_passed();
+        let verification_satisfied = !task_result.has_files_changed() || final_verification_passed;
+        let queue_complete = queue.is_complete();
+        let satisfied = queue_complete && verification_satisfied;
+        let summary = workflow_verification_summary(
+            queue,
+            verification_command_count,
+            final_verification_passed,
+            satisfied,
+        );
+
+        if !satisfied {
+            let issue = format!("Workflow incomplete: {summary}");
+            if !task_result.unresolved_issues().contains(&issue) {
+                task_result = task_result.with_unresolved_issue(issue);
+            }
+        }
+
+        task_result.with_workflow_verification(WorkflowVerification {
+            queue,
+            verification_command_count,
+            final_verification_passed,
+            satisfied,
+            summary,
+        })
+    }
+
     fn run_bounded_verification_follow_through(
         &mut self,
         mut task_result: crate::task_result::TaskResult,
@@ -329,27 +383,86 @@ impl Agent {
         }
 
         if let Some(cmd) = self.suggest_verification_command(&ctx.workspace_root) {
-            match Command::new("sh")
-                .arg("-c")
-                .arg(&cmd)
-                .current_dir(&ctx.workspace_root)
-                .output()
-            {
-                Ok(output) => {
-                    let exit_code = output.status.code().unwrap_or(-1);
+            let input = serde_json::json!({ "command": cmd.clone() });
+            match self.harness.execute_skill(
+                "bash",
+                input.clone(),
+                AgentPhase::Verify,
+                ctx,
+                &self.options,
+            ) {
+                Ok(execution) => {
+                    let receipt = self.record_tool_action_receipt(
+                        ctx,
+                        ToolActionReceipt::new(
+                            "bash",
+                            AgentPhase::Verify.as_str(),
+                            true,
+                            ToolActionOutcome::Succeeded,
+                            Self::tool_receipt_summary("bash", &input),
+                        )
+                        .with_effects(execution.effects)
+                        .with_risk(execution.risk),
+                    );
+                    task_result = task_result.with_tool_receipt(receipt);
+                    let output = ctx.secrets().redact(&execution.output).into_owned();
+                    let exit_code = super::extract_exit_code(&output);
                     let verification = VerificationCommand {
                         command: cmd.clone(),
-                        output: String::from_utf8_lossy(&output.stdout).to_string(),
+                        output,
                         exit_code,
                         succeeded: exit_code == 0,
                     };
                     task_result = task_result.with_verification_command(verification);
                     tracing::info!("Verification follow-through: {} -> exit {}", cmd, exit_code);
                 }
-                Err(e) => {
-                    tracing::debug!("Verification follow-through skipped: {}", e);
+                Err(Error::ApprovalRequired(request)) => {
+                    let receipt = self.record_tool_action_receipt(
+                        ctx,
+                        ToolActionReceipt::new(
+                            "bash",
+                            AgentPhase::Verify.as_str(),
+                            false,
+                            ToolActionOutcome::Blocked,
+                            format!("approval required: {}", request.short_summary),
+                        ),
+                    );
+                    task_result = task_result.with_tool_receipt(receipt);
+                    task_result = task_result.with_verification_skip_reason(format!(
+                        "approval required for verification follow-through: {}",
+                        request.short_summary
+                    ));
+                }
+                Err(Error::Capability(error)) => {
+                    let receipt = self.record_tool_action_receipt(
+                        ctx,
+                        ToolActionReceipt::new(
+                            "bash",
+                            AgentPhase::Verify.as_str(),
+                            false,
+                            ToolActionOutcome::Blocked,
+                            format!("capability blocked verification follow-through: {error}"),
+                        ),
+                    );
+                    task_result = task_result.with_tool_receipt(receipt);
                     task_result = task_result
-                        .with_verification_skip_reason(format!("command not available: {}", e));
+                        .with_verification_skip_reason(format!("capability blocked: {error}"));
+                }
+                Err(error) => {
+                    let receipt = self.record_tool_action_receipt(
+                        ctx,
+                        ToolActionReceipt::new(
+                            "bash",
+                            AgentPhase::Verify.as_str(),
+                            false,
+                            ToolActionOutcome::Failed,
+                            format!("verification follow-through failed: {error}"),
+                        ),
+                    );
+                    task_result = task_result.with_tool_receipt(receipt);
+                    tracing::debug!("Verification follow-through skipped: {}", error);
+                    task_result = task_result
+                        .with_verification_skip_reason(format!("command not available: {}", error));
                 }
             }
         } else {
@@ -397,6 +510,34 @@ impl Agent {
 
 fn duration_millis_u64(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+fn workflow_verification_summary(
+    queue: crate::plan::TaskQueueStatus,
+    verification_command_count: usize,
+    final_verification_passed: bool,
+    satisfied: bool,
+) -> String {
+    if satisfied {
+        return format!(
+            "plan complete ({}/{} done) and verification satisfied",
+            queue.done, queue.total
+        );
+    }
+
+    let mut parts = Vec::new();
+    if !queue.is_complete() {
+        parts.push(format!(
+            "plan incomplete: {}/{} done, {} pending, {} active, {} blocked",
+            queue.done, queue.total, queue.pending, queue.in_progress, queue.blocked
+        ));
+    }
+    if verification_command_count == 0 {
+        parts.push("verification missing".to_string());
+    } else if !final_verification_passed {
+        parts.push("final verification did not pass".to_string());
+    }
+    parts.join("; ")
 }
 
 #[cfg(test)]

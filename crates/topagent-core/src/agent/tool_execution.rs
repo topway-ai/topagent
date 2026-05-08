@@ -4,6 +4,7 @@ use crate::capability::{redact_sensitive_target, CapabilityError, CapabilityKind
 use crate::context::ExecutionContext;
 use crate::provenance::{fetched_content_source, InfluenceMode, SourceKind, SourceLabel};
 use crate::run_snapshot::WorkspaceRunSnapshotStatus;
+use crate::task_result::{ToolActionOutcome, ToolActionReceipt};
 use crate::tools::{
     risky_shell_changed_path_hints, WEB_SEARCH_PROVIDER_ERROR_PREFIX, WEB_SEARCH_RESULTS_PREFIX,
 };
@@ -31,6 +32,17 @@ impl Agent {
         args: serde_json::Value,
     ) -> Result<()> {
         if !self.harness.has_skill(&name) {
+            let phase = self.current_agent_phase();
+            self.record_tool_action_receipt(
+                ctx,
+                ToolActionReceipt::new(
+                    name.clone(),
+                    phase.as_str(),
+                    false,
+                    ToolActionOutcome::Blocked,
+                    format!("unknown tool `{name}`"),
+                ),
+            );
             self.record_tool_result(
                 id,
                 name.clone(),
@@ -42,7 +54,35 @@ impl Agent {
 
         self.run_state.track_active_file(&name, &args);
         let bash_args = if name == "bash" { Some(&args) } else { None };
-        if let Some(block) = self.run_preflight(ctx, &name, &args, bash_args)? {
+        let phase = self.agent_phase_for_tool_execution(&name, &args);
+        let preflight = match self.run_preflight(ctx, &name, &args, bash_args) {
+            Ok(preflight) => preflight,
+            Err(Error::ApprovalRequired(request)) => {
+                self.record_tool_action_receipt(
+                    ctx,
+                    ToolActionReceipt::new(
+                        name.clone(),
+                        phase.as_str(),
+                        false,
+                        ToolActionOutcome::Blocked,
+                        format!("approval required: {}", request.short_summary),
+                    ),
+                );
+                return Err(Error::ApprovalRequired(request));
+            }
+            Err(error) => return Err(error),
+        };
+        if let Some(block) = preflight {
+            self.record_tool_action_receipt(
+                ctx,
+                ToolActionReceipt::new(
+                    name.clone(),
+                    phase.as_str(),
+                    false,
+                    ToolActionOutcome::Blocked,
+                    block.message.clone(),
+                ),
+            );
             self.record_tool_result(id, name, args, block.message);
             if block.is_planning_block {
                 self.note_planning_block(ctx, instruction)?;
@@ -67,7 +107,6 @@ impl Agent {
         let mut bash_exit_code = None;
         self.emit_progress(self.tool_progress(&name, &args));
         self.check_cancelled(ctx)?;
-        let phase = self.agent_phase_for_tool_execution(&name, &args);
         let approvals_before = ctx
             .approval_mailbox()
             .map(|mailbox| mailbox.list().len())
@@ -78,14 +117,32 @@ impl Agent {
         self.record_eval_approval_blocks_since(ctx, approvals_before);
         let execution = match execution_result {
             Ok(execution) => execution,
-            Err(Error::ApprovalRequired(request)) => return Err(Error::ApprovalRequired(request)),
-            Err(Error::Capability(capability_error)) => {
-                self.record_tool_result(
-                    id,
-                    name,
-                    args,
-                    format_capability_tool_error(&capability_error),
+            Err(Error::ApprovalRequired(request)) => {
+                self.record_tool_action_receipt(
+                    ctx,
+                    ToolActionReceipt::new(
+                        name.clone(),
+                        phase.as_str(),
+                        false,
+                        ToolActionOutcome::Blocked,
+                        format!("approval required: {}", request.short_summary),
+                    ),
                 );
+                return Err(Error::ApprovalRequired(request));
+            }
+            Err(Error::Capability(capability_error)) => {
+                let message = format_capability_tool_error(&capability_error);
+                self.record_tool_action_receipt(
+                    ctx,
+                    ToolActionReceipt::new(
+                        name.clone(),
+                        phase.as_str(),
+                        false,
+                        ToolActionOutcome::Blocked,
+                        message.clone(),
+                    ),
+                );
+                self.record_tool_result(id, name, args, message);
                 return Ok(());
             }
             Err(Error::SkillPolicyDenied {
@@ -93,27 +150,53 @@ impl Agent {
                 phase,
                 reason,
             }) => {
-                self.record_tool_result(
-                    id,
-                    name,
-                    args,
-                    format!(
-                        "error: skill_policy_denied\nskill: {skill}\nphase: {phase}\nreason: {reason}"
+                let message = format!(
+                    "error: skill_policy_denied\nskill: {skill}\nphase: {phase}\nreason: {reason}"
+                );
+                self.record_tool_action_receipt(
+                    ctx,
+                    ToolActionReceipt::new(
+                        name.clone(),
+                        phase,
+                        false,
+                        ToolActionOutcome::Blocked,
+                        message.clone(),
                     ),
                 );
+                self.record_tool_result(id, name, args, message);
                 return Ok(());
             }
             Err(e) => {
-                self.record_tool_result(
-                    id,
-                    name,
-                    args,
-                    format!("error: tool execution failed: {}", e),
+                let message = format!("error: tool execution failed: {}", e);
+                self.record_tool_action_receipt(
+                    ctx,
+                    ToolActionReceipt::new(
+                        name.clone(),
+                        phase.as_str(),
+                        true,
+                        ToolActionOutcome::Failed,
+                        message.clone(),
+                    ),
                 );
+                self.record_tool_result(id, name, args, message);
                 return Ok(());
             }
         };
+        let receipt_effects = execution.effects.clone();
+        let receipt_risk = execution.risk;
         let raw_result = execution.output;
+        self.record_tool_action_receipt(
+            ctx,
+            ToolActionReceipt::new(
+                name.clone(),
+                phase.as_str(),
+                true,
+                ToolActionOutcome::Succeeded,
+                Self::tool_receipt_summary(&name, &args),
+            )
+            .with_effects(receipt_effects)
+            .with_risk(receipt_risk),
+        );
         self.check_cancelled(ctx)?;
 
         if name == "web_search"
@@ -224,6 +307,36 @@ impl Agent {
         let after = mailbox.list().len();
         if after > before {
             self.eval_approval_blocks += after - before;
+        }
+    }
+
+    pub(super) fn record_tool_action_receipt(
+        &self,
+        ctx: &ExecutionContext,
+        mut receipt: ToolActionReceipt,
+    ) -> ToolActionReceipt {
+        let redacted = ctx.secrets().redact(&receipt.summary).into_owned();
+        receipt.summary = Self::summarize_progress_text(&redacted, 180);
+        self.run_state.record_tool_receipt(receipt)
+    }
+
+    pub(super) fn tool_receipt_summary(name: &str, args: &serde_json::Value) -> String {
+        match name {
+            "bash" => {
+                let command = Self::extract_bash_command(args);
+                format!("bash: {command}")
+            }
+            "read" | "write" | "edit" => Self::extract_file_path(args)
+                .map(|path| format!("{name}: {path}"))
+                .unwrap_or_else(|| name.to_string()),
+            "update_plan" => {
+                let item_count = args
+                    .get("items")
+                    .and_then(|value| value.as_array())
+                    .map_or(0, |items| items.len());
+                format!("update_plan: {item_count} item(s)")
+            }
+            _ => name.to_string(),
         }
     }
 

@@ -31,7 +31,7 @@ The engine crate. No CLI command parsing or Telegram polling logic -- just the a
 | `approval` | Approval mailbox, request/state transitions, runtime approval enforcement objects |
 | `capability` | Typed access profiles, capability decisions, scoped grants, risk classification, and JSONL audit records |
 | `compaction` | Layered transcript compaction and prompt rebuild support |
-| `run_state` | In-run objective, changed/active file tracking, bash verification history, compact tool trace capture, baseline attribution, proof-of-work assembly; finalizes into `TaskResult` with `ExecutionSessionOutcome` on all terminal paths (completed, stopped, max-steps, failed) |
+| `run_state` | In-run objective, changed/active file tracking, bash verification history, structured tool-action receipts, compact tool trace capture, baseline attribution, proof-of-work assembly; finalizes into `TaskResult` with `ExecutionSessionOutcome` on all terminal paths (completed, stopped, max-steps, failed) |
 | `session` | Conversation history management, truncation |
 | `message` | Message types (user, assistant, system, tool_request, tool_result) |
 | `provider` | Provider trait, response types |
@@ -43,7 +43,7 @@ The engine crate. No CLI command parsing or Telegram polling logic -- just the a
 | `tool_spec` | Tool specification (name, description, parameters) |
 | `context` | ExecutionContext (workspace root, cancel token, secrets), ToolContext |
 | `secrets` | SecretRegistry: value-based and pattern-based redaction |
-| `plan` | Plan struct, TodoItem, task modes |
+| `plan` | Plan struct, task-queue primitives (`pending`, `in_progress`, `blocked`, `done`), coding-workflow kinds (`audit`, `patch`, `test`, `commit_review`, `release_gate`), queue summaries, task modes |
 | `project` | Load `TOPAGENT.md` project instructions |
 | `prompt` | Policy-driven system prompt rendering from the behavior contract, run state, plan, memory, and tool surface |
 | `provenance` | Compact source/trust labels and low-trust promotion/action policy inputs |
@@ -75,6 +75,10 @@ Phase exposure is intentionally narrower than the full registry:
 This phase filter is both an exposure policy and an execution invariant. Even if a provider emits a hidden Skill name, Harness rechecks the current phase and access profile before dispatch. Skills declare effects; Harness derives and authorizes the required capabilities from those effects, the Skill name, input, risk, and runtime context. Tool-internal authorization remains defense-in-depth. Agent code must not call raw tool implementations directly; tool calls from providers go through Harness admission and `SkillDispatcher`.
 
 `bash` has an additional Harness execution check because the Skill name alone is too broad. Harness classifies the submitted command: `ResearchSafe` commands are allowed only in `Investigate` or `Plan`, `Verification` commands only in `Verify`, and `MutationRisk` commands only in `Patch`. After that phase check, capability authorization still decides whether network, filesystem, git, package-manager, service, external-send, or high-risk shell access requires approval.
+
+Every provider tool attempt leaves a structured `ToolActionReceipt` in the run result, including blocked and failed attempts. Receipts record the Skill name, phase, admission result, outcome, effects/risk when execution reached Harness, and a compact redacted summary. They are evidence for the current run and trajectory artifacts, not prompt memory.
+
+For `PlanAndExecute` runs with a queue, finalization adds `WorkflowVerification` to the `TaskResult`. It compares queued task status with verification evidence, so a passing command is not treated as the whole answer when the plan still has pending, active, or blocked work.
 
 ## Provider scope
 
@@ -129,11 +133,12 @@ CLI parses args
         1. send conversation to LLM
         2. LLM returns text (final answer) or skill calls
         3. skill calls: run preflight (planning gate, verification gate, provenance-aware approval/memory enforcement)
-        4. Harness validates phase/access/effects, authorizes required capabilities, dispatches the Skill, then Agent records result in session
+        4. Harness validates phase/access/effects, authorizes required capabilities, dispatches the Skill, then Agent records the result and a structured receipt
         5. if `web_search` or a fetch-like shell command introduced low-trust external content, keep that influence in run state
-        5. repeat until text response or max steps
--> append proof-of-work (changed files, diff summary, trust notes when low-trust content shaped the run)
-      -> for PlanAndExecute mode with files changed: append structured delivery summary with explicit verification status
+        6. repeat until text response or max steps
+   -> append proof-of-work (changed files, diff summary, trust notes when low-trust content shaped the run)
+   -> for PlanAndExecute mode with a plan queue: attach workflow verification showing whether the queue and verification evidence satisfy the plan
+   -> for PlanAndExecute mode with files changed: append structured delivery summary with explicit verification status
    -> if the task was strongly verified, run the workspace promotion policy:
 - save nothing, or
       - save/update a durable note, or

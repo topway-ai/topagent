@@ -1466,7 +1466,8 @@ path = "src/lib.rs"
         let instruction = "Refactor the entire codebase safely after you make a plan.";
         let result = agent.run(&ctx, instruction).unwrap();
 
-        assert_eq!(result, "done");
+        assert!(result.starts_with("done"));
+        assert!(result.contains("Workflow incomplete"));
         let prompt = agent.build_run_system_prompt(&ctx).unwrap();
         assert!(prompt.contains("## Active Run State"));
         assert!(prompt.contains(instruction));

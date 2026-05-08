@@ -66,7 +66,9 @@ pub use operator_profile::{
     load_operator_profile, save_operator_profile, user_profile_path, OperatorPreferenceRecord,
     OperatorProfile, PreferenceCategory, USER_PROFILE_RELATIVE_PATH,
 };
-pub use plan::{Plan, TaskMode, TodoItem, TodoStatus};
+pub use plan::{
+    CodingWorkflowKind, CodingWorkflowStatus, Plan, TaskMode, TaskQueueStatus, TodoItem, TodoStatus,
+};
 pub use progress::{ProgressCallback, ProgressKind, ProgressUpdate};
 pub use project::{
     get_project_instructions_or_error, load_project_instructions, ProjectInstructionResult,
@@ -88,8 +90,8 @@ pub use skills::{
     SkillOutput, SkillRegistry, SkillResult, SkillSchema, ToolBackedSkill,
 };
 pub use task_result::{
-    DeliveryOutcome, ExecutionSessionOutcome, TaskEvidence, TaskResult, ToolTraceStep,
-    VerificationCommand,
+    DeliveryOutcome, ExecutionSessionOutcome, TaskEvidence, TaskResult, ToolActionOutcome,
+    ToolActionReceipt, ToolTraceStep, VerificationCommand, WorkflowVerification,
 };
 pub use tool_spec::ToolSpec;
 pub use tools::{

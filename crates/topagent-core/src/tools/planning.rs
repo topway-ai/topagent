@@ -1,5 +1,5 @@
 use crate::context::ToolContext;
-use crate::plan::{Plan, TodoItem, TodoStatus};
+use crate::plan::{CodingWorkflowKind, Plan, TodoItem, TodoStatus};
 use crate::tool_spec::ToolSpec;
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 pub struct PlanItem {
     pub content: String,
     pub status: TodoStatus,
+    #[serde(default)]
+    pub kind: Option<CodingWorkflowKind>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,7 +57,11 @@ impl crate::tools::Tool for UpdatePlanTool {
                             "type": "object",
                             "properties": {
                                 "content": {"type": "string"},
-                                "status": {"type": "string", "enum": ["pending", "in_progress", "done"]}
+                                "status": {"type": "string", "enum": ["pending", "in_progress", "blocked", "done"]},
+                                "kind": {
+                                    "type": "string",
+                                    "enum": ["audit", "patch", "test", "commit_review", "release_gate"]
+                                }
                             },
                             "required": ["content", "status"]
                         }
@@ -87,6 +93,7 @@ impl crate::tools::Tool for UpdatePlanTool {
                 id: idx,
                 description: item.content,
                 status: item.status,
+                workflow_kind: item.kind,
             })
             .collect();
 
@@ -152,6 +159,31 @@ mod tests {
         let plan_guard = plan.lock().unwrap();
         assert_eq!(plan_guard.items().len(), 1);
         assert_eq!(plan_guard.items()[0].description, "New task");
+    }
+
+    #[test]
+    fn test_update_plan_accepts_coding_workflow_kind() {
+        let plan = Arc::new(std::sync::Mutex::new(Plan::new()));
+        let tool = UpdatePlanTool::with_plan(plan.clone());
+
+        let exec = crate::context::ExecutionContext::new(std::path::PathBuf::from("/tmp"));
+        let runtime = crate::runtime::RuntimeOptions::default();
+        let ctx = crate::context::ToolContext::new(&exec, &runtime);
+
+        let args = serde_json::json!({
+            "items": [
+                {"content": "Run release gate", "status": "pending", "kind": "release_gate"}
+            ]
+        });
+
+        let output = tool.execute(args, &ctx).unwrap();
+        let plan_guard = plan.lock().unwrap();
+
+        assert_eq!(
+            plan_guard.items()[0].workflow_kind,
+            Some(CodingWorkflowKind::ReleaseGate)
+        );
+        assert!(output.contains("release_gate: Run release gate"));
     }
 
     #[test]

@@ -1,4 +1,7 @@
+use crate::capability::RiskLevel;
+use crate::plan::TaskQueueStatus;
 use crate::provenance::{RunTrustContext, SourceLabel};
+use crate::skills::SkillEffects;
 use serde::{Deserialize, Serialize};
 
 /// High-level terminal state of an execution session.
@@ -64,6 +67,8 @@ pub struct TaskEvidence {
     pub diff_summary: String,
     pub verification_commands_run: Vec<VerificationCommand>,
     pub tool_trace: Vec<ToolTraceStep>,
+    #[serde(default)]
+    pub tool_receipts: Vec<ToolActionReceipt>,
     pub unresolved_issues: Vec<String>,
     #[serde(default)]
     pub source_labels: Vec<SourceLabel>,
@@ -73,6 +78,8 @@ pub struct TaskEvidence {
     pub delivery_outcome: DeliveryOutcome,
     #[serde(default)]
     pub verification_skip_reason: Option<String>,
+    #[serde(default)]
+    pub workflow_verification: Option<WorkflowVerification>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +93,78 @@ pub struct VerificationCommand {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolTraceStep {
     pub tool_name: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolActionOutcome {
+    Succeeded,
+    Blocked,
+    Failed,
+}
+
+impl ToolActionOutcome {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Blocked => "blocked",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ToolActionReceipt {
+    pub sequence: usize,
+    pub tool_name: String,
+    pub phase: String,
+    pub admitted: bool,
+    pub outcome: ToolActionOutcome,
+    #[serde(default)]
+    pub risk: Option<RiskLevel>,
+    #[serde(default)]
+    pub effects: Option<SkillEffects>,
+    pub summary: String,
+}
+
+impl ToolActionReceipt {
+    pub fn new(
+        tool_name: impl Into<String>,
+        phase: impl Into<String>,
+        admitted: bool,
+        outcome: ToolActionOutcome,
+        summary: impl Into<String>,
+    ) -> Self {
+        Self {
+            sequence: 0,
+            tool_name: tool_name.into(),
+            phase: phase.into(),
+            admitted,
+            outcome,
+            risk: None,
+            effects: None,
+            summary: summary.into(),
+        }
+    }
+
+    pub fn with_risk(mut self, risk: RiskLevel) -> Self {
+        self.risk = Some(risk);
+        self
+    }
+
+    pub fn with_effects(mut self, effects: SkillEffects) -> Self {
+        self.effects = Some(effects);
+        self
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkflowVerification {
+    pub queue: TaskQueueStatus,
+    pub verification_command_count: usize,
+    pub final_verification_passed: bool,
+    pub satisfied: bool,
     pub summary: String,
 }
 
@@ -126,6 +205,16 @@ impl TaskResult {
         self
     }
 
+    pub fn with_tool_receipt(mut self, receipt: ToolActionReceipt) -> Self {
+        self.evidence.tool_receipts.push(receipt);
+        self
+    }
+
+    pub fn with_tool_receipts(mut self, receipts: Vec<ToolActionReceipt>) -> Self {
+        self.evidence.tool_receipts.extend(receipts);
+        self
+    }
+
     pub fn with_unresolved_issue(mut self, issue: String) -> Self {
         self.evidence.unresolved_issues.push(issue);
         self
@@ -162,6 +251,10 @@ impl TaskResult {
         &self.evidence.tool_trace
     }
 
+    pub fn tool_receipts(&self) -> &[ToolActionReceipt] {
+        &self.evidence.tool_receipts
+    }
+
     pub fn source_labels(&self) -> &[SourceLabel] {
         &self.evidence.source_labels
     }
@@ -190,6 +283,15 @@ impl TaskResult {
 
     pub fn with_verification_skip_reason(mut self, reason: String) -> Self {
         self.evidence.verification_skip_reason = Some(reason);
+        self
+    }
+
+    pub fn workflow_verification(&self) -> Option<&WorkflowVerification> {
+        self.evidence.workflow_verification.as_ref()
+    }
+
+    pub fn with_workflow_verification(mut self, verification: WorkflowVerification) -> Self {
+        self.evidence.workflow_verification = Some(verification);
         self
     }
 
@@ -397,6 +499,30 @@ impl TaskResult {
                 summary.push_str(&format!(" ({})", reason));
             }
             summary.push_str("\n\n");
+        }
+
+        if let Some(workflow) = &self.evidence.workflow_verification {
+            if workflow.queue.total > 0 {
+                summary.push_str("### Workflow Status\n\n");
+                let status = if workflow.satisfied {
+                    "satisfied"
+                } else {
+                    "not satisfied"
+                };
+                summary.push_str(&format!("- Result: {status}\n"));
+                summary.push_str(&format!(
+                    "- Queue: {}/{} done, {} pending, {} active, {} blocked\n",
+                    workflow.queue.done,
+                    workflow.queue.total,
+                    workflow.queue.pending,
+                    workflow.queue.in_progress,
+                    workflow.queue.blocked
+                ));
+                summary.push_str(&format!(
+                    "- Verification commands: {} (final pass: {})\n\n",
+                    workflow.verification_command_count, workflow.final_verification_passed
+                ));
+            }
         }
 
         summary.push_str("### Suggested Next Step\n\n");
@@ -614,6 +740,24 @@ mod tests {
     }
 
     #[test]
+    fn test_task_result_tool_receipts_are_structured_but_not_proof_noise() {
+        let baseline = TaskResult::new("Task completed".to_string()).format_proof_of_work();
+        let result = TaskResult::new("Task completed".to_string()).with_tool_receipt(
+            ToolActionReceipt::new(
+                "read",
+                "investigate",
+                true,
+                ToolActionOutcome::Succeeded,
+                "read README.md",
+            ),
+        );
+
+        assert_eq!(result.tool_receipts().len(), 1);
+        assert_eq!(result.tool_receipts()[0].tool_name, "read");
+        assert_eq!(result.format_proof_of_work(), baseline);
+    }
+
+    #[test]
     fn test_final_verification_passed_uses_latest_command() {
         let result = TaskResult::new("Done".to_string())
             .with_verification_command(VerificationCommand {
@@ -800,6 +944,39 @@ mod tests {
         assert!(summary.contains("`cargo test`"));
         assert!(summary.contains("PASS"));
         assert!(summary.contains("Analysis complete, no code changes"));
+    }
+
+    #[test]
+    fn test_format_delivery_summary_includes_workflow_status_when_present() {
+        let result = TaskResult::new("Done".to_string())
+            .with_task_mode(crate::plan::TaskMode::PlanAndExecute)
+            .with_files_changed(vec!["src/lib.rs".to_string()])
+            .with_verification_command(VerificationCommand {
+                command: "cargo test".to_string(),
+                output: "ok".to_string(),
+                exit_code: 0,
+                succeeded: true,
+            })
+            .with_delivery_outcome(DeliveryOutcome::CodeChangingVerified)
+            .with_workflow_verification(WorkflowVerification {
+                queue: TaskQueueStatus {
+                    total: 2,
+                    pending: 0,
+                    in_progress: 0,
+                    blocked: 0,
+                    done: 2,
+                    ..TaskQueueStatus::default()
+                },
+                verification_command_count: 1,
+                final_verification_passed: true,
+                satisfied: true,
+                summary: "plan complete".to_string(),
+            });
+
+        let summary = result.format_delivery_summary().expect("summary expected");
+        assert!(summary.contains("### Workflow Status"));
+        assert!(summary.contains("Result: satisfied"));
+        assert!(summary.contains("2/2 done"));
     }
 
     #[test]

@@ -332,8 +332,8 @@ mod tests {
     use topagent_core::{
         tools::default_tools, Agent, ExecutionContext, InfluenceMode, Message, Plan,
         ProviderResponse, Role, RunTrustContext, RuntimeOptions, ScriptedProvider, SecretRegistry,
-        SourceKind, SourceLabel, TaskMode, TaskResult, ToolTraceStep, VerificationCommand,
-        WorkspaceRunSnapshotStore,
+        SourceKind, SourceLabel, TaskMode, TaskResult, ToolActionOutcome, ToolActionReceipt,
+        ToolTraceStep, VerificationCommand, WorkspaceRunSnapshotStore,
     };
 
     fn write_memory_index(workspace: &Path, body: &str) {
@@ -401,6 +401,29 @@ mod tests {
                 tool_name: "bash".to_string(),
                 summary: format!("verification: {command}"),
             },
+        ])
+        .with_tool_receipts(vec![
+            ToolActionReceipt::new(
+                "read",
+                "investigate",
+                true,
+                ToolActionOutcome::Succeeded,
+                "read crates/topagent-core/src/approval.rs",
+            ),
+            ToolActionReceipt::new(
+                "edit",
+                "patch",
+                true,
+                ToolActionOutcome::Succeeded,
+                "edit crates/topagent-core/src/approval.rs",
+            ),
+            ToolActionReceipt::new(
+                "bash",
+                "verify",
+                true,
+                ToolActionOutcome::Succeeded,
+                format!("bash: {command}"),
+            ),
         ])
         .with_verification_command(VerificationCommand {
             command: command.to_string(),
@@ -1042,6 +1065,7 @@ path = "src/lib.rs"
         assert!(procedure.contains("**Source Trajectory:** .topagent/trajectories/"));
         assert_ne!(note.lines().next(), procedure.lines().next());
         assert!(trajectory.contains("\"tool_sequence\""));
+        assert!(trajectory.contains("\"tool_receipts\""));
         assert!(trajectory.contains("\"verification\""));
         assert!(trajectory.contains("\"stored_outputs\": false"));
         assert!(!trajectory.contains("super-secret-output-value"));

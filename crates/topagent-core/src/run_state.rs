@@ -2,7 +2,9 @@ use crate::approval::ApprovalState;
 use crate::behavior::{BehaviorContract, RunStateSnapshot};
 use crate::context::ExecutionContext;
 use crate::provenance::{RunTrustContext, SourceLabel};
-use crate::task_result::{TaskEvidence, TaskResult, ToolTraceStep, VerificationCommand};
+use crate::task_result::{
+    TaskEvidence, TaskResult, ToolActionReceipt, ToolTraceStep, VerificationCommand,
+};
 use crate::tools::risky_shell_changed_path_hints;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -17,6 +19,8 @@ pub(crate) struct AgentRunState {
     active_files: RefCell<Vec<String>>,
     bash_history: RefCell<Vec<(String, String, i32)>>,
     tool_trace: RefCell<Vec<ToolTraceStep>>,
+    tool_receipts: RefCell<Vec<ToolActionReceipt>>,
+    next_tool_receipt_sequence: RefCell<usize>,
     observed_trust: RefCell<RunTrustContext>,
     run_baseline: RefCell<Option<RunBaseline>>,
 }
@@ -35,6 +39,8 @@ impl Default for AgentRunState {
             active_files: RefCell::new(Vec::new()),
             bash_history: RefCell::new(Vec::new()),
             tool_trace: RefCell::new(Vec::new()),
+            tool_receipts: RefCell::new(Vec::new()),
+            next_tool_receipt_sequence: RefCell::new(0),
             observed_trust: RefCell::new(RunTrustContext::default()),
             run_baseline: RefCell::new(None),
         }
@@ -56,6 +62,8 @@ impl AgentRunState {
         self.active_files.borrow_mut().clear();
         self.bash_history.borrow_mut().clear();
         self.tool_trace.borrow_mut().clear();
+        self.tool_receipts.borrow_mut().clear();
+        *self.next_tool_receipt_sequence.borrow_mut() = 0;
         *self.observed_trust.borrow_mut() = RunTrustContext::default();
         self.capture_run_baseline(workspace_root);
     }
@@ -99,6 +107,14 @@ impl AgentRunState {
 
     pub(crate) fn record_observed_source(&self, source: SourceLabel) {
         self.observed_trust.borrow_mut().add_source(source);
+    }
+
+    pub(crate) fn record_tool_receipt(&self, mut receipt: ToolActionReceipt) -> ToolActionReceipt {
+        let mut next = self.next_tool_receipt_sequence.borrow_mut();
+        receipt.sequence = *next;
+        *next += 1;
+        self.tool_receipts.borrow_mut().push(receipt.clone());
+        receipt
     }
 
     pub(crate) fn trust_context(&self, ctx: &ExecutionContext) -> RunTrustContext {
@@ -304,11 +320,13 @@ impl AgentRunState {
             diff_summary,
             verification_commands_run: self.collect_verification_commands(behavior),
             tool_trace: self.tool_trace.borrow().clone(),
+            tool_receipts: self.tool_receipts.borrow().clone(),
             unresolved_issues: Vec::new(),
             source_labels: self.trust_context(ctx).sources,
             task_mode: None,
             delivery_outcome: crate::task_result::DeliveryOutcome::None,
             verification_skip_reason: None,
+            workflow_verification: None,
         };
 
         if let Some(issue) =
@@ -338,6 +356,7 @@ impl AgentRunState {
             .with_diff_summary(evidence.diff_summary.clone())
             .with_verification_commands(evidence.verification_commands_run.clone())
             .with_tool_trace(evidence.tool_trace.clone())
+            .with_tool_receipts(evidence.tool_receipts.clone())
             .with_unresolved_issues(evidence.unresolved_issues.clone())
             .with_source_labels(evidence.source_labels.clone())
     }

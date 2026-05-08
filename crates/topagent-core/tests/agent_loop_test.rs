@@ -5,7 +5,7 @@ use topagent_core::{
     tools::{BashTool, EditTool, GitDiffTool, ReadTool, Tool, WriteTool},
     Agent, CancellationToken, Content, DeliveryOutcome, Error, ExecutionStage, Message, ModelRoute,
     ProgressKind, ProgressUpdate, Provider, ProviderResponse, Role, RuntimeOptions, TaskResult,
-    ToolCallEntry, ToolSpec, WorkspaceRunSnapshotStore,
+    ToolActionOutcome, ToolCallEntry, ToolSpec, WorkspaceRunSnapshotStore,
 };
 
 fn make_test_context() -> (ExecutionContext, TempDir) {
@@ -730,6 +730,96 @@ fn test_agent_unknown_tool_produces_error_message() {
     let result = agent.run(&ctx, "try unknown tool");
     assert!(result.is_ok()); // should handle gracefully and return error in conversation
     assert!(result.unwrap().contains("unknown tool handled gracefully"));
+}
+
+#[test]
+fn test_task_result_records_structured_tool_receipts_for_success_and_block() {
+    let (ctx, _temp) = make_test_context();
+    std::fs::write(ctx.resolve_path("a.txt").unwrap(), "content A").unwrap();
+
+    let responses = vec![
+        ProviderResponse::ToolCalls(vec![
+            ToolCallEntry {
+                id: "call_1".into(),
+                name: "read".into(),
+                args: serde_json::json!({"path": "a.txt"}),
+            },
+            ToolCallEntry {
+                id: "call_2".into(),
+                name: "nonexistent_tool".into(),
+                args: serde_json::json!({"foo": "bar"}),
+            },
+        ]),
+        ProviderResponse::Message(Message::assistant("done")),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    agent
+        .run(&ctx, "read a file and handle an unknown tool")
+        .unwrap();
+
+    let receipts = agent
+        .last_task_result()
+        .expect("task result")
+        .tool_receipts();
+    assert_eq!(receipts.len(), 2);
+    assert_eq!(receipts[0].sequence, 0);
+    assert_eq!(receipts[0].tool_name, "read");
+    assert_eq!(receipts[0].phase, "investigate");
+    assert!(receipts[0].admitted);
+    assert_eq!(receipts[0].outcome, ToolActionOutcome::Succeeded);
+    assert!(receipts[0]
+        .effects
+        .as_ref()
+        .is_some_and(|effects| effects.read_only));
+
+    assert_eq!(receipts[1].sequence, 1);
+    assert_eq!(receipts[1].tool_name, "nonexistent_tool");
+    assert!(!receipts[1].admitted);
+    assert_eq!(receipts[1].outcome, ToolActionOutcome::Blocked);
+    assert!(receipts[1].summary.contains("unknown tool"));
+}
+
+#[test]
+fn test_workflow_verification_reports_incomplete_task_queue() {
+    let (ctx, _temp) = make_test_context();
+    let responses = vec![
+        ProviderResponse::ToolCall {
+            id: "plan".into(),
+            name: "update_plan".into(),
+            args: serde_json::json!({
+                "items": [
+                    {"content": "Inspect the repo", "status": "done"},
+                    {"content": "Patch the affected files", "status": "pending"}
+                ]
+            }),
+        },
+        ProviderResponse::Message(Message::assistant("stopping early")),
+    ];
+    let provider = topagent_core::ScriptedProvider::new(responses);
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    let output = agent
+        .run(&ctx, "refactor the entire repository carefully")
+        .unwrap();
+
+    let task_result = agent.last_task_result().expect("task result");
+    let workflow = task_result
+        .workflow_verification()
+        .expect("workflow verification");
+    assert!(!workflow.satisfied);
+    assert_eq!(workflow.queue.total, 2);
+    assert_eq!(workflow.queue.done, 1);
+    assert_eq!(workflow.queue.pending, 1);
+    assert!(task_result
+        .unresolved_issues()
+        .iter()
+        .any(|issue| issue.contains("Workflow incomplete")));
+    assert!(
+        output.contains("Workflow incomplete"),
+        "final answer should surface incomplete workflow evidence: {output}"
+    );
 }
 
 #[test]
@@ -1575,6 +1665,16 @@ fn test_bounded_verification_follow_through_adds_verification_when_files_changed
         !verification_commands.is_empty(),
         "follow-through should add verification when files changed but none provided: {:?}",
         verification_commands
+    );
+    assert!(
+        task_result.tool_receipts().iter().any(|receipt| {
+            receipt.tool_name == "bash"
+                && receipt.phase == "verify"
+                && receipt.admitted
+                && receipt.outcome == ToolActionOutcome::Succeeded
+        }),
+        "verification follow-through should leave a Harness-admitted bash receipt: {:?}",
+        task_result.tool_receipts()
     );
 }
 

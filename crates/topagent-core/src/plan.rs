@@ -8,6 +8,8 @@ pub enum TodoStatus {
     Pending,
     #[serde(rename = "in_progress")]
     InProgress,
+    #[serde(rename = "blocked")]
+    Blocked,
     #[serde(rename = "done")]
     Done,
 }
@@ -17,12 +19,125 @@ pub struct TodoItem {
     pub id: usize,
     pub description: String,
     pub status: TodoStatus,
+    #[serde(default)]
+    pub workflow_kind: Option<CodingWorkflowKind>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Plan {
     items: Vec<TodoItem>,
     next_id: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CodingWorkflowKind {
+    Audit,
+    Patch,
+    Test,
+    CommitReview,
+    ReleaseGate,
+}
+
+impl CodingWorkflowKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Audit => "audit",
+            Self::Patch => "patch",
+            Self::Test => "test",
+            Self::CommitReview => "commit_review",
+            Self::ReleaseGate => "release_gate",
+        }
+    }
+
+    pub fn infer(description: &str) -> Option<Self> {
+        let lower = description.to_ascii_lowercase();
+        if contains_any(&lower, &["release", "publish", "package", "tag", "ci-gate"]) {
+            return Some(Self::ReleaseGate);
+        }
+        if contains_any(
+            &lower,
+            &[
+                "commit",
+                "diff",
+                "git status",
+                "review changes",
+                "review the changes",
+            ],
+        ) {
+            return Some(Self::CommitReview);
+        }
+        if contains_any(
+            &lower,
+            &["test", "verify", "build", "clippy", "fmt", "format"],
+        ) {
+            return Some(Self::Test);
+        }
+        if contains_any(
+            &lower,
+            &[
+                "patch",
+                "edit",
+                "write",
+                "update",
+                "fix",
+                "implement",
+                "refactor",
+            ],
+        ) {
+            return Some(Self::Patch);
+        }
+        if contains_any(
+            &lower,
+            &["audit", "inspect", "read", "analyze", "analyse", "research"],
+        ) {
+            return Some(Self::Audit);
+        }
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CodingWorkflowStatus {
+    pub audit: usize,
+    pub patch: usize,
+    pub test: usize,
+    pub commit_review: usize,
+    pub release_gate: usize,
+    pub uncategorized: usize,
+}
+
+impl CodingWorkflowStatus {
+    fn record(&mut self, kind: Option<CodingWorkflowKind>) {
+        match kind {
+            Some(CodingWorkflowKind::Audit) => self.audit += 1,
+            Some(CodingWorkflowKind::Patch) => self.patch += 1,
+            Some(CodingWorkflowKind::Test) => self.test += 1,
+            Some(CodingWorkflowKind::CommitReview) => self.commit_review += 1,
+            Some(CodingWorkflowKind::ReleaseGate) => self.release_gate += 1,
+            None => self.uncategorized += 1,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskQueueStatus {
+    pub total: usize,
+    pub pending: usize,
+    pub in_progress: usize,
+    pub blocked: usize,
+    pub done: usize,
+    pub workflow: CodingWorkflowStatus,
+}
+
+impl TaskQueueStatus {
+    pub fn unfinished(self) -> usize {
+        self.pending + self.in_progress + self.blocked
+    }
+
+    pub fn is_complete(self) -> bool {
+        self.total > 0 && self.unfinished() == 0
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,7 +159,20 @@ impl Plan {
             id,
             description,
             status: TodoStatus::Pending,
+            workflow_kind: None,
         });
+        id
+    }
+
+    pub fn add_workflow_item(
+        &mut self,
+        description: String,
+        workflow_kind: CodingWorkflowKind,
+    ) -> usize {
+        let id = self.add_item(description);
+        if let Some(item) = self.items.iter_mut().find(|item| item.id == id) {
+            item.workflow_kind = Some(workflow_kind);
+        }
         id
     }
 
@@ -63,6 +191,10 @@ impl Plan {
 
     pub fn mark_done(&mut self, id: usize) -> bool {
         self.update_status(id, TodoStatus::Done)
+    }
+
+    pub fn mark_blocked(&mut self, id: usize) -> bool {
+        self.update_status(id, TodoStatus::Blocked)
     }
 
     pub fn remove_item(&mut self, id: usize) -> bool {
@@ -88,6 +220,28 @@ impl Plan {
         !self.items.is_empty()
     }
 
+    pub fn queue_status(&self) -> TaskQueueStatus {
+        let mut status = TaskQueueStatus {
+            total: self.items.len(),
+            ..TaskQueueStatus::default()
+        };
+
+        for item in &self.items {
+            match item.status {
+                TodoStatus::Pending => status.pending += 1,
+                TodoStatus::InProgress => status.in_progress += 1,
+                TodoStatus::Blocked => status.blocked += 1,
+                TodoStatus::Done => status.done += 1,
+            }
+            status.workflow.record(
+                item.workflow_kind
+                    .or_else(|| CodingWorkflowKind::infer(&item.description)),
+            );
+        }
+
+        status
+    }
+
     pub fn set_items(&mut self, items: Vec<TodoItem>) {
         self.items = items;
         self.next_id = self.items.len();
@@ -102,15 +256,29 @@ impl Plan {
             let status_symbol = match item.status {
                 TodoStatus::Pending => "[ ]",
                 TodoStatus::InProgress => "[>]",
+                TodoStatus::Blocked => "[!]",
                 TodoStatus::Done => "[x]",
             };
             result.push_str(&format!(
                 "  {} {} - {}\n",
-                status_symbol, item.id, item.description
+                status_symbol,
+                item.id,
+                format_plan_item_description(item)
             ));
         }
         result
     }
+}
+
+fn format_plan_item_description(item: &TodoItem) -> String {
+    match item.workflow_kind {
+        Some(kind) => format!("{}: {}", kind.as_str(), item.description),
+        None => item.description.clone(),
+    }
+}
+
+fn contains_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
 }
 
 /// Heuristic fast path for task classification.
@@ -218,6 +386,94 @@ mod tests {
     }
 
     #[test]
+    fn test_plan_queue_status_counts_work_items() {
+        let mut plan = Plan::new();
+        let pending = plan.add_item("Pending task".to_string());
+        let active = plan.add_item("Active task".to_string());
+        let blocked = plan.add_item("Blocked task".to_string());
+        let done = plan.add_item("Done task".to_string());
+
+        assert!(plan.mark_in_progress(active));
+        assert!(plan.mark_blocked(blocked));
+        assert!(plan.mark_done(done));
+        assert_eq!(plan.items()[pending].status, TodoStatus::Pending);
+
+        let status = plan.queue_status();
+        assert_eq!(status.total, 4);
+        assert_eq!(status.pending, 1);
+        assert_eq!(status.in_progress, 1);
+        assert_eq!(status.blocked, 1);
+        assert_eq!(status.done, 1);
+        assert_eq!(status.unfinished(), 3);
+        assert!(!status.is_complete());
+    }
+
+    #[test]
+    fn test_plan_queue_status_reports_complete_only_when_all_done() {
+        let mut plan = Plan::new();
+        let first = plan.add_item("First task".to_string());
+        let second = plan.add_item("Second task".to_string());
+
+        assert!(!plan.queue_status().is_complete());
+        assert!(plan.mark_done(first));
+        assert!(plan.mark_done(second));
+
+        let status = plan.queue_status();
+        assert_eq!(status.done, 2);
+        assert_eq!(status.unfinished(), 0);
+        assert!(status.is_complete());
+    }
+
+    #[test]
+    fn test_plan_queue_status_tracks_coding_workflow_kinds() {
+        let mut plan = Plan::new();
+        plan.add_workflow_item(
+            "Audit harness boundary".to_string(),
+            CodingWorkflowKind::Audit,
+        );
+        plan.add_workflow_item(
+            "Patch run state receipts".to_string(),
+            CodingWorkflowKind::Patch,
+        );
+        plan.add_item("Run cargo test".to_string());
+        plan.add_item("Review git diff".to_string());
+        plan.add_item("Run release gate".to_string());
+
+        let status = plan.queue_status();
+
+        assert_eq!(status.workflow.audit, 1);
+        assert_eq!(status.workflow.patch, 1);
+        assert_eq!(status.workflow.test, 1);
+        assert_eq!(status.workflow.commit_review, 1);
+        assert_eq!(status.workflow.release_gate, 1);
+        assert_eq!(status.workflow.uncategorized, 0);
+    }
+
+    #[test]
+    fn test_coding_workflow_kind_uses_current_coding_agent_stages() {
+        assert_eq!(
+            CodingWorkflowKind::infer("inspect architecture"),
+            Some(CodingWorkflowKind::Audit)
+        );
+        assert_eq!(
+            CodingWorkflowKind::infer("edit the parser"),
+            Some(CodingWorkflowKind::Patch)
+        );
+        assert_eq!(
+            CodingWorkflowKind::infer("run cargo clippy"),
+            Some(CodingWorkflowKind::Test)
+        );
+        assert_eq!(
+            CodingWorkflowKind::infer("review the changes before commit"),
+            Some(CodingWorkflowKind::CommitReview)
+        );
+        assert_eq!(
+            CodingWorkflowKind::infer("run the release gate"),
+            Some(CodingWorkflowKind::ReleaseGate)
+        );
+    }
+
+    #[test]
     fn test_plan_update_nonexistent_id() {
         let mut plan = Plan::new();
         plan.add_item("Task".to_string());
@@ -251,13 +507,17 @@ mod tests {
         let mut plan = Plan::new();
         plan.add_item("Task 1".to_string());
         let id2 = plan.add_item("Task 2".to_string());
+        let id3 = plan.add_item("Task 3".to_string());
         plan.mark_in_progress(id2);
+        plan.mark_blocked(id3);
 
         let display = plan.format_for_display();
         assert!(display.contains("[ ]"));
         assert!(display.contains("[>]"));
+        assert!(display.contains("[!]"));
         assert!(display.contains("Task 1"));
         assert!(display.contains("Task 2"));
+        assert!(display.contains("Task 3"));
     }
 
     #[test]
@@ -278,6 +538,13 @@ mod tests {
         let status = TodoStatus::InProgress;
         let json = serde_json::to_string(&status).unwrap();
         assert_eq!(json, "\"in_progress\"");
+    }
+
+    #[test]
+    fn test_todo_status_deserializes_blocked() {
+        let json = r#""blocked""#;
+        let status: TodoStatus = serde_json::from_str(json).unwrap();
+        assert_eq!(status, TodoStatus::Blocked);
     }
 
     #[test]
@@ -306,6 +573,7 @@ mod tests {
             id: 0,
             description: "New task 1".to_string(),
             status: TodoStatus::Pending,
+            workflow_kind: None,
         }];
         plan.clear();
         plan.set_items(new_items);
