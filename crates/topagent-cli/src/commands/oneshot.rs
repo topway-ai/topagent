@@ -6,8 +6,9 @@ use std::sync::{
 };
 use std::time::Duration;
 use topagent_core::{
-    context::ExecutionContext, ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest,
-    CancellationToken, ProgressCallback, ProgressUpdate, WorkspaceRunSnapshotStore,
+    context::ExecutionContext, Agent, ApprovalMailbox, ApprovalMailboxMode, ApprovalRequest,
+    CancellationToken, ProgressCallback, ProgressUpdate, RunEvidenceSnapshot, RunEvidenceStore,
+    WorkspaceRunSnapshotStore,
 };
 use tracing::{error, info, warn};
 
@@ -38,7 +39,7 @@ pub(crate) fn run_one_shot(params: CliParams, instruction: String) -> Result<()>
         .with_approval_mailbox(approval_mailbox)
         .with_capability_manager(access_manager)
         .with_session_id("cli")
-        .with_task_id(task_id)
+        .with_task_id(task_id.clone())
         .with_workspace_run_snapshot_store(WorkspaceRunSnapshotStore::new(workspace));
     let workspace_memory = prepare_workspace_memory(ctx.workspace_root.clone());
     let prepared_run = prepare_run_context(&ctx, &workspace_memory, &instruction, None);
@@ -68,6 +69,7 @@ pub(crate) fn run_one_shot(params: CliParams, instruction: String) -> Result<()>
     let result = agent.run(&ctx, &instruction);
     agent.set_progress_callback(None);
     progress.wait();
+    let _latest_evidence = persist_latest_run_evidence(&agent, &ctx, &task_id);
 
     match result {
         Ok(result) => {
@@ -130,6 +132,18 @@ pub(crate) fn run_one_shot(params: CliParams, instruction: String) -> Result<()>
             std::process::exit(1);
         }
     }
+}
+
+pub(crate) fn persist_latest_run_evidence(
+    agent: &Agent,
+    ctx: &ExecutionContext,
+    run_id: &str,
+) -> Option<RunEvidenceSnapshot> {
+    let snapshot = agent.run_evidence_snapshot(ctx, run_id)?;
+    if let Err(err) = RunEvidenceStore::new(ctx.workspace_root.clone()).write_latest(&snapshot) {
+        warn!("failed to persist latest run evidence: {}", err);
+    }
+    Some(snapshot)
 }
 
 fn unix_now() -> u64 {

@@ -17,6 +17,10 @@ pub struct EvalRunRecord {
     #[serde(default)]
     pub workflow_status: Option<String>,
     #[serde(default)]
+    pub run_evidence_status: Option<String>,
+    #[serde(default)]
+    pub resume_next_action: Option<String>,
+    #[serde(default)]
     pub unresolved_risks: Vec<String>,
 }
 
@@ -33,6 +37,8 @@ impl EvalRunRecord {
             verification_command: None,
             files_changed: Vec::new(),
             workflow_status: None,
+            run_evidence_status: None,
+            resume_next_action: None,
             unresolved_risks: Vec::new(),
         }
     }
@@ -80,6 +86,16 @@ impl EvalRunRecord {
 
     pub fn with_workflow_status(mut self, workflow_status: impl Into<String>) -> Self {
         self.workflow_status = Some(workflow_status.into());
+        self
+    }
+
+    pub fn with_run_evidence_status(mut self, status: impl Into<String>) -> Self {
+        self.run_evidence_status = Some(status.into());
+        self
+    }
+
+    pub fn with_resume_next_action(mut self, action: impl Into<String>) -> Self {
+        self.resume_next_action = Some(action.into());
         self
     }
 
@@ -132,6 +148,8 @@ mod tests {
             .with_verification_command("cargo test")
             .with_files_changed(vec!["src/lib.rs".to_string()])
             .with_workflow_status("satisfied")
+            .with_run_evidence_status("satisfied")
+            .with_resume_next_action("review final output")
             .with_unresolved_risks(vec!["blocked external action".to_string()]);
 
         let json = serde_json::to_value(&record).unwrap();
@@ -144,6 +162,8 @@ mod tests {
         assert_eq!(json["verification_command"], "cargo test");
         assert_eq!(json["files_changed"][0], "src/lib.rs");
         assert_eq!(json["workflow_status"], "satisfied");
+        assert_eq!(json["run_evidence_status"], "satisfied");
+        assert_eq!(json["resume_next_action"], "review final output");
         assert_eq!(json["unresolved_risks"][0], "blocked external action");
     }
 
@@ -162,5 +182,32 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert!(lines[0].contains("\"task_id\":\"task-1\""));
         assert!(lines[1].contains("\"failure\":\"failed\""));
+    }
+
+    #[test]
+    fn test_eval_records_workflow_reliability_cases_without_prompt_memory() {
+        let cases = vec![
+            EvalRunRecord::new("incomplete-plan")
+                .with_workflow_status("incomplete")
+                .with_run_evidence_status("incomplete")
+                .with_resume_next_action("finish or block remaining queue"),
+            EvalRunRecord::new("release-gate-verified")
+                .with_success(true)
+                .with_verification_command("scripts/ci-gate.sh")
+                .with_workflow_status("satisfied")
+                .with_run_evidence_status("satisfied"),
+            EvalRunRecord::new("resume-blocked-approval")
+                .with_workflow_status("blocked")
+                .with_run_evidence_status("blocked")
+                .with_unresolved_risks(vec!["approval required: external_send".to_string()]),
+        ];
+
+        let json = serde_json::to_string(&cases).unwrap();
+
+        assert!(json.contains("release-gate-verified"));
+        assert!(json.contains("scripts/ci-gate.sh"));
+        assert!(json.contains("resume-blocked-approval"));
+        assert!(!json.contains("raw_receipts"));
+        assert!(!json.contains("transcript"));
     }
 }

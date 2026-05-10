@@ -100,13 +100,13 @@ fn route_callback_query_with_outbound<T: TelegramOutbound + ?Sized>(
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RouteMessageOutcome<'a> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RouteMessageOutcome {
     Handled,
     StartTask {
         chat_id: i64,
         message_id: i64,
-        text: &'a str,
+        text: String,
     },
 }
 
@@ -129,16 +129,16 @@ pub(super) fn route_message(
 
     info!("received from chat {}: {}", chat_id, text);
 
-    let response = session_manager.start_message(ctx, adapter, chat_id, text);
+    let response = session_manager.start_message(ctx, adapter, chat_id, &text);
     deliver_task_start_response(adapter, secrets, chat_id, message_id, response);
 }
 
-fn route_message_until_task_start<'a, T: TelegramOutbound + ?Sized>(
+fn route_message_until_task_start<T: TelegramOutbound + ?Sized>(
     outbound: &T,
     session_manager: &mut ChatSessionManager,
-    msg: &'a TelegramMessage,
+    msg: &TelegramMessage,
     workspace_label: &str,
-) -> RouteMessageOutcome<'a> {
+) -> RouteMessageOutcome {
     let chat_id = msg.chat.id;
     let message_id = msg.message_id;
 
@@ -202,6 +202,21 @@ fn route_message_until_task_start<'a, T: TelegramOutbound + ?Sized>(
                 "received command from chat {}: {:?} {}",
                 chat_id, kind, argument
             );
+            if kind == TelegramCommandKind::Resume {
+                match session_manager.resume_prompt_from_latest_run_evidence() {
+                    Ok(resume_prompt) => {
+                        return RouteMessageOutcome::StartTask {
+                            chat_id,
+                            message_id,
+                            text: resume_prompt,
+                        };
+                    }
+                    Err(reply) => {
+                        send_telegram(outbound, chat_id, vec![reply], None);
+                        return RouteMessageOutcome::Handled;
+                    }
+                }
+            }
             let reply = handle_parsed_command(
                 ParsedTelegramCommand { kind, argument },
                 session_manager,
@@ -226,7 +241,7 @@ fn route_message_until_task_start<'a, T: TelegramOutbound + ?Sized>(
     RouteMessageOutcome::StartTask {
         chat_id,
         message_id,
-        text,
+        text: text.to_string(),
     }
 }
 
@@ -276,7 +291,8 @@ mod tests {
     };
     use topagent_core::{
         ApprovalCheck, ApprovalMailbox, ApprovalMailboxMode, ApprovalRequestDraft,
-        ApprovalTriggerKind, CancellationToken, ModelRoute, RuntimeOptions,
+        ApprovalTriggerKind, CancellationToken, ModelRoute, RunCheckpoint, RunEvidenceSnapshot,
+        RunEvidenceStore, RuntimeOptions, TaskResult,
     };
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -430,6 +446,25 @@ mod tests {
         );
         assert!(matches!(check, ApprovalCheck::Pending(_)));
         mailbox
+    }
+
+    fn write_resumable_evidence(workspace: &std::path::Path) {
+        let result = TaskResult::new("partial".to_string());
+        let snapshot = RunEvidenceSnapshot::from_task_result(
+            workspace,
+            "telegram-resume",
+            RunCheckpoint {
+                objective: Some("continue incomplete work".to_string()),
+                phase: Some("Verify".to_string()),
+                next_required_evidence_action: Some("inspect and verify".to_string()),
+                ..RunCheckpoint::default()
+            },
+            None,
+            &result,
+        );
+        RunEvidenceStore::new(workspace)
+            .write_latest(&snapshot)
+            .unwrap();
     }
 
     #[test]
@@ -643,11 +678,33 @@ mod tests {
             RouteMessageOutcome::StartTask {
                 chat_id: 42,
                 message_id: 17,
-                text: "inspect this workspace",
+                text: "inspect this workspace".to_string(),
             }
         );
         assert!(outbound.sent.borrow().is_empty());
         assert!(outbound.acks.borrow().is_empty());
+    }
+
+    #[test]
+    fn test_route_resume_command_starts_task_from_typed_evidence() {
+        let workspace = TempDir::new().unwrap();
+        write_resumable_evidence(workspace.path());
+        let mut manager = test_manager(workspace.path().to_path_buf(), None, None);
+        let outbound = FakeTelegramOutbound::default();
+        let message = telegram_message(42, "private", Some("/resume"), Some(42), Some("operator"));
+
+        let outcome =
+            route_message_until_task_start(&outbound, &mut manager, &message, "/workspace");
+
+        match outcome {
+            RouteMessageOutcome::StartTask { text, .. } => {
+                assert!(text.contains("typed evidence only"));
+                assert!(text.contains("continue incomplete work"));
+                assert!(!text.contains("telegram-history"));
+            }
+            other => panic!("expected resume to start a task, got {other:?}"),
+        }
+        assert!(outbound.sent.borrow().is_empty());
     }
 
     #[test]

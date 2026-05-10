@@ -1,15 +1,126 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, bail, Result};
+use serde::Serialize;
 use std::path::{Path, PathBuf};
-use topagent_core::{WorkspaceRunSnapshotRestoreReport, WorkspaceRunSnapshotStore};
+use topagent_core::{
+    RunEvidenceFreshness, RunEvidenceSnapshot, RunEvidenceStore, WorkspaceRunSnapshotRestoreReport,
+    WorkspaceRunSnapshotStore, MAX_RESUME_PROMPT_CHARS,
+};
 
 use crate::commands::surface::PRODUCT_NAME;
+use crate::config::defaults::CliParams;
 use crate::config::workspace::resolve_workspace_path;
 use crate::memory::TELEGRAM_HISTORY_RELATIVE_DIR;
 use crate::telegram::clear_workspace_telegram_history;
 
-pub(crate) fn run_session_status(workspace_override: Option<PathBuf>) -> Result<()> {
+pub(crate) fn run_session_status(workspace_override: Option<PathBuf>, json: bool) -> Result<()> {
     let workspace = resolve_workspace_path(workspace_override)?;
-    print!("{}", render_session_status(&workspace));
+    if json {
+        let snapshot = RunEvidenceStore::new(workspace).load_latest()?;
+        print_json(&snapshot)?;
+    } else {
+        print!("{}", render_session_status(&workspace));
+    }
+    Ok(())
+}
+
+pub(crate) fn run_evidence_proof(workspace_override: Option<PathBuf>, json: bool) -> Result<()> {
+    let snapshot = require_latest_run_evidence(workspace_override)?;
+    print_evidence_view(&snapshot, json, |snapshot| snapshot.render_proof())
+}
+
+pub(crate) fn run_evidence_checkpoint(
+    workspace_override: Option<PathBuf>,
+    json: bool,
+) -> Result<()> {
+    let snapshot = require_latest_run_evidence(workspace_override)?;
+    if json {
+        print_json(&snapshot.checkpoint)?;
+    } else {
+        println!("{}", snapshot.render_checkpoint());
+    }
+    Ok(())
+}
+
+pub(crate) fn run_evidence_receipts(workspace_override: Option<PathBuf>, json: bool) -> Result<()> {
+    let snapshot = require_latest_run_evidence(workspace_override)?;
+    if json {
+        print_json(&snapshot.receipts)?;
+    } else {
+        println!("{}", snapshot.render_receipts());
+    }
+    Ok(())
+}
+
+pub(crate) fn run_evidence_verification(
+    workspace_override: Option<PathBuf>,
+    json: bool,
+) -> Result<()> {
+    let snapshot = require_latest_run_evidence(workspace_override)?;
+    if json {
+        print_json(&snapshot.workflow)?;
+    } else {
+        println!("{}", snapshot.render_verification());
+    }
+    Ok(())
+}
+
+pub(crate) fn run_evidence_inspect(workspace_override: Option<PathBuf>, json: bool) -> Result<()> {
+    let snapshot = require_latest_run_evidence(workspace_override)?;
+    print_evidence_view(&snapshot, json, |snapshot| snapshot.render_inspect())
+}
+
+pub(crate) fn run_evidence_resume(mut params: CliParams, confirm: bool) -> Result<()> {
+    let workspace = resolve_workspace_path(params.workspace.clone())?;
+    let snapshot = RunEvidenceStore::new(workspace.clone()).require_latest()?;
+    let freshness = snapshot.assess_freshness();
+
+    if !snapshot.resume_hint.resumable {
+        println!("{}", snapshot.render_status());
+        bail!(
+            "latest run evidence is {}; there is no unfinished run to resume",
+            snapshot.status.label()
+        );
+    }
+
+    let confirmation_required =
+        snapshot.resume_hint.requires_operator_confirmation || freshness.stale_risk;
+    if confirmation_required && !confirm {
+        println!("{}", render_resume_refusal(&snapshot, &freshness));
+        bail!("resume requires --confirm because the latest evidence has approval, mutation, external-send, or stale-workspace risk");
+    }
+
+    let resume_prompt = snapshot.build_resume_prompt(&freshness);
+    if resume_prompt.chars().count() > MAX_RESUME_PROMPT_CHARS {
+        bail!(
+            "resume prompt exceeded {} chars; inspect latest run evidence before resuming",
+            MAX_RESUME_PROMPT_CHARS
+        );
+    }
+
+    params.workspace = Some(workspace);
+    crate::commands::oneshot::run_one_shot(params, resume_prompt)
+}
+
+fn require_latest_run_evidence(workspace_override: Option<PathBuf>) -> Result<RunEvidenceSnapshot> {
+    let workspace = resolve_workspace_path(workspace_override)?;
+    Ok(RunEvidenceStore::new(workspace).require_latest()?)
+}
+
+fn print_evidence_view(
+    snapshot: &RunEvidenceSnapshot,
+    json: bool,
+    render: impl FnOnce(&RunEvidenceSnapshot) -> String,
+) -> Result<()> {
+    if json {
+        print_json(snapshot)?;
+    } else {
+        println!("{}", render(snapshot));
+    }
+    Ok(())
+}
+
+fn print_json(value: &impl Serialize) -> Result<()> {
+    println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
 }
 
@@ -64,6 +175,46 @@ pub(crate) fn run_snapshot_restore(workspace_override: Option<PathBuf>) -> Resul
 pub(crate) fn render_session_status(workspace: &Path) -> String {
     let mut out = format!("{PRODUCT_NAME} run status\n\n");
     out.push_str(&format!("Workspace: {}\n", workspace.display()));
+
+    let evidence_store = RunEvidenceStore::new(workspace.to_path_buf());
+    match evidence_store.load_latest() {
+        Ok(Some(snapshot)) => {
+            let freshness = snapshot.assess_freshness();
+            out.push_str("\nRun evidence:          present\n");
+            out.push_str(&format!("  Run:                {}\n", snapshot.run_id));
+            out.push_str(&format!(
+                "  Status:             {}\n",
+                snapshot.status.label()
+            ));
+            if let Some(phase) = &snapshot.phase {
+                out.push_str(&format!("  Phase:              {}\n", phase));
+            }
+            if let Some(queue) = &snapshot.queue_status {
+                out.push_str(&format!("  Queue:              {}\n", queue));
+            }
+            out.push_str(&format!(
+                "  Freshness:          {}\n",
+                freshness.short_label()
+            ));
+            out.push_str(&format!(
+                "  Resumable:          {}\n",
+                if snapshot.resume_hint.resumable {
+                    "yes"
+                } else {
+                    "no"
+                }
+            ));
+            if let Some(next) = &snapshot.resume_hint.next_safe_action {
+                out.push_str(&format!("  Next safe action:   {}\n", next));
+            }
+        }
+        Ok(None) => {
+            out.push_str("\nRun evidence:          none\n");
+        }
+        Err(err) => {
+            out.push_str(&format!("\nRun evidence:          error — {}\n", err));
+        }
+    }
 
     let service_state = crate::service::query_service_active_state();
     out.push_str(&format!("\nService state:        {}\n", service_state));
@@ -129,10 +280,26 @@ pub(crate) fn render_session_status(workspace: &Path) -> String {
     }
 
     out.push_str(
-        "\nNote: In-flight session state is not persisted. For run logs:\n  \
+        "\nNote: In-flight chat/task handles are not persisted. Latest run evidence is compact typed state, not raw transcript or full tool output. For service logs:\n  \
          journalctl --user -u topagent-telegram.service -n 50\n",
     );
 
+    out
+}
+
+fn render_resume_refusal(
+    snapshot: &RunEvidenceSnapshot,
+    freshness: &RunEvidenceFreshness,
+) -> String {
+    let mut out = String::from("Resume needs operator confirmation.\n\n");
+    out.push_str(&snapshot.render_status());
+    out.push_str("\n\nFreshness:\n");
+    out.push_str(&freshness.render());
+    if let Some(reason) = &snapshot.resume_hint.reason {
+        out.push_str("\n\nRisk:\n- ");
+        out.push_str(reason);
+    }
+    out.push_str("\n\nRun `topagent run inspect` first, then `topagent run resume --confirm` if the continuity risk is acceptable.");
     out
 }
 
@@ -160,6 +327,34 @@ fn restore_run_snapshot_and_clear_transcripts(
 mod tests {
     use super::*;
     use topagent_core::run_snapshot::{RunSnapshotCaptureMetadata, RunSnapshotCaptureSource};
+    use topagent_core::{
+        RunCheckpoint, TaskResult, ToolActionOutcome, ToolActionReceipt, VerificationCommand,
+    };
+
+    fn sample_evidence_snapshot(
+        workspace: &Path,
+        run_id: &str,
+        result: &TaskResult,
+    ) -> RunEvidenceSnapshot {
+        RunEvidenceSnapshot::from_task_result(
+            workspace,
+            run_id,
+            RunCheckpoint {
+                objective: Some("resume evidence test".to_string()),
+                phase: Some("Verify".to_string()),
+                queue_status: Some("1/2 done, 1 pending, 0 active, 0 blocked".to_string()),
+                changed_files: result.files_changed().to_vec(),
+                files_inspected: vec!["src/lib.rs".to_string()],
+                unresolved_workflow_evidence_gaps: vec![
+                    "missing final relevant passing verification".to_string(),
+                ],
+                next_required_evidence_action: Some("rerun cargo test".to_string()),
+                ..RunCheckpoint::default()
+            },
+            None,
+            result,
+        )
+    }
 
     #[test]
     fn test_restore_run_snapshot_clears_workspace_telegram_history() {
@@ -281,5 +476,51 @@ mod tests {
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("No active workspace run snapshot found"));
+    }
+
+    #[test]
+    fn test_run_status_includes_latest_evidence_without_raw_transcript() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let result = TaskResult::new("fixed".to_string())
+            .with_files_changed(vec!["src/lib.rs".to_string()])
+            .with_verification_command(VerificationCommand {
+                command: "cargo test".to_string(),
+                output: "RAW SUCCESS LOG SHOULD NOT BE IN STATUS".to_string(),
+                exit_code: 0,
+                succeeded: true,
+            });
+        let snapshot = sample_evidence_snapshot(temp.path(), "run-status-test", &result);
+        RunEvidenceStore::new(temp.path())
+            .write_latest(&snapshot)
+            .unwrap();
+
+        let rendered = render_session_status(temp.path());
+
+        assert!(rendered.contains("Run evidence:          present"));
+        assert!(rendered.contains("run-status-test"));
+        assert!(rendered.contains("Next safe action"));
+        assert!(!rendered.contains("RAW SUCCESS LOG"));
+        assert!(!rendered.contains("telegram-history"));
+    }
+
+    #[test]
+    fn test_resume_refusal_shows_confirmation_reason_for_blocked_action() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let result =
+            TaskResult::new("blocked".to_string()).with_tool_receipt(ToolActionReceipt::new(
+                "external_send",
+                "patch",
+                false,
+                ToolActionOutcome::Blocked,
+                "approval required: external_send upload",
+            ));
+        let snapshot = sample_evidence_snapshot(temp.path(), "run-blocked", &result);
+        let freshness = snapshot.assess_freshness();
+
+        let rendered = render_resume_refusal(&snapshot, &freshness);
+
+        assert!(rendered.contains("Resume needs operator confirmation"));
+        assert!(rendered.contains("external_send"));
+        assert!(rendered.contains("topagent run resume --confirm"));
     }
 }

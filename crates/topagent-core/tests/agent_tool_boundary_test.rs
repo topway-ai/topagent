@@ -212,6 +212,40 @@ fn prompt_context_does_not_inject_receipts_or_transcripts_wholesale() {
 }
 
 #[test]
+fn resume_prompts_are_built_from_typed_evidence_not_transcript_replay() {
+    let run_evidence = read_source(&manifest_root().join("src/run_evidence.rs"));
+
+    assert!(
+        run_evidence.contains("build_resume_prompt"),
+        "resume prompt construction should have one typed owner"
+    );
+    for forbidden in ["conversation_messages", "raw_messages", "ChatHistoryStore"] {
+        assert!(
+            !run_evidence.contains(forbidden),
+            "resume prompts must not replay raw transcript source `{forbidden}`"
+        );
+    }
+    assert!(
+        run_evidence.contains("RunCheckpoint") && run_evidence.contains("ReceiptIndex"),
+        "resume evidence should be built from checkpoint and receipt index anchors"
+    );
+}
+
+#[test]
+fn run_evidence_snapshot_does_not_store_raw_tool_output_by_default() {
+    let run_evidence = read_source(&manifest_root().join("src/run_evidence.rs"));
+
+    assert!(
+        !run_evidence.contains("pub output:") && !run_evidence.contains("output: command.output"),
+        "RunEvidenceSnapshot must not expose VerificationCommand.output or raw tool output fields"
+    );
+    assert!(
+        run_evidence.contains("RunEvidenceReceiptSummary"),
+        "snapshots should store compact receipt summaries instead of raw receipt history"
+    );
+}
+
+#[test]
 fn release_binary_path_keeps_ci_gate_before_packaging_build() {
     let script = read_source(&workspace_root().join("scripts/ci-gate.sh"));
     let fmt = script.find("cargo fmt --all --check").expect("fmt gate");

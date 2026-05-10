@@ -20,6 +20,18 @@ pub(super) fn handle_parsed_command(
         TelegramCommandKind::Approve => handle_approve(session_manager, chat_id, command.argument),
         TelegramCommandKind::Deny => handle_deny(session_manager, chat_id, command.argument),
         TelegramCommandKind::Access => handle_access(session_manager, command.argument),
+        TelegramCommandKind::Status => session_manager.run_evidence_status_reply(),
+        TelegramCommandKind::Proof => session_manager.run_evidence_proof_reply(),
+        TelegramCommandKind::Checkpoint => session_manager.run_evidence_checkpoint_reply(),
+        TelegramCommandKind::Receipts => session_manager.run_evidence_receipts_reply(),
+        TelegramCommandKind::Verification => session_manager.run_evidence_verification_reply(),
+        TelegramCommandKind::Resume => {
+            match session_manager.resume_prompt_from_latest_run_evidence() {
+                Ok(_) => "Resume evidence is available. Send /resume to continue from typed state."
+                    .to_string(),
+                Err(message) => message,
+            }
+        }
         TelegramCommandKind::Reset => handle_reset(session_manager, chat_id),
     }
 }

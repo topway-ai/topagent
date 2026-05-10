@@ -11,6 +11,7 @@ use crate::session::Session;
 use crate::skills::SkillRegistry;
 use crate::task_result::TaskResult;
 use crate::tools::{ManageOperatorPreferenceTool, SaveNoteTool, Tool, UpdatePlanTool};
+use crate::RunEvidenceSnapshot;
 use crate::{Error, Message, Provider, Result, ToolSpec};
 use std::sync::{Arc, Mutex};
 
@@ -148,6 +149,36 @@ impl Agent {
 
     pub fn last_task_result(&self) -> Option<&TaskResult> {
         self.last_task_result.as_ref()
+    }
+
+    pub fn run_evidence_snapshot(
+        &self,
+        ctx: &ExecutionContext,
+        run_id: impl Into<String>,
+    ) -> Option<RunEvidenceSnapshot> {
+        let task_result = self.last_task_result.as_ref()?;
+        let queue = self
+            .plan
+            .lock()
+            .ok()
+            .map(|plan| plan.queue_status())
+            .filter(|queue| queue.total > 0);
+        let phase = self.current_agent_phase();
+        let checkpoint = self.run_state.build_checkpoint(
+            &self.behavior,
+            ctx,
+            queue,
+            self.task_mode(),
+            phase,
+            self.planning.is_active() && !self.plan_exists(),
+        );
+        Some(RunEvidenceSnapshot::from_task_result(
+            &ctx.workspace_root,
+            run_id,
+            checkpoint,
+            queue,
+            task_result,
+        ))
     }
 
     /// Terminal outcome of the most recent run, or `Unknown` if no run has

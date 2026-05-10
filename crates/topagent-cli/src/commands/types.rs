@@ -7,8 +7,9 @@ use crate::commands::surface::{
     HELP_MEMORY_TRAJECTORY_EXPORT, HELP_MEMORY_TRAJECTORY_LIST, HELP_MEMORY_TRAJECTORY_REVIEW,
     HELP_MEMORY_TRAJECTORY_SHOW, HELP_MODEL_LIST, HELP_MODEL_PICK, HELP_MODEL_REFRESH,
     HELP_MODEL_SET, HELP_MODEL_STATUS, HELP_PROCEDURE_DISABLE, HELP_PROCEDURE_LIST,
-    HELP_PROCEDURE_PRUNE, HELP_PROCEDURE_SHOW, HELP_RUN_DIFF, HELP_RUN_RESTORE, HELP_RUN_STATUS,
-    HELP_STATUS,
+    HELP_PROCEDURE_PRUNE, HELP_PROCEDURE_SHOW, HELP_RUN_CHECKPOINT, HELP_RUN_DIFF,
+    HELP_RUN_INSPECT, HELP_RUN_PROOF, HELP_RUN_RECEIPTS, HELP_RUN_RESTORE, HELP_RUN_RESUME,
+    HELP_RUN_STATUS, HELP_RUN_VERIFICATION, HELP_STATUS,
 };
 
 #[derive(Parser)]
@@ -124,7 +125,40 @@ pub(crate) enum Commands {
 #[derive(Subcommand)]
 pub(crate) enum RunCommands {
     #[command(about = HELP_RUN_STATUS)]
-    Status,
+    Status {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = HELP_RUN_PROOF)]
+    Proof {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = HELP_RUN_CHECKPOINT)]
+    Checkpoint {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = HELP_RUN_RECEIPTS)]
+    Receipts {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = HELP_RUN_VERIFICATION)]
+    Verification {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = HELP_RUN_INSPECT)]
+    Inspect {
+        #[arg(long)]
+        json: bool,
+    },
+    #[command(about = HELP_RUN_RESUME)]
+    Resume {
+        #[arg(long)]
+        confirm: bool,
+    },
     #[command(about = HELP_RUN_DIFF)]
     Diff,
     #[command(about = HELP_RUN_RESTORE)]
@@ -303,7 +337,17 @@ mod tests {
         );
         assert_eq!(
             subcommand_names(&find_subcommand(&command, "run")),
-            vec!["status", "diff", "restore"]
+            vec![
+                "status",
+                "proof",
+                "checkpoint",
+                "receipts",
+                "verification",
+                "inspect",
+                "resume",
+                "diff",
+                "restore"
+            ]
         );
         assert_eq!(
             subcommand_names(&find_subcommand(&command, "access")),

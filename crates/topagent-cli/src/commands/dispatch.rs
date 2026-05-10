@@ -12,7 +12,11 @@ use crate::telegram::run_telegram;
 
 use super::config::run_config_inspect;
 use super::oneshot::run_one_shot;
-use super::run::{run_session_status, run_snapshot_diff, run_snapshot_restore};
+use super::run::{
+    run_evidence_checkpoint, run_evidence_inspect, run_evidence_proof, run_evidence_receipts,
+    run_evidence_resume, run_evidence_verification, run_session_status, run_snapshot_diff,
+    run_snapshot_restore,
+};
 use super::types::{Commands, ConfigCommands, RunCommands};
 
 pub(crate) fn dispatch(
@@ -31,7 +35,13 @@ pub(crate) fn dispatch(
         Some(Commands::Memory { command }) => run_memory_command(command, params.workspace),
         Some(Commands::Procedure { command }) => run_procedure_command(command, params.workspace),
         Some(Commands::Run { command }) => match command {
-            RunCommands::Status => run_session_status(params.workspace),
+            RunCommands::Status { json } => run_session_status(params.workspace, json),
+            RunCommands::Proof { json } => run_evidence_proof(params.workspace, json),
+            RunCommands::Checkpoint { json } => run_evidence_checkpoint(params.workspace, json),
+            RunCommands::Receipts { json } => run_evidence_receipts(params.workspace, json),
+            RunCommands::Verification { json } => run_evidence_verification(params.workspace, json),
+            RunCommands::Inspect { json } => run_evidence_inspect(params.workspace, json),
+            RunCommands::Resume { confirm } => run_evidence_resume(params, confirm),
             RunCommands::Diff => run_snapshot_diff(params.workspace),
             RunCommands::Restore => run_snapshot_restore(params.workspace),
         },

@@ -6,7 +6,7 @@ use std::time::Duration;
 use topagent_core::{
     context::ExecutionContext, model::ModelRoute, Agent, ApprovalEntry, ApprovalMailbox,
     ApprovalMailboxMode, CancellationToken, Message, ProgressCallback, ProgressUpdate,
-    RuntimeOptions, TelegramAdapter, WorkspaceRunSnapshotStore,
+    RunEvidenceStore, RuntimeOptions, TelegramAdapter, WorkspaceRunSnapshotStore,
 };
 use topagent_core::{
     AccessMode, CapabilityGrant, CapabilityManager, CapabilityProfile, GrantScope,
@@ -391,6 +391,68 @@ impl ChatSessionManager {
         }
     }
 
+    pub(crate) fn run_evidence_status_reply(&self) -> String {
+        self.render_run_evidence(|snapshot| snapshot.render_status())
+    }
+
+    pub(crate) fn run_evidence_proof_reply(&self) -> String {
+        self.render_run_evidence(|snapshot| snapshot.render_proof())
+    }
+
+    pub(crate) fn run_evidence_checkpoint_reply(&self) -> String {
+        self.render_run_evidence(|snapshot| snapshot.render_checkpoint())
+    }
+
+    pub(crate) fn run_evidence_receipts_reply(&self) -> String {
+        self.render_run_evidence(|snapshot| snapshot.render_receipts())
+    }
+
+    pub(crate) fn run_evidence_verification_reply(&self) -> String {
+        self.render_run_evidence(|snapshot| snapshot.render_verification())
+    }
+
+    pub(crate) fn resume_prompt_from_latest_run_evidence(
+        &self,
+    ) -> std::result::Result<String, String> {
+        let store = RunEvidenceStore::new(self.memory.workspace_root().to_path_buf());
+        let snapshot = store.require_latest().map_err(|err| err.to_string())?;
+        let freshness = snapshot.assess_freshness();
+        if !snapshot.resume_hint.resumable {
+            return Err(format!(
+                "{}\n\nLatest run is {}; there is no unfinished run to resume.",
+                snapshot.render_status(),
+                snapshot.status.label()
+            ));
+        }
+        if snapshot.resume_hint.requires_operator_confirmation || freshness.stale_risk {
+            let mut message = String::from("Resume needs operator confirmation.\n\n");
+            message.push_str(&snapshot.render_status());
+            message.push_str("\n\nFreshness:\n");
+            message.push_str(&freshness.render());
+            if let Some(reason) = &snapshot.resume_hint.reason {
+                message.push_str("\n\nRisk:\n- ");
+                message.push_str(reason);
+            }
+            message.push_str(
+                "\n\nUse /proof and /verification to inspect the run, then send a new explicit instruction if you want to continue.",
+            );
+            return Err(message);
+        }
+        Ok(snapshot.build_resume_prompt(&freshness))
+    }
+
+    fn render_run_evidence(
+        &self,
+        render: impl FnOnce(&topagent_core::RunEvidenceSnapshot) -> String,
+    ) -> String {
+        let store = RunEvidenceStore::new(self.memory.workspace_root().to_path_buf());
+        match store.load_latest() {
+            Ok(Some(snapshot)) => render(&snapshot),
+            Ok(None) => "No run evidence found yet. Run a task first.".to_string(),
+            Err(err) => format!("Could not read latest run evidence: {err}"),
+        }
+    }
+
     fn create_telegram_grant(&self, target: &str, mode: &str, scope: GrantScope) -> String {
         let mode = match mode.parse::<AccessMode>() {
             Ok(mode) => mode,
@@ -566,6 +628,11 @@ impl ChatSessionManager {
             }
 
             let result = agent.run(&run_ctx, &instruction);
+            let _latest_evidence = crate::commands::oneshot::persist_latest_run_evidence(
+                &agent,
+                &run_ctx,
+                &worker_task_id,
+            );
             agent.set_progress_callback(None);
             if let Ok(_response) = &result {
                 if let Some(task_result) = agent.last_task_result().cloned() {
@@ -744,7 +811,8 @@ mod tests {
     use topagent_core::channel::telegram::{ChannelError, TelegramInlineKeyboardMarkup};
     use topagent_core::{
         ApprovalCheck, ApprovalRequestDraft, ApprovalTriggerKind, BehaviorContract,
-        CancellationToken, Message, ModelRoute, ProgressKind, ProgressUpdate,
+        CancellationToken, Message, ModelRoute, ProgressKind, ProgressUpdate, RunCheckpoint,
+        RunEvidenceSnapshot, RunEvidenceStore, TaskResult, ToolActionOutcome, ToolActionReceipt,
     };
 
     fn test_manager(workspace_root: PathBuf) -> ChatSessionManager {
@@ -781,6 +849,69 @@ mod tests {
         );
         assert!(matches!(check, ApprovalCheck::Pending(_)));
         mailbox
+    }
+
+    fn write_latest_evidence(workspace: &std::path::Path, result: &TaskResult) {
+        let snapshot = RunEvidenceSnapshot::from_task_result(
+            workspace,
+            "telegram-run",
+            RunCheckpoint {
+                objective: Some("inspect proof".to_string()),
+                phase: Some("Verify".to_string()),
+                changed_files: result.files_changed().to_vec(),
+                next_required_evidence_action: Some("continue safely".to_string()),
+                ..RunCheckpoint::default()
+            },
+            None,
+            result,
+        );
+        RunEvidenceStore::new(workspace)
+            .write_latest(&snapshot)
+            .unwrap();
+    }
+
+    #[test]
+    fn test_telegram_run_evidence_commands_render_compact_proof() {
+        let workspace = TempDir::new().unwrap();
+        let result = TaskResult::new("done".to_string()).with_tool_receipt(ToolActionReceipt::new(
+            "read",
+            "investigate",
+            true,
+            ToolActionOutcome::Succeeded,
+            "read: README.md",
+        ));
+        write_latest_evidence(workspace.path(), &result);
+        let manager = test_manager(workspace.path().to_path_buf());
+
+        let proof = manager.run_evidence_proof_reply();
+        let checkpoint = manager.run_evidence_checkpoint_reply();
+
+        assert!(proof.contains("Proof of work"));
+        assert!(proof.contains("README.md"));
+        assert!(checkpoint.contains("objective"));
+        assert!(!proof.contains("raw transcript"));
+    }
+
+    #[test]
+    fn test_telegram_resume_refuses_blocked_approval_without_auto_execution() {
+        let workspace = TempDir::new().unwrap();
+        let result =
+            TaskResult::new("blocked".to_string()).with_tool_receipt(ToolActionReceipt::new(
+                "external_send",
+                "patch",
+                false,
+                ToolActionOutcome::Blocked,
+                "approval required: external_send upload",
+            ));
+        write_latest_evidence(workspace.path(), &result);
+        let manager = test_manager(workspace.path().to_path_buf());
+
+        let err = manager
+            .resume_prompt_from_latest_run_evidence()
+            .expect_err("blocked approval resume should require explicit operator action");
+
+        assert!(err.contains("Resume needs operator confirmation"));
+        assert!(err.contains("external_send"));
     }
 
     #[test]

@@ -163,6 +163,8 @@ Do not mark a workflow satisfied only because the plan queue is empty. Workflow 
 
 Receipts are proof-of-work artifacts. They must stay bounded, redacted where needed, and must not become prompt-memory by default.
 
+Run evidence snapshots are operator inspection and resume artifacts. They must be typed, compact, redacted, bounded in history, and explicit about blocked/failed/unverified work.
+
 ### 8. Context density
 
 Always-on prompt context must stay dense, bounded, and decision-relevant.
@@ -174,6 +176,8 @@ Changes that add provider tools, provider tool schema, memory briefing content, 
 Provider tool/schema budget increases require a short rationale in the change and must explain why the new surface is necessary now.
 
 `RunCheckpoint` must remain compact, derived from typed state rather than model prose, and safe to inject into prompt context.
+
+Resume prompts must be built from typed checkpoint/evidence summaries, not raw transcript replay. Resume must not auto-approve risky actions or treat old blocked approvals as current authorization.
 
 ### 9. Approval clarity
 

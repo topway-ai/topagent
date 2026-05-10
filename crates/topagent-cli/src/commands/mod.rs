@@ -2,7 +2,7 @@ mod artifact_util;
 mod config;
 mod dispatch;
 mod memory_cli;
-mod oneshot;
+pub(crate) mod oneshot;
 mod procedure_cli;
 mod run;
 pub(crate) mod surface;

@@ -25,6 +25,7 @@ pub mod provenance;
 pub mod provider;
 pub mod receipt_index;
 pub mod run_checkpoint;
+pub mod run_evidence;
 pub mod run_snapshot;
 mod run_state;
 pub mod runtime;
@@ -93,6 +94,14 @@ pub use provenance::{
 pub use provider::{Provider, ProviderResponse, ScriptedProvider, ToolCallEntry};
 pub use receipt_index::{ReceiptIndex, ReceiptProofSummary};
 pub use run_checkpoint::RunCheckpoint;
+pub use run_evidence::{
+    RunEvidenceCommand, RunEvidenceFileSet, RunEvidenceFreshness, RunEvidenceFreshnessStatus,
+    RunEvidenceIssue, RunEvidenceReceiptGroup, RunEvidenceReceiptSummary, RunEvidenceResumeHint,
+    RunEvidenceSnapshot, RunEvidenceStatus, RunEvidenceStore, RunEvidenceSummary,
+    RunEvidenceWorkflowSummary, RunEvidenceWorkspaceState, MAX_RECENT_RUN_EVIDENCE_SNAPSHOTS,
+    MAX_RESUME_PROMPT_CHARS, RUN_EVIDENCE_HISTORY_RELATIVE_DIR, RUN_EVIDENCE_LATEST_RELATIVE_PATH,
+    RUN_EVIDENCE_RELATIVE_DIR, RUN_EVIDENCE_SCHEMA_VERSION,
+};
 pub use run_snapshot::{
     WorkspaceRunSnapshotRestoreReport, WorkspaceRunSnapshotStatus, WorkspaceRunSnapshotStore,
 };

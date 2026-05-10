@@ -99,6 +99,10 @@ impl Agent {
                     "incomplete"
                 };
                 record = record.with_workflow_status(status);
+                record = record.with_run_evidence_status(status);
+            }
+            if let Some(first_risk) = task_result.unresolved_issues().first() {
+                record = record.with_resume_next_action(first_risk.clone());
             }
             record = record.with_unresolved_risks(task_result.unresolved_issues().to_vec());
         }

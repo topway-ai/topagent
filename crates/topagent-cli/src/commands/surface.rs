@@ -6,7 +6,16 @@ pub(crate) const HELP_DOCTOR: &str =
 pub(crate) const HELP_CONFIG_INSPECT: &str =
     "Show the resolved runtime contract (provider, model, keys, workspace, options).";
 pub(crate) const HELP_RUN_STATUS: &str =
-    "Show execution-session state: run snapshot, transcripts, and restore guidance.";
+    "Show latest run evidence, run snapshot, transcripts, and restore guidance.";
+pub(crate) const HELP_RUN_PROOF: &str = "Show compact proof-of-work for the latest run.";
+pub(crate) const HELP_RUN_CHECKPOINT: &str = "Show compact typed checkpoint for the latest run.";
+pub(crate) const HELP_RUN_RECEIPTS: &str = "Show bounded receipt summary for the latest run.";
+pub(crate) const HELP_RUN_VERIFICATION: &str =
+    "Show workflow verification evidence for the latest run.";
+pub(crate) const HELP_RUN_INSPECT: &str =
+    "Show full operator evidence inspection for the latest run.";
+pub(crate) const HELP_RUN_RESUME: &str =
+    "Resume from latest typed run evidence without replaying raw transcript.";
 pub(crate) const HELP_RUN_DIFF: &str =
     "Preview the diff between the latest run snapshot and the current workspace.";
 pub(crate) const HELP_RUN_RESTORE: &str =
@@ -45,6 +54,12 @@ pub(crate) enum TelegramCommandKind {
     Approve,
     Deny,
     Access,
+    Status,
+    Proof,
+    Checkpoint,
+    Receipts,
+    Verification,
+    Resume,
     Reset,
 }
 
@@ -116,6 +131,42 @@ pub(crate) const TELEGRAM_COMMANDS: &[TelegramCommandSpec] = &[
         description: "inspect or change access profile and grants",
     },
     TelegramCommandSpec {
+        kind: TelegramCommandKind::Status,
+        command: "/status",
+        arguments: "",
+        description: "show latest run status and next safe action",
+    },
+    TelegramCommandSpec {
+        kind: TelegramCommandKind::Proof,
+        command: "/proof",
+        arguments: "",
+        description: "show compact proof-of-work for the latest run",
+    },
+    TelegramCommandSpec {
+        kind: TelegramCommandKind::Checkpoint,
+        command: "/checkpoint",
+        arguments: "",
+        description: "show compact typed checkpoint for the latest run",
+    },
+    TelegramCommandSpec {
+        kind: TelegramCommandKind::Receipts,
+        command: "/receipts",
+        arguments: "",
+        description: "show bounded receipt summary for the latest run",
+    },
+    TelegramCommandSpec {
+        kind: TelegramCommandKind::Verification,
+        command: "/verification",
+        arguments: "",
+        description: "show workflow verification evidence for the latest run",
+    },
+    TelegramCommandSpec {
+        kind: TelegramCommandKind::Resume,
+        command: "/resume",
+        arguments: "",
+        description: "resume from latest typed run evidence when safe",
+    },
+    TelegramCommandSpec {
         kind: TelegramCommandKind::Reset,
         command: "/reset",
         arguments: "",
@@ -165,7 +216,7 @@ pub(crate) const LIFECYCLE_LANES: &[LifecycleLane] = &[
     LifecycleLane {
         name: "run snapshots",
         source_of_truth_command: "topagent run status",
-        owns: "latest run snapshot, transcript count, and restore guidance",
+        owns: "latest run evidence, run snapshot, transcript count, and restore guidance",
     },
     LifecycleLane {
         name: "access control",

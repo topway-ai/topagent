@@ -33,6 +33,7 @@ The engine crate. No CLI command parsing or Telegram polling logic -- just the a
 | `compaction` | Layered transcript compaction and prompt rebuild support |
 | `run_state` | In-run objective, changed/active file tracking, bash verification history, structured tool-action receipts, compact tool trace capture, baseline attribution, proof-of-work assembly; finalizes into `TaskResult` with `ExecutionSessionOutcome` on all terminal paths (completed, stopped, max-steps, failed) |
 | `run_checkpoint` | Compact typed current-run working memory derived from runtime state: objective, workflow/phase, queue status, active/changed/inspected files, blockers, failed verification anchors, unresolved evidence gaps, trust notes, and next required evidence/action. |
+| `run_evidence` | Serializable latest-run evidence snapshot, compact operator renderers, bounded `.topagent/run-evidence/` persistence, resume prompt construction, and workspace freshness checks. It uses typed checkpoint/workflow/receipt/task-result state and does not store raw transcripts, full receipts, or full tool output by default. |
 | `workflow_verification/` | Coding-workflow evidence subsystem. `requirements`, `evidence`, `receipt_recovery`, `command_match`, and `summary` own workflow-kind contracts, local-inspection matching, verification matching, failed/blocked recovery, and operator-readable summaries. |
 | `receipt_index` | Bounded receipt query and proof-summary helpers. It groups receipts, identifies failed/blocked attempts, local inspection evidence, verification receipts, low-trust/external evidence, and emits compact redacted summaries without cloning raw tool output. |
 | `prompt_budget` | Lightweight character-count budget guardrails for checkpoint, memory/procedure/transcript prompt snippets, provider tool count, and serialized provider tool schema size. |
@@ -83,6 +84,8 @@ This phase filter is both an exposure policy and an execution invariant. Even if
 
 Every provider tool attempt leaves a structured `ToolActionReceipt` in the run result, including blocked and failed attempts. Receipts record the Skill name, phase, admission result, outcome, effects/risk when execution reached Harness, and a compact redacted summary. They are evidence for the current run and trajectory artifacts, not prompt memory. `ReceiptIndex` provides capped query views for workflow verification, checkpoints, and final proof summaries; it does not replay raw tool output.
 
+At terminal CLI and Telegram run paths, TopAgent persists a bounded `RunEvidenceSnapshot` under `.topagent/run-evidence/`. `latest.json` is the current operator-inspection target and `history/` keeps only a small recent set. The snapshot combines `RunCheckpoint`, workflow verification, receipt index summaries, task result evidence, queue status, changed/inspected files, verification commands, unresolved issues, low-trust notes, and resume hints. It is durable evidence, not durable memory: prompt assembly does not load it by default.
+
 For `PlanAndExecute` runs with a queue, finalization adds `WorkflowVerification` to the `TaskResult`. It compares queued task status with workflow-specific typed requirements from `workflow_verification/`:
 
 - `analysis_only` can complete with no file changes when the queue is complete and no unrecovered evidence issue exists.
@@ -95,6 +98,8 @@ For `PlanAndExecute` runs with a queue, finalization adds `WorkflowVerification`
 Failed or blocked receipts stay visible unless recovered by a matching later successful receipt, such as failed `cargo test` followed by successful `cargo test`. Unrelated successes, such as `pwd` after failed tests or a write to a different file, do not recover the failure.
 
 Receipts prove work, but they are not default prompt memory. The prompt context builder injects `RunCheckpoint`, not full receipt histories, raw transcripts, trajectory bodies, or full workflow internals. The checkpoint is capped at 2,000 characters and is derived from typed state rather than model prose. It carries only compact anchors such as changed files, inspected files, blocked/failed attempt anchors, failed verification anchors, unresolved workflow evidence gaps, low-trust influence notes, and the next required evidence/action.
+
+Resume uses typed evidence rather than transcript replay. `topagent run resume` loads latest run evidence, checks workspace path, git HEAD, branch, dirty file set, missing changed files, and snapshot age, then builds a compact resume instruction from the snapshot/checkpoint. It refuses to continue without explicit `--confirm` when stale state, blocked approval, failed mutating/destructive action, or unresolved external-send/upload/post risk is present. Any resumed work is a normal Agent run through Harness; approvals are not auto-granted from old evidence.
 
 Context-density guardrails are character-count based for now rather than token-count based. Defaults are: checkpoint <= 2,000 chars, memory briefing <= 6,000 chars, transcript snippet section <= 1,500 chars, procedure snippet section <= 1,200 chars, default provider tool count <= 24, and serialized default provider tool schema <= 24,000 chars. These are intentionally conservative budgets around current behavior; raising them requires a rationale and tests.
 
@@ -120,7 +125,7 @@ The binary crate. Handles CLI parsing, user interaction, and service management.
 | Module | Responsibility |
 |--------|---------------|
 | `main` | Entry point: parses CLI args, converts to params, dispatches to command handlers |
-| `commands` | CLI command types, dispatch, and rendering; `commands/types` owns all clap definitions, `commands/dispatch` owns the top-level match, per-domain modules (`memory_cli`, `procedure_cli`) own CLI rendering, `config`, `access`, and `run` own their subcommand handlers (the `run` module dispatches run snapshot subcommands: `run status`, `run diff`, `run restore`; trajectory commands live under `memory trajectory`), `oneshot` owns the one-shot runner, and `artifact_util` shares file-list and path-resolution helpers |
+| `commands` | CLI command types, dispatch, and rendering; `commands/types` owns all clap definitions, `commands/dispatch` owns the top-level match, per-domain modules (`memory_cli`, `procedure_cli`) own CLI rendering, `config`, `access`, and `run` own their subcommand handlers (the `run` module dispatches run evidence inspection/resume plus run snapshot subcommands: `run status`, `run proof`, `run checkpoint`, `run receipts`, `run verification`, `run inspect`, `run resume`, `run diff`, `run restore`; trajectory commands live under `memory trajectory`), `oneshot` owns the one-shot runner, and `artifact_util` shares file-list and path-resolution helpers |
 | `access` | CLI rendering and persistence hookup for access profiles, grants, lockdown, and audit status |
 | `config` | CliParams struct, parameter validation, route/options construction |
 | `operational_paths` | Shared config-home, service unit, and managed env path ownership for the operational control plane |
@@ -155,6 +160,7 @@ CLI parses args
         5. if `web_search` or a fetch-like shell command introduced low-trust external content, keep that influence in run state
         6. repeat until text response or max steps
    -> append proof-of-work (changed files, diff summary, workflow status, failed/blocked attempts, trust notes when low-trust content shaped the run)
+   -> persist compact latest run evidence under `.topagent/run-evidence/`
    -> for PlanAndExecute mode with a plan queue: attach workflow verification showing whether the queue and verification evidence satisfy the plan
    -> for PlanAndExecute mode with files changed: append structured delivery summary with explicit verification status
    -> if the task was strongly verified, run the workspace promotion policy:
@@ -181,6 +187,8 @@ CLI parses args
         - /start, /help -> reply with config summary
         - /stop -> cancel running task for that chat
         - /reset -> clear persisted transcript for that chat
+        - /status, /proof, /checkpoint, /receipts, /verification -> inspect latest run evidence
+        - /resume -> resume from latest typed evidence when safe; otherwise report confirmation/staleness risk
         - /approvals -> list pending approvals for this chat
          - /approve <id> [scope] -> approve a pending action or scoped access request
          - /deny <id> -> deny a pending action

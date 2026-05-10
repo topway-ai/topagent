@@ -27,7 +27,7 @@ A meaningful code change is any non-trivial change that can affect runtime behav
 6. If the change affects runtime behavior, persistence, retrieval, hooks, approvals, promotion, transport semantics, or the operational control plane, add or update tests unless the work is an explicitly labeled spike.
 7. If the change alters operator-facing commands, lifecycle behavior, architecture ownership, or product boundary, update the relevant documentation in the same change unless the work is an explicitly labeled spike.
 8. If the change affects task execution, workflow completion, verification, receipts, tool-result reporting, or proof-of-work, keep the evidence model explicit in typed state and update tests that prove incomplete or unverified work cannot be reported as complete.
-9. If the change affects prompt context, provider tools/tool schemas, memory injection, receipt handling, workflow verification, or final proof reporting, update tests and explicitly consider context-density cost.
+9. If the change affects prompt context, provider tools/tool schemas, memory injection, receipt handling, workflow verification, run evidence snapshots, resume prompts, or final proof reporting, update tests and explicitly consider context-density cost.
 
 ## After code changes, before stopping
 
@@ -39,3 +39,4 @@ A meaningful code change is any non-trivial change that can affect runtime behav
 6. If docs or tests should have changed but did not, do not treat the task as complete unless the work is an explicitly labeled spike.
 7. If the change affects workflow receipts or verification state, state whether the result can still prove what was attempted, what was blocked, what failed, and what actually verified the outcome.
 8. If the change affects prompt context or tool schema surface, state whether the relevant context/tool budget remains bounded or why a budget increase was justified.
+9. If the change affects run evidence or resume behavior, state whether the snapshot/resume prompt is built from typed state, whether raw transcripts/full receipts/full tool output stay out of prompt context, and whether risky actions still require Harness/approval.

@@ -18,6 +18,7 @@ pub(crate) const MEMORY_PROCEDURES_RELATIVE_DIR: &str = ".topagent/procedures";
 pub(crate) const MEMORY_TRAJECTORIES_RELATIVE_DIR: &str = ".topagent/trajectories";
 pub(crate) const TRAJECTORY_EXPORTS_RELATIVE_DIR: &str = ".topagent/exports/trajectories";
 pub(crate) const RUN_SNAPSHOTS_RELATIVE_DIR: &str = ".topagent/run-snapshots";
+pub(crate) const RUN_EVIDENCE_RELATIVE_DIR: &str = topagent_core::RUN_EVIDENCE_RELATIVE_DIR;
 pub(crate) const TELEGRAM_HISTORY_RELATIVE_DIR: &str = ".topagent/telegram-history";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +101,13 @@ pub(crate) const SUPPORTED_WORKSPACE_STATE_PATHS: &[SupportedWorkspacePath] = &[
         relative_path: RUN_SNAPSHOTS_RELATIVE_DIR,
         kind: WorkspaceStatePathKind::Directory,
         role: WorkspaceStateRole::RunSnapshot,
+        required: false,
+        prompt_loaded_by_default: false,
+    },
+    SupportedWorkspacePath {
+        relative_path: RUN_EVIDENCE_RELATIVE_DIR,
+        kind: WorkspaceStatePathKind::Directory,
+        role: WorkspaceStateRole::EvidenceExport,
         required: false,
         prompt_loaded_by_default: false,
     },
@@ -356,6 +364,7 @@ mod tests {
             MEMORY_TRAJECTORIES_RELATIVE_DIR,
             TRAJECTORY_EXPORTS_RELATIVE_DIR,
             RUN_SNAPSHOTS_RELATIVE_DIR,
+            RUN_EVIDENCE_RELATIVE_DIR,
             TELEGRAM_HISTORY_RELATIVE_DIR,
         ] {
             let supported = SUPPORTED_WORKSPACE_STATE_PATHS
@@ -384,6 +393,7 @@ mod tests {
                 MEMORY_TRAJECTORIES_RELATIVE_DIR,
                 TRAJECTORY_EXPORTS_RELATIVE_DIR,
                 RUN_SNAPSHOTS_RELATIVE_DIR,
+                RUN_EVIDENCE_RELATIVE_DIR,
                 TELEGRAM_HISTORY_RELATIVE_DIR,
             ]
         );

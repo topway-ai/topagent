@@ -151,6 +151,12 @@ The core crate also includes a minimal eval JSONL record shape (`EvalRunRecord`/
 | `/access grant ...` | Create a scoped grant |
 | `/access revoke ...` | Revoke grants |
 | `/access lockdown` | Revert to workspace mode and clear grants |
+| `/status` | Show latest run status and next safe action |
+| `/proof` | Show compact proof-of-work for the latest run |
+| `/checkpoint` | Show compact typed checkpoint for the latest run |
+| `/receipts` | Show bounded receipt summary for the latest run |
+| `/verification` | Show workflow verification evidence for the latest run |
+| `/resume` | Resume from latest typed run evidence when safe |
 | `/reset` | Clear this chat's saved transcript |
 
 ### Service management
@@ -187,7 +193,13 @@ topagent access grant ~/Downloads read --scope task # allow a scoped path read
 topagent access audit        # show recent access-sensitive events
 topagent access lockdown     # return to workspace mode and clear grants
 topagent config inspect      # What provider/model/keys am I actually using?
-topagent run status          # What happened in my last run? (run snapshot, transcripts, restore guidance)
+topagent run status          # What happened in my last run? (evidence, run snapshot, transcripts, restore guidance)
+topagent run proof           # compact proof-of-work for the latest run
+topagent run checkpoint      # compact typed checkpoint for the latest run
+topagent run receipts        # bounded receipt summary for the latest run
+topagent run verification    # workflow evidence and verification status
+topagent run inspect --json  # machine-readable latest run evidence
+topagent run resume          # resume from typed evidence when safe; use --confirm for stale/risky continuity
 topagent doctor              # Is everything healthy? (deep diagnostics)
 topagent upgrade             # download and install the latest GitHub release binary
 topagent upgrade --use-cargo # build and install from source via cargo instead of a release binary
@@ -227,6 +239,7 @@ Workspace memory is separate from `TOPAGENT.md`:
 - `.topagent/exports/trajectories/` holds reviewed trajectory export packages
 - `.topagent/telegram-history/` stores searchable per-chat transcript evidence
 - `.topagent/run-snapshots/` stores the most recent automatic workspace run snapshots for restore
+- `.topagent/run-evidence/` stores compact latest-run evidence snapshots for status/proof/inspection/resume; it is not loaded as prompt memory by default
 
 TopAgent does not promote every successful task. Weak, trivial, failed, or ambiguous runs save nothing. It still does not provide a skills marketplace, subagents, online training, or multi-provider routing.
 

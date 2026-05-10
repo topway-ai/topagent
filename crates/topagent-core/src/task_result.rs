@@ -365,7 +365,7 @@ impl TaskResult {
         // Don't repeat the full outcome_summary here — the caller already
         // has it as the agent's natural response. Only append structured
         // evidence metadata so the output isn't duplicated.
-        output.push_str("## Evidence\n\n");
+        output.push_str("## Proof of work\n\n");
 
         if !self.evidence.files_changed.is_empty() {
             output.push_str("### Files Changed\n\n");
@@ -395,11 +395,6 @@ impl TaskResult {
                     if !failure_summary.is_empty() {
                         output.push_str(&format!("  Error: {}\n", failure_summary));
                     }
-                }
-                if !vc.output.is_empty() && vc.exit_code == 0 {
-                    output.push_str("  ```\n  ");
-                    output.push_str(&vc.output);
-                    output.push_str("\n  ```\n");
                 }
             }
             output.push_str(&Self::verification_summary(
