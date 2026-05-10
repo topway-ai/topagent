@@ -1,5 +1,6 @@
 use crate::behavior::{BehaviorContract, RunStateSnapshot};
 use crate::plan::Plan;
+use crate::run_checkpoint::RunCheckpoint;
 use crate::tool_spec::ToolSpec;
 
 pub const NO_PROJECT_INSTRUCTIONS_NOTE: &str =
@@ -13,6 +14,7 @@ pub struct BehaviorPromptContext<'a> {
     pub memory_context: Option<&'a str>,
     pub current_plan: Option<&'a Plan>,
     pub run_state: Option<&'a RunStateSnapshot>,
+    pub run_checkpoint: Option<&'a RunCheckpoint>,
     pub planning_required_now: bool,
     pub approval_mailbox_available: bool,
 }
@@ -25,6 +27,7 @@ pub fn build_system_prompt(tools: &[ToolSpec]) -> String {
         memory_context: None,
         current_plan: None,
         run_state: None,
+        run_checkpoint: None,
         planning_required_now: false,
         approval_mailbox_available: false,
     })
@@ -71,6 +74,10 @@ All file paths are relative to this workspace root.\n\n",
 
         if let Some(run_state) = ctx.run_state {
             self.render_run_state_section(&mut prompt, run_state);
+        }
+
+        if let Some(checkpoint) = ctx.run_checkpoint {
+            self.render_run_checkpoint_section(&mut prompt, checkpoint);
         }
 
         if let Some(plan) = ctx.current_plan {
@@ -148,6 +155,20 @@ All file paths are relative to this workspace root.\n\n",
                 prompt.push_str(&format!("  - {note}\n"));
             }
         }
+    }
+
+    fn render_run_checkpoint_section(&self, prompt: &mut String, checkpoint: &RunCheckpoint) {
+        let rendered = checkpoint.render_compact();
+        if rendered.is_empty() {
+            return;
+        }
+
+        prompt.push_str("\n## Run Checkpoint\n\n");
+        prompt.push_str(
+            "Compact typed current-run anchors. Receipts and tool outputs are not replayed here.\n",
+        );
+        prompt.push_str(&rendered);
+        prompt.push('\n');
     }
 
     fn render_identity_section(&self, prompt: &mut String) {
@@ -392,6 +413,15 @@ mod tests {
                 ],
                 memory_context_loaded: true,
             }),
+            run_checkpoint: Some(&RunCheckpoint {
+                objective: Some("Fix the parser and keep tests passing".to_string()),
+                changed_files: vec!["src/lib.rs".to_string()],
+                unresolved_workflow_evidence_gaps: vec![
+                    "missing final relevant passing verification".to_string(),
+                ],
+                next_required_evidence_action: Some("run cargo test".to_string()),
+                ..RunCheckpoint::default()
+            }),
             planning_required_now: true,
             approval_mailbox_available: true,
         });
@@ -399,6 +429,7 @@ mod tests {
         assert!(prompt.contains("## Product Identity"));
         assert!(prompt.contains("## Operator Model"));
         assert!(prompt.contains("## Active Run State"));
+        assert!(prompt.contains("## Run Checkpoint"));
         assert!(prompt.contains("## Output Contract"));
         assert!(prompt.contains("## Memory Write Rules"));
         assert!(prompt.contains("## Compaction Preservation"));
@@ -407,5 +438,7 @@ mod tests {
         assert!(prompt.contains("Current plan"));
         assert!(prompt.contains("git ls-files"));
         assert!(prompt.contains("Trust notes"));
+        assert!(prompt.contains("missing final relevant passing verification"));
+        assert!(!prompt.contains("ToolActionReceipt"));
     }
 }

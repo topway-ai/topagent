@@ -24,7 +24,7 @@ The engine crate. No CLI command parsing or Telegram polling logic -- just the a
 | `agent` | Decision loop, task state, planning gate, provider turns, skill-result interpretation, and final answer assembly. It asks Harness for exposed skills and skill execution instead of owning raw execution. |
 | `agent/planning_flow` | Planning classification, planning redirects, auto-plan fallback, and runtime escalation helpers. It owns live planning flow around the existing `PlanningGate`; it is not a second planner or execution policy layer. |
 | `agent/skill_surface` | Phase-to-tool exposure helper. It syncs phase-scoped provider tool specs and computes the phase passed back into Harness for a provider tool call; it does not enforce policy itself. |
-| `agent/prompt_context` | Run prompt-context builder. It collects project instructions, exposed skill summary, current plan, bounded run state, operator context, and memory context before rendering the behavior prompt. |
+| `agent/prompt_context` | Run prompt-context builder. It collects project instructions, exposed skill summary, current plan, bounded run state, compact `RunCheckpoint`, operator context, and memory context before rendering the behavior prompt. |
 | `skills/` | Canonical executable capability surface. `Skill`, `SkillRegistry`, schemas, effects, risk metadata, and the compatibility wrapper around current tool implementations live here. |
 | `harness/` | Runtime/control boundary for context bundles, phase-based skill exposure, execution admission, and `SkillDispatcher` execution. It is the mandatory layer where declared Skill effects become capability checks before execution. |
 | `behavior` | Typed behavior contract and policy root; internal task/action/approval/durability/compaction modules keep runtime policy seams narrow |
@@ -32,6 +32,11 @@ The engine crate. No CLI command parsing or Telegram polling logic -- just the a
 | `capability` | Typed access profiles, capability decisions, scoped grants, risk classification, and JSONL audit records |
 | `compaction` | Layered transcript compaction and prompt rebuild support |
 | `run_state` | In-run objective, changed/active file tracking, bash verification history, structured tool-action receipts, compact tool trace capture, baseline attribution, proof-of-work assembly; finalizes into `TaskResult` with `ExecutionSessionOutcome` on all terminal paths (completed, stopped, max-steps, failed) |
+| `run_checkpoint` | Compact typed current-run working memory derived from runtime state: objective, workflow/phase, queue status, active/changed/inspected files, blockers, failed verification anchors, unresolved evidence gaps, trust notes, and next required evidence/action. |
+| `workflow_verification/` | Coding-workflow evidence subsystem. `requirements`, `evidence`, `receipt_recovery`, `command_match`, and `summary` own workflow-kind contracts, local-inspection matching, verification matching, failed/blocked recovery, and operator-readable summaries. |
+| `receipt_index` | Bounded receipt query and proof-summary helpers. It groups receipts, identifies failed/blocked attempts, local inspection evidence, verification receipts, low-trust/external evidence, and emits compact redacted summaries without cloning raw tool output. |
+| `prompt_budget` | Lightweight character-count budget guardrails for checkpoint, memory/procedure/transcript prompt snippets, provider tool count, and serialized provider tool schema size. |
+| `command_availability` | Shell-free PATH scanning for command availability probes used by the Agent loop. User/task command execution remains the Harness-admitted `bash` Skill. |
 | `session` | Conversation history management, truncation |
 | `message` | Message types (user, assistant, system, tool_request, tool_result) |
 | `provider` | Provider trait, response types |
@@ -76,11 +81,22 @@ This phase filter is both an exposure policy and an execution invariant. Even if
 
 `bash` has an additional Harness execution check because the Skill name alone is too broad. Harness classifies the submitted command: `ResearchSafe` commands are allowed only in `Investigate` or `Plan`, `Verification` commands only in `Verify`, and `MutationRisk` commands only in `Patch`. After that phase check, capability authorization still decides whether network, filesystem, git, package-manager, service, external-send, or high-risk shell access requires approval.
 
-Every provider tool attempt leaves a structured `ToolActionReceipt` in the run result, including blocked and failed attempts. Receipts record the Skill name, phase, admission result, outcome, effects/risk when execution reached Harness, and a compact redacted summary. They are evidence for the current run and trajectory artifacts, not prompt memory.
+Every provider tool attempt leaves a structured `ToolActionReceipt` in the run result, including blocked and failed attempts. Receipts record the Skill name, phase, admission result, outcome, effects/risk when execution reached Harness, and a compact redacted summary. They are evidence for the current run and trajectory artifacts, not prompt memory. `ReceiptIndex` provides capped query views for workflow verification, checkpoints, and final proof summaries; it does not replay raw tool output.
 
-For `PlanAndExecute` runs with a queue, finalization adds `WorkflowVerification` to the `TaskResult`. It compares queued task status with workflow-specific evidence from verification commands and receipts, so "no files changed" is enough only for simple analysis and not for audit, test, commit-review, or release-gate workflows.
+For `PlanAndExecute` runs with a queue, finalization adds `WorkflowVerification` to the `TaskResult`. It compares queued task status with workflow-specific typed requirements from `workflow_verification/`:
 
-Receipts prove work, but they are not default prompt memory. The prompt context builder should inject only minimal decision-relevant evidence such as active files, blockers, trust notes, and compact proof anchors; the workflow verifier reads typed state and artifacts, not model prose or replayed tool output.
+- `analysis_only` can complete with no file changes when the queue is complete and no unrecovered evidence issue exists.
+- `audit` requires local repository inspection evidence; `web_search` can support research but cannot prove local inspection.
+- `commit_review` requires git diff/log/show/status evidence.
+- `test` requires a meaningful test or verification command even when no files changed.
+- `patch` requires a final relevant passing verification when files changed.
+- `release_gate` requires `scripts/ci-gate.sh` or equivalent fmt/clippy/test/build evidence and a final relevant pass.
+
+Failed or blocked receipts stay visible unless recovered by a matching later successful receipt, such as failed `cargo test` followed by successful `cargo test`. Unrelated successes, such as `pwd` after failed tests or a write to a different file, do not recover the failure.
+
+Receipts prove work, but they are not default prompt memory. The prompt context builder injects `RunCheckpoint`, not full receipt histories, raw transcripts, trajectory bodies, or full workflow internals. The checkpoint is capped at 2,000 characters and is derived from typed state rather than model prose. It carries only compact anchors such as changed files, inspected files, blocked/failed attempt anchors, failed verification anchors, unresolved workflow evidence gaps, low-trust influence notes, and the next required evidence/action.
+
+Context-density guardrails are character-count based for now rather than token-count based. Defaults are: checkpoint <= 2,000 chars, memory briefing <= 6,000 chars, transcript snippet section <= 1,500 chars, procedure snippet section <= 1,200 chars, default provider tool count <= 24, and serialized default provider tool schema <= 24,000 chars. These are intentionally conservative budgets around current behavior; raising them requires a rationale and tests.
 
 ## Provider scope
 
@@ -129,7 +145,7 @@ CLI parses args
   -> create Agent with provider + Skills wrapped by Harness + options
   -> agent.run(ctx, instruction)
      -> load TOPAGENT.md
-     -> render policy-driven system prompt (+ project instructions + workspace memory briefing + compact run-state artifacts)
+     -> render policy-driven system prompt (+ project instructions + workspace memory briefing + compact run-state artifacts + RunCheckpoint)
      -> classify task complexity -> activate planning gate if non-trivial
      -> enter step loop:
         1. send conversation to LLM
@@ -138,7 +154,7 @@ CLI parses args
         4. Harness validates phase/access/effects, authorizes required capabilities, dispatches the Skill, then Agent records the result and a structured receipt
         5. if `web_search` or a fetch-like shell command introduced low-trust external content, keep that influence in run state
         6. repeat until text response or max steps
-   -> append proof-of-work (changed files, diff summary, trust notes when low-trust content shaped the run)
+   -> append proof-of-work (changed files, diff summary, workflow status, failed/blocked attempts, trust notes when low-trust content shaped the run)
    -> for PlanAndExecute mode with a plan queue: attach workflow verification showing whether the queue and verification evidence satisfy the plan
    -> for PlanAndExecute mode with files changed: append structured delivery summary with explicit verification status
    -> if the task was strongly verified, run the workspace promotion policy:

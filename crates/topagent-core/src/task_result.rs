@@ -1,6 +1,7 @@
 use crate::capability::RiskLevel;
 use crate::plan::TaskQueueStatus;
 use crate::provenance::{RunTrustContext, SourceLabel};
+use crate::receipt_index::{ReceiptIndex, ReceiptProofSummary};
 use crate::skills::SkillEffects;
 use serde::{Deserialize, Serialize};
 
@@ -328,6 +329,17 @@ impl TaskResult {
         self.trust_context().has_low_trust_action_influence()
     }
 
+    pub fn receipt_proof_summary(&self) -> ReceiptProofSummary {
+        ReceiptIndex::new(&self.evidence.tool_receipts).compact_proof_summary()
+    }
+
+    pub fn has_operator_visible_receipt_issues(&self) -> bool {
+        self.evidence
+            .tool_receipts
+            .iter()
+            .any(|receipt| receipt.outcome != ToolActionOutcome::Succeeded)
+    }
+
     pub fn session_outcome(&self) -> ExecutionSessionOutcome {
         self.session_outcome
     }
@@ -343,6 +355,8 @@ impl TaskResult {
         if self.evidence.files_changed.is_empty()
             && self.evidence.verification_commands_run.is_empty()
             && self.evidence.unresolved_issues.is_empty()
+            && self.evidence.workflow_verification.is_none()
+            && !self.has_operator_visible_receipt_issues()
             && !self.has_low_trust_action_influence()
         {
             return self.outcome_summary.clone();
@@ -395,6 +409,44 @@ impl TaskResult {
         } else if !self.evidence.files_changed.is_empty() {
             output.push_str("### Verification\n\n");
             output.push_str("- Not performed (files were changed)\n\n");
+        }
+
+        if let Some(workflow) = &self.evidence.workflow_verification {
+            output.push_str("### Workflow\n\n");
+            let status = if workflow.satisfied {
+                "satisfied"
+            } else if workflow.queue.blocked > 0 {
+                "blocked"
+            } else if workflow.failed_verification_count > 0
+                && !workflow.final_relevant_verification_passed
+            {
+                "failed"
+            } else {
+                "incomplete"
+            };
+            output.push_str(&format!("- Status: {status}\n"));
+            output.push_str(&format!(
+                "- Queue: {}/{} done, {} pending, {} active, {} blocked\n",
+                workflow.queue.done,
+                workflow.queue.total,
+                workflow.queue.pending,
+                workflow.queue.in_progress,
+                workflow.queue.blocked
+            ));
+            if !workflow.summary.is_empty() {
+                output.push_str(&format!("- Evidence: {}\n", workflow.summary));
+            }
+            output.push('\n');
+        }
+
+        let receipt_summary = self.receipt_proof_summary();
+        if receipt_summary.has_operator_visible_entries()
+            && (!receipt_summary.failed_or_blocked.is_empty()
+                || !receipt_summary.low_trust_or_external.is_empty())
+        {
+            output.push_str("### Tool Attempts\n\n");
+            output.push_str(&receipt_summary.render_compact());
+            output.push_str("\n\n");
         }
 
         if !self.evidence.unresolved_issues.is_empty() {
@@ -512,8 +564,14 @@ impl TaskResult {
                 summary.push_str("### Workflow Status\n\n");
                 let status = if workflow.satisfied {
                     "satisfied"
+                } else if workflow.queue.blocked > 0 {
+                    "blocked"
+                } else if workflow.failed_verification_count > 0
+                    && !workflow.final_relevant_verification_passed
+                {
+                    "failed"
                 } else {
-                    "not satisfied"
+                    "incomplete"
                 };
                 summary.push_str(&format!("- Result: {status}\n"));
                 summary.push_str(&format!(
@@ -536,6 +594,30 @@ impl TaskResult {
                     workflow.final_relevant_verification_passed
                 ));
             }
+        }
+
+        let receipt_summary = self.receipt_proof_summary();
+        if !receipt_summary.local_inspection.is_empty() {
+            summary.push_str("### Inspection Evidence\n\n");
+            for evidence in &receipt_summary.local_inspection {
+                summary.push_str(&format!("- {evidence}\n"));
+            }
+            summary.push('\n');
+        }
+
+        if !receipt_summary.failed_or_blocked.is_empty() {
+            summary.push_str("### Failed Or Blocked Attempts\n\n");
+            for issue in &receipt_summary.failed_or_blocked {
+                summary.push_str(&format!("- {issue}\n"));
+            }
+            summary.push('\n');
+        }
+
+        if let Some(summary_text) = self.trust_context().low_trust_action_summary(3) {
+            summary.push_str("### Trust Notes\n\n");
+            summary.push_str(&format!(
+                "- Low-trust content influenced this run: {summary_text}.\n\n"
+            ));
         }
 
         summary.push_str("### Suggested Next Step\n\n");
@@ -768,6 +850,47 @@ mod tests {
         assert_eq!(result.tool_receipts().len(), 1);
         assert_eq!(result.tool_receipts()[0].tool_name, "read");
         assert_eq!(result.format_proof_of_work(), baseline);
+    }
+
+    #[test]
+    fn test_failed_or_blocked_receipts_are_visible_in_proof_summary() {
+        let result =
+            TaskResult::new("Blocked".to_string()).with_tool_receipt(ToolActionReceipt::new(
+                "external_send",
+                "patch",
+                false,
+                ToolActionOutcome::Blocked,
+                "external_send: https://example.invalid/upload",
+            ));
+
+        let proof = result.format_proof_of_work();
+        assert!(proof.contains("### Tool Attempts"));
+        assert!(proof.contains("external_send blocked"));
+        assert!(proof.contains("https://example.invalid/upload"));
+    }
+
+    #[test]
+    fn test_delivery_summary_audit_success_includes_local_inspection_evidence() {
+        let result = TaskResult::new("Audit complete".to_string())
+            .with_task_mode(crate::plan::TaskMode::PlanAndExecute)
+            .with_delivery_outcome(DeliveryOutcome::AnalysisOnly)
+            .with_verification_command(VerificationCommand {
+                command: "cargo test --help".to_string(),
+                output: "ok".to_string(),
+                exit_code: 0,
+                succeeded: true,
+            })
+            .with_tool_receipt(ToolActionReceipt::new(
+                "read",
+                "investigate",
+                true,
+                ToolActionOutcome::Succeeded,
+                "read: src/lib.rs",
+            ));
+
+        let summary = result.format_delivery_summary().expect("summary expected");
+        assert!(summary.contains("### Inspection Evidence"));
+        assert!(summary.contains("read succeeded: read: src/lib.rs"));
     }
 
     #[test]

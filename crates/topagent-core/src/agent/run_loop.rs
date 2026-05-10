@@ -1,4 +1,5 @@
 use super::Agent;
+use crate::command_availability::command_exists;
 use crate::context::ExecutionContext;
 use crate::eval::{EvalRecorder, EvalRunRecord};
 use crate::harness::AgentPhase;
@@ -7,7 +8,6 @@ use crate::task_result::{
 };
 use crate::workflow_verification::evaluate_workflow_verification;
 use crate::{Error, Message, ProviderResponse, Result};
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 #[derive(Default)]
@@ -86,6 +86,21 @@ impl Agent {
                 record = record.with_verification_command(command.command.clone());
             }
             record = record.with_files_changed(task_result.files_changed().to_vec());
+            if let Some(workflow) = task_result.workflow_verification() {
+                let status = if workflow.satisfied {
+                    "satisfied"
+                } else if workflow.queue.blocked > 0 {
+                    "blocked"
+                } else if workflow.failed_verification_count > 0
+                    && !workflow.final_relevant_verification_passed
+                {
+                    "failed"
+                } else {
+                    "incomplete"
+                };
+                record = record.with_workflow_status(status);
+            }
+            record = record.with_unresolved_risks(task_result.unresolved_issues().to_vec());
         }
 
         if let Err(err) = EvalRecorder::new(path).append(&record) {
@@ -257,7 +272,11 @@ impl Agent {
             task_result.files_changed().len(),
             task_result.verification_commands().len(),
             task_result.unresolved_issues().len(),
-        ) {
+        ) || task_result.has_operator_visible_receipt_issues()
+            || task_result
+                .workflow_verification()
+                .is_some_and(|workflow| !workflow.satisfied)
+        {
             // Include the agent's natural response first, then append
             // structured evidence and delivery summary below it. This
             // avoids duplicating the response text inside the evidence
@@ -481,17 +500,9 @@ impl Agent {
             if !workspace.join(marker_file).exists() {
                 continue;
             }
-            if let Ok(output) = Command::new("sh")
-                .arg("-c")
-                .arg(format!(
-                    "which {}",
-                    candidate.split_whitespace().next().unwrap_or("")
-                ))
-                .output()
-            {
-                if output.status.success() {
-                    return Some(candidate.to_string());
-                }
+            let program = candidate.split_whitespace().next().unwrap_or("");
+            if command_exists(program) {
+                return Some(candidate.to_string());
             }
         }
         None
@@ -567,11 +578,6 @@ mod tests {
     }
 
     fn which_exists(cmd: &str) -> bool {
-        Command::new("sh")
-            .arg("-c")
-            .arg(format!("which {}", cmd))
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        command_exists(cmd)
     }
 }

@@ -4,6 +4,7 @@ pub mod behavior;
 pub mod cancel;
 pub mod capability;
 pub mod channel;
+pub mod command_availability;
 pub mod command_exec;
 pub mod compaction;
 pub mod context;
@@ -19,8 +20,11 @@ pub mod plan;
 pub mod progress;
 pub mod project;
 pub mod prompt;
+pub mod prompt_budget;
 pub mod provenance;
 pub mod provider;
+pub mod receipt_index;
+pub mod run_checkpoint;
 pub mod run_snapshot;
 mod run_state;
 pub mod runtime;
@@ -48,6 +52,7 @@ pub use capability::{
     CapabilityProfile, CapabilityRequest, GrantScope, RiskLevel, ShellAssessment,
 };
 pub use channel::telegram::{ChannelError, TelegramAdapter, POLL_TIMEOUT_SECS};
+pub use command_availability::{command_exists, find_command};
 pub use command_exec::CommandSandboxPolicy;
 pub use compaction::{
     CompactionError, CompactionLevel, CompactionOutcome, CompactionRuntimeState,
@@ -75,11 +80,19 @@ pub use project::{
     get_project_instructions_or_error, load_project_instructions, ProjectInstructionResult,
 };
 pub use prompt::{BehaviorPromptContext, NO_PI_MD_NOTE, NO_PROJECT_INSTRUCTIONS_NOTE};
+pub use prompt_budget::{
+    serialized_provider_tool_schema_chars, validate_provider_tool_budget, PromptBudgetUsage,
+    MAX_DEFAULT_PROVIDER_TOOL_COUNT, MAX_DEFAULT_PROVIDER_TOOL_SCHEMA_CHARS,
+    MAX_MEMORY_BRIEFING_CHARS, MAX_PROCEDURE_SNIPPET_CHARS, MAX_RUN_CHECKPOINT_CHARS,
+    MAX_TRANSCRIPT_SNIPPET_CHARS,
+};
 pub use provenance::{
     classify_operator_instruction, fetched_content_source, DurablePromotionKind, InfluenceMode,
     RunTrustContext, SourceKind, SourceLabel, TrustLevel,
 };
 pub use provider::{Provider, ProviderResponse, ScriptedProvider, ToolCallEntry};
+pub use receipt_index::{ReceiptIndex, ReceiptProofSummary};
+pub use run_checkpoint::RunCheckpoint;
 pub use run_snapshot::{
     WorkspaceRunSnapshotRestoreReport, WorkspaceRunSnapshotStatus, WorkspaceRunSnapshotStore,
 };

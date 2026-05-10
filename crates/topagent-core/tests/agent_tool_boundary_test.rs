@@ -43,6 +43,14 @@ fn agent_source_files() -> Vec<PathBuf> {
     paths
 }
 
+fn workspace_root() -> PathBuf {
+    manifest_root()
+        .parent()
+        .and_then(|path| path.parent())
+        .unwrap_or_else(|| panic!("failed to find workspace root from manifest dir"))
+        .to_path_buf()
+}
+
 fn core_source_and_test_files() -> Vec<PathBuf> {
     let root = manifest_root();
     let mut paths = rust_files_under(&root.join("src"));
@@ -144,4 +152,89 @@ fn raw_skill_dispatcher_execution_stays_inside_harness_or_tests() {
             );
         }
     }
+}
+
+#[test]
+fn agent_run_loop_does_not_spawn_shell_for_task_or_probe_execution() {
+    let path = manifest_root().join("src/agent/run_loop.rs");
+    let source = read_source(&path);
+
+    assert!(
+        !source.contains("Command::new(\"sh\")") && !source.contains("Command::new(\"bash\")"),
+        "agent run loop must not spawn shell directly; use command_availability for probes and Harness bash Skill for task execution"
+    );
+    assert!(
+        !source.contains(".arg(\"-c\")"),
+        "agent run loop must not build shell command strings directly"
+    );
+}
+
+#[test]
+fn workflow_verifier_owns_evidence_policy_not_agent_loop() {
+    let run_loop = read_source(&manifest_root().join("src/agent/run_loop.rs"));
+    let verifier = manifest_root().join("src/workflow_verification");
+
+    assert!(
+        verifier.is_dir(),
+        "workflow verifier must be a module directory"
+    );
+    for forbidden in [
+        "fn requirement_evidence_present",
+        "fn verification_command_matches_requirement",
+        "fn unrecovered_receipt_issues",
+        "is_release_gate_verification_command",
+        "web_search",
+    ] {
+        assert!(
+            !run_loop.contains(forbidden),
+            "workflow evidence policy `{forbidden}` belongs in workflow_verification, not agent/run_loop.rs"
+        );
+    }
+}
+
+#[test]
+fn prompt_context_does_not_inject_receipts_or_transcripts_wholesale() {
+    let prompt = read_source(&manifest_root().join("src/prompt.rs"));
+    let prompt_context = read_source(&manifest_root().join("src/agent/prompt_context.rs"));
+
+    assert!(
+        !prompt.contains("tool_receipts") && !prompt_context.contains("tool_receipts"),
+        "prompt rendering must not inject raw receipt history"
+    );
+    assert!(
+        !prompt.contains("telegram-history") && !prompt_context.contains("telegram-history"),
+        "prompt rendering must not inject raw transcript stores"
+    );
+    assert!(
+        prompt.contains("Run Checkpoint"),
+        "prompt should use compact RunCheckpoint anchors instead"
+    );
+}
+
+#[test]
+fn release_binary_path_keeps_ci_gate_before_packaging_build() {
+    let script = read_source(&workspace_root().join("scripts/ci-gate.sh"));
+    let fmt = script.find("cargo fmt --all --check").expect("fmt gate");
+    let clippy = script
+        .find("cargo clippy --all-targets")
+        .expect("clippy gate");
+    let test = script.find("cargo test --locked").expect("test gate");
+    let release = script
+        .find("cargo build --locked --release -p topagent-cli --bin topagent")
+        .expect("release binary build");
+
+    assert!(
+        fmt < release && clippy < release && test < release,
+        "release binary build must stay behind fmt, clippy, and test gates"
+    );
+}
+
+#[cfg(feature = "computer-use")]
+#[test]
+fn computer_use_scaffold_cannot_claim_real_backend_success() {
+    let source = read_source(&manifest_root().join("src/tools/computer_use.rs"));
+
+    assert!(source.contains("was not performed"));
+    assert!(source.contains("No desktop automation backend or sidecar is configured"));
+    assert!(!source.contains("performed successfully"));
 }

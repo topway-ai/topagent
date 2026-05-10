@@ -23,9 +23,11 @@ The question is “is this complexity earned now, with clear ownership and payof
 
 - **Meaningful code change**: any non-trivial change that can affect runtime behavior, persistence, configuration, policy, prompt assembly, retrieval, tool surface, transport behavior, operator-visible behavior, or tests relied on for correctness.
 - **Hot path**: ordinary one-shot execution, ordinary Telegram handling, prompt assembly, bounded retrieval, preflight gating, and tool execution for a normal task.
-- **Durable artifact**: any stored record expected to survive across sessions and influence future work, including `USER.md`, `MEMORY.md`, notes, procedures, trajectories, run snapshots, and transcript stores.
+- **Durable artifact**: any stored record expected to survive across sessions and influence future work, including `USER.md`, `MEMORY.md`, notes, procedures, trajectories, tool receipts stored in trajectories, run snapshots, and transcript stores.
 - **Session state**: live run state, blockers, approvals, transient user wishes, active file state, and in-progress objective state.
 - **Spike**: exploratory work that is intentionally non-final and explicitly contained.
+- **Tool receipt**: a bounded structured record of a tool attempt, including successful, failed, and blocked attempts.
+- **Workflow verification**: typed state that records whether the task has enough evidence to be truthfully reported as complete, incomplete, failed, or unverified.
 
 ## Preflight Review
 
@@ -149,13 +151,37 @@ Compaction must not discard facts required for correctness, approvals, proof-of-
 
 If compaction changes what is retained, explain what survives and why.
 
-### 7. Approval clarity
+### 7. Workflow evidence and verification
+
+Workflow completion must be based on typed state and receipts, not on model prose.
+
+Tool attempts, blocked actions, failed actions, verification commands, and final workflow status must remain inspectable enough for truthful operator reporting.
+
+Do not mark a workflow satisfied only because the plan queue is empty. Workflow satisfaction must consider the task type, required evidence, failed or blocked attempts, and relevant verification results.
+
+“No files changed” is not proof that no verification was required. Audit, test, commit-review, and release-gate workflows still need evidence appropriate to their task type.
+
+Receipts are proof-of-work artifacts. They must stay bounded, redacted where needed, and must not become prompt-memory by default.
+
+### 8. Context density
+
+Always-on prompt context must stay dense, bounded, and decision-relevant.
+
+Raw transcripts, full receipt histories, full tool outputs, and trajectory bodies must not become always-on prompt context. Use typed state, `RunCheckpoint`, capped memory briefings, and compact proof anchors instead.
+
+Changes that add provider tools, provider tool schema, memory briefing content, procedures, transcript snippets, receipt summaries, workflow-verification details, or any other always-on prompt section must consider context-density cost and update tests when the default prompt budget changes.
+
+Provider tool/schema budget increases require a short rationale in the change and must explain why the new surface is necessary now.
+
+`RunCheckpoint` must remain compact, derived from typed state rather than model prose, and safe to inject into prompt context.
+
+### 9. Approval clarity
 
 Approvals must remain explicit, comprehensible, and risk-triggered.
 
 Do not widen approval friction into a universal tax, and do not create side doors that bypass approval-bearing actions.
 
-### 8. Tool surface discipline
+### 10. Tool surface discipline
 
 Do not add tool surface area lightly.
 
@@ -163,25 +189,25 @@ Every new tool behavior must have clear ownership, clear invocation semantics, a
 
 Optional tool-authoring or maintenance complexity must not bloat ordinary runs.
 
-### 9. Transport separation
+### 11. Transport separation
 
 Keep transport/rendering concerns separate from runtime policy and runtime state.
 
 Telegram, CLI, and service management are surfaces over the same kernel, not separate products with drifting semantics.
 
-### 10. Restart-persistence necessity
+### 12. Restart-persistence necessity
 
 Do not persist more state just because it is convenient.
 
 Persist only what must survive restarts for correctness, operator trust, or intentional long-term reuse.
 
-### 11. Canonical artifact ownership
+### 13. Canonical artifact ownership
 
 Each important fact should have one obvious durable owner.
 
 Do not create multiple truth sources for the same thing, especially around model config, workspace memory, procedures, trajectories, tool state, or operator-visible status.
 
-### 12. Bounded retrieval
+### 14. Bounded retrieval
 
 Retrieval must remain capped, relevance-filtered, and explainable.
 
@@ -189,7 +215,7 @@ Do not let more files on disk imply more prompt context by default.
 
 Trajectories remain export/review artifacts, not prompt-memory.
 
-### 13. Simplification vs exceptions
+### 15. Simplification vs exceptions
 
 Prefer fewer owners, fewer branches, and fewer special cases.
 
@@ -197,7 +223,7 @@ If a change introduces another exception path, explain why the existing path cou
 
 Reject decorative refactors that merely move complexity around.
 
-### 14. Product-shift honesty
+### 16. Product-shift honesty
 
 If the change makes TopAgent more like a stable kernel, say how.
 
@@ -205,7 +231,7 @@ If it makes TopAgent more like a pile of accumulating exceptions, stop and narro
 
 Do not disguise product drift as refactoring.
 
-### 15. Docs and tests are part of the change
+### 17. Docs and tests are part of the change
 
 A code change is not fully reviewed until the author has explicitly checked whether related docs and tests need to change.
 

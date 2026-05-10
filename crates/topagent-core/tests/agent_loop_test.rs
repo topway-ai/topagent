@@ -895,6 +895,66 @@ fn test_raw_tool_receipts_and_outputs_are_not_injected_into_system_prompt() {
 }
 
 #[test]
+fn test_prompt_context_includes_checkpoint_summary_not_raw_receipt_history() {
+    let (ctx, _temp) = make_test_context();
+    let provider = CapturingProvider::new(vec![
+        ProviderResponse::ToolCall {
+            id: "write".into(),
+            name: "write".into(),
+            args: serde_json::json!({"path": "notes.txt", "content": "RAW_RECEIPT_BODY"}),
+        },
+        ProviderResponse::Message(Message::assistant("done")),
+    ]);
+    let captured = provider.captured_messages_handle();
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    agent.run(&ctx, "write a note").unwrap();
+
+    let prompts = captured_system_prompts(&captured.read().unwrap());
+    assert!(
+        prompts
+            .iter()
+            .any(|prompt| prompt.contains("## Run Checkpoint")
+                && prompt.contains("changed files: notes.txt")),
+        "expected compact checkpoint with changed file: {prompts:?}"
+    );
+    assert!(
+        prompts
+            .iter()
+            .all(|prompt| !prompt.contains("RAW_RECEIPT_BODY")),
+        "prompt must not replay raw write content or receipt history"
+    );
+}
+
+#[test]
+fn test_prompt_checkpoint_includes_unresolved_workflow_evidence_gaps() {
+    let (ctx, _temp) = make_test_context();
+    std::fs::write(ctx.resolve_path("README.md").unwrap(), "notes").unwrap();
+    let provider = CapturingProvider::new(vec![
+        completed_workflow_plan("release_gate", "Run release gate"),
+        ProviderResponse::ToolCall {
+            id: "read".into(),
+            name: "read".into(),
+            args: serde_json::json!({"path": "README.md"}),
+        },
+        ProviderResponse::Message(Message::assistant("done")),
+    ]);
+    let captured = provider.captured_messages_handle();
+    let mut agent = Agent::new(Box::new(provider), make_tools());
+
+    agent.run(&ctx, "prepare release evidence").unwrap();
+
+    let prompts = captured_system_prompts(&captured.read().unwrap());
+    assert!(
+        prompts.iter().any(
+            |prompt| prompt.contains("missing evidence for release_gate")
+                && prompt.contains("scripts/ci-gate.sh")
+        ),
+        "expected checkpoint to surface release-gate evidence gap: {prompts:?}"
+    );
+}
+
+#[test]
 fn test_long_receipt_history_does_not_grow_system_prompt() {
     let (ctx, _temp) = make_test_context();
     let mut responses = (0..30)
@@ -929,28 +989,23 @@ fn test_long_receipt_history_does_not_grow_system_prompt() {
 
 #[test]
 fn test_default_provider_tool_schema_surface_stays_bounded() {
-    const MAX_DEFAULT_TOOL_COUNT: usize = 24;
-    const MAX_DEFAULT_TOOL_SCHEMA_CHARS: usize = 24_000;
-
     let agent = Agent::new(
         Box::new(topagent_core::ScriptedProvider::new(vec![])),
         default_tools().into_inner(),
     );
     let specs = agent.tool_specs();
-    let serialized_chars = specs
-        .iter()
-        .map(|spec| spec.name.len() + spec.description.len() + spec.input_schema.to_string().len())
-        .sum::<usize>();
+    let serialized_chars = topagent_core::serialized_provider_tool_schema_chars(&specs);
 
     assert!(
-        specs.len() <= MAX_DEFAULT_TOOL_COUNT,
+        specs.len() <= topagent_core::MAX_DEFAULT_PROVIDER_TOOL_COUNT,
         "default provider tool count grew to {}; update REVIEW_RULES.md with rationale before raising the threshold",
         specs.len()
     );
     assert!(
-        serialized_chars <= MAX_DEFAULT_TOOL_SCHEMA_CHARS,
+        serialized_chars <= topagent_core::MAX_DEFAULT_PROVIDER_TOOL_SCHEMA_CHARS,
         "default provider tool schema grew to {serialized_chars} chars; update REVIEW_RULES.md with rationale before raising the threshold"
     );
+    topagent_core::validate_provider_tool_budget(specs.len(), serialized_chars).unwrap();
 }
 
 #[test]

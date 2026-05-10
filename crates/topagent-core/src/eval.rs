@@ -14,6 +14,10 @@ pub struct EvalRunRecord {
     pub approval_blocks: usize,
     pub verification_command: Option<String>,
     pub files_changed: Vec<String>,
+    #[serde(default)]
+    pub workflow_status: Option<String>,
+    #[serde(default)]
+    pub unresolved_risks: Vec<String>,
 }
 
 impl EvalRunRecord {
@@ -28,6 +32,8 @@ impl EvalRunRecord {
             approval_blocks: 0,
             verification_command: None,
             files_changed: Vec::new(),
+            workflow_status: None,
+            unresolved_risks: Vec::new(),
         }
     }
 
@@ -69,6 +75,16 @@ impl EvalRunRecord {
 
     pub fn with_files_changed(mut self, files_changed: Vec<String>) -> Self {
         self.files_changed = files_changed;
+        self
+    }
+
+    pub fn with_workflow_status(mut self, workflow_status: impl Into<String>) -> Self {
+        self.workflow_status = Some(workflow_status.into());
+        self
+    }
+
+    pub fn with_unresolved_risks(mut self, unresolved_risks: Vec<String>) -> Self {
+        self.unresolved_risks = unresolved_risks;
         self
     }
 }
@@ -114,7 +130,9 @@ mod tests {
             .with_skill_calls(3)
             .with_approval_blocks(1)
             .with_verification_command("cargo test")
-            .with_files_changed(vec!["src/lib.rs".to_string()]);
+            .with_files_changed(vec!["src/lib.rs".to_string()])
+            .with_workflow_status("satisfied")
+            .with_unresolved_risks(vec!["blocked external action".to_string()]);
 
         let json = serde_json::to_value(&record).unwrap();
         assert_eq!(json["task_id"], "task-1");
@@ -125,6 +143,8 @@ mod tests {
         assert_eq!(json["approval_blocks"], 1);
         assert_eq!(json["verification_command"], "cargo test");
         assert_eq!(json["files_changed"][0], "src/lib.rs");
+        assert_eq!(json["workflow_status"], "satisfied");
+        assert_eq!(json["unresolved_risks"][0], "blocked external action");
     }
 
     #[test]

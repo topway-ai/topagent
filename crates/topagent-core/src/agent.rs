@@ -738,7 +738,9 @@ path = "src/lib.rs"
 
         let result = agent.run(&ctx, "read the outside report").unwrap();
 
-        assert_eq!(result, "blocked cleanly");
+        assert!(result.starts_with("blocked cleanly"));
+        assert!(result.contains("### Tool Attempts"));
+        assert!(result.contains("read blocked"));
         let tool_result = tool_result_text(&agent, "read-outside");
         assert!(tool_result.contains("approval_required"));
         assert!(tool_result.contains("capability: filesystem"));
@@ -783,7 +785,9 @@ path = "src/lib.rs"
 
         let result = agent.run(&ctx, "read the outside report").unwrap();
 
-        assert_eq!(result, "denial handled");
+        assert!(result.starts_with("denial handled"));
+        assert!(result.contains("### Tool Attempts"));
+        assert!(result.contains("read blocked"));
         let tool_result = tool_result_text(&agent, "read-outside");
         assert!(tool_result.contains("access_denied"));
         assert!(tool_result.contains("approval denied"));
@@ -1021,7 +1025,10 @@ path = "src/lib.rs"
             .run(&ctx, "search the web, then save what it says")
             .unwrap();
 
-        assert_eq!(result, "memory write blocked");
+        assert!(result.starts_with("memory write blocked"));
+        assert!(result.contains("### Tool Attempts"));
+        assert!(result.contains("save_note blocked"));
+        assert!(result.contains("Low-trust content influenced this run"));
         let tool_result = tool_result_text(&agent, "note");
         assert!(tool_result.contains("durable memory writes are blocked"));
         assert!(!agent.durable_memory_written_this_run());
@@ -1604,7 +1611,9 @@ path = "src/lib.rs"
 
         let result = agent.run(&ctx, "try the hidden mutation tool").unwrap();
 
-        assert_eq!(result, "blocked hidden tool");
+        assert!(result.starts_with("blocked hidden tool"));
+        assert!(result.contains("### Tool Attempts"));
+        assert!(result.contains("hidden_mutation blocked"));
         let tool_result = tool_result_text(&agent, "hidden-1");
         assert!(tool_result.contains("skill_policy_denied"));
         assert!(!executed.load(Ordering::SeqCst));

@@ -1,11 +1,15 @@
 use crate::approval::ApprovalState;
 use crate::behavior::{BehaviorContract, RunStateSnapshot};
 use crate::context::ExecutionContext;
+use crate::harness::AgentPhase;
+use crate::plan::{TaskMode, TaskQueueStatus};
 use crate::provenance::{RunTrustContext, SourceLabel};
+use crate::run_checkpoint::{RunCheckpoint, RunCheckpointBuilder};
 use crate::task_result::{
     TaskEvidence, TaskResult, ToolActionReceipt, ToolTraceStep, VerificationCommand,
 };
 use crate::tools::risky_shell_changed_path_hints;
+use crate::workflow_verification::{evaluate_workflow_evidence, WorkflowEvidence};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
@@ -283,6 +287,68 @@ impl AgentRunState {
             trust_notes,
             memory_context_loaded: ctx.memory_context().is_some(),
         }
+    }
+
+    pub(crate) fn build_checkpoint(
+        &self,
+        behavior: &BehaviorContract,
+        ctx: &ExecutionContext,
+        queue: Option<TaskQueueStatus>,
+        task_mode: TaskMode,
+        phase: AgentPhase,
+        planning_required_now: bool,
+    ) -> RunCheckpoint {
+        let snapshot = self.build_snapshot(behavior, ctx, planning_required_now);
+        let changed_files = self.changed_files.borrow().clone();
+        let active_files = snapshot.active_files.clone();
+        let verification_commands = self.collect_verification_commands(behavior);
+        let failed_verification_anchors = verification_commands
+            .iter()
+            .filter(|command| !command.succeeded)
+            .map(|command| format!("{} (exit {})", command.command, command.exit_code))
+            .collect::<Vec<_>>();
+        let receipts = self.tool_receipts.borrow().clone();
+
+        let mut latest_relevant_verification_status = verification_commands.last().map(|command| {
+            let status = if command.succeeded {
+                "passed"
+            } else {
+                "failed"
+            };
+            format!("{} {status} (exit {})", command.command, command.exit_code)
+        });
+        let mut unresolved_evidence_gaps = Vec::new();
+        let mut next_required_evidence_action = None;
+
+        if let Some(queue) = queue.filter(|queue| queue.total > 0) {
+            let evidence = WorkflowEvidence::new(&changed_files, &verification_commands, &receipts);
+            let evaluation = evaluate_workflow_evidence(queue, &evidence);
+            unresolved_evidence_gaps = evaluation.unresolved_evidence_gaps;
+            next_required_evidence_action = evaluation.next_required_evidence_action;
+            latest_relevant_verification_status = Some(
+                if evaluation.verification.final_relevant_verification_passed {
+                    "passed".to_string()
+                } else {
+                    "not passed".to_string()
+                },
+            );
+        }
+
+        RunCheckpointBuilder::new()
+            .objective(self.current_objective.clone())
+            .task_mode(task_mode)
+            .phase(phase.as_str())
+            .queue(queue)
+            .active_files(active_files)
+            .changed_files(changed_files)
+            .blockers(snapshot.blockers)
+            .failed_verification_anchors(failed_verification_anchors)
+            .latest_relevant_verification_status(latest_relevant_verification_status)
+            .unresolved_workflow_evidence_gaps(unresolved_evidence_gaps)
+            .next_required_evidence_action(next_required_evidence_action)
+            .low_trust_influence_notes(snapshot.trust_notes)
+            .receipts(&receipts)
+            .build()
     }
 
     pub(crate) fn build_task_result(
